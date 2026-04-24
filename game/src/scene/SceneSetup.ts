@@ -71,6 +71,12 @@ export function createSceneBundle(canvas: HTMLCanvasElement): SceneBundle {
   shadow.useBlurExponentialShadowMap = true;
   shadow.blurKernel = q.shadowBlurKernel;
   shadow.darkness = 0.35;
+  // Throttle the shadow map re-render — the single most expensive per-frame
+  // cost at these settings. At q.shadowRefreshRate=2 the map updates every
+  // other frame, which is imperceptible at the game's camera distance and
+  // enemy pace.
+  const shadowMap = shadow.getShadowMap();
+  if (shadowMap) shadowMap.refreshRate = q.shadowRefreshRate;
 
   window.addEventListener("resize", () => engine.resize());
 

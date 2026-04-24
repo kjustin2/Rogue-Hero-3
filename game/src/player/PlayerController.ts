@@ -2,6 +2,7 @@ import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Player } from "./Player";
 import { FrameInput } from "../input/InputController";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { TempoSystem } from "../tempo/TempoSystem";
 
 export interface ArenaCollision {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -11,11 +12,15 @@ export interface ArenaCollision {
 /**
  * Kinematic controller — directly translates the player transform.
  * Havok CharacterController upgrade slated for M2 (alongside enemy collision).
+ *
+ * Movement and dodge speed are multiplied by the current tempo.speedMultiplier
+ * so high tempo feels physically faster (and low tempo, sluggish). The
+ * multiplier is read every frame so zone transitions are immediate.
  */
 export class PlayerController {
   arena: ArenaCollision;
 
-  constructor(private player: Player, arena: ArenaCollision) {
+  constructor(private player: Player, arena: ArenaCollision, private tempo: TempoSystem) {
     this.arena = arena;
   }
 
@@ -47,15 +52,19 @@ export class PlayerController {
       p.dodgeTimer = p.stats.dodgeDuration;
     }
 
-    // Compute movement vector
+    // Compute movement vector. Tempo multiplier shapes everything — at HOT/CRITICAL
+    // the player surges forward, at COLD they slog. Dodge inherits the same
+    // multiplier so the entire "feel" of high tempo is present in motion, not
+    // just damage numbers.
+    const tempoMul = this.tempo.speedMultiplier();
     let mv: Vector3;
     let speed: number;
     if (p.isDodging) {
       mv = p.dodgeDir;
-      speed = p.stats.dodgeSpeed;
+      speed = p.stats.dodgeSpeed * tempoMul;
     } else {
       mv = input.move;
-      speed = p.stats.moveSpeed;
+      speed = p.stats.moveSpeed * tempoMul;
     }
 
     const dx = mv.x * speed * dt;

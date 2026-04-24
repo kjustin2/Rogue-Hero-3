@@ -9,6 +9,7 @@ import { TempoSystem } from "../tempo/TempoSystem";
 import { DeckManager } from "../deck/DeckManager";
 import { CardType } from "../deck/CardDefinitions";
 import { events } from "../engine/EventBus";
+import { dampCoeff } from "../util/Smoothing";
 
 interface Bar {
   bg: Rectangle;
@@ -31,6 +32,10 @@ interface HandSlot {
   popTimer: number;
   /** Fixed home position we scale around — baseline leftInPixels. */
   homeLeft: number;
+  /** Smoothed scale driven by selection — lerps toward 1.15 while selected, 1 while not. */
+  selScale: number;
+  /** Smoothed background alpha — lerps toward full on select, dimmer when unselected. */
+  selAlpha: number;
 }
 
 const TYPE_COLOR: Record<CardType, string> = {
@@ -57,6 +62,11 @@ export class Hud {
   private roomLabel: TextBlock;
   private hand: HandSlot[] = [];
   private banner: TextBlock;
+  /** Home Y position of the banner (pixels). Slide-in animates from home-30 to home. */
+  private bannerHomeTop = -120;
+  /** Counts up from 0 to BANNER_ANIM_DUR during slide-in; 0 = not animating. */
+  private bannerAnimT = 0;
+  private readonly BANNER_ANIM_DUR = 0.22;
   private bossBar: Bar;
   private bossLabel: TextBlock;
   /** 50% phase tick rendered inside the boss bar. */
@@ -79,7 +89,7 @@ export class Hud {
   private wipeAlphaSpeed = 0;
 
   // Relic-equip feedback: expanding ring + banner + persistent badge stack.
-  private relicBadges: { bg: Rectangle; label: TextBlock }[] = [];
+  private relicBadges: { bg: Rectangle; label: TextBlock; popT: number }[] = [];
   private relicRing: Rectangle;
   private relicRingTtl = 0;
   private relicBanner: TextBlock;
@@ -92,6 +102,12 @@ export class Hud {
   private lastKillTime = 0;
   /** Displayed AP value — lags behind actual `player.ap` so drains animate smoothly. */
   private apDisplay = -1;
+  /** Counts down from 0.45s on CARD_FAIL — drives a red AP-bar flash + wiggle. */
+  private apFailFlashTimer = 0;
+  /** Displayed HP value — lags behind actual `player.hp` so damage animates smoothly. */
+  private hpDisplay = -1;
+  /** Displayed tempo value — lags behind the tempo system's own value for a second layer of smoothing. */
+  private tempoDisplay = -1;
   /** Metronome relic indicator — visible only when equipped; pulses with the decay beat. */
   private metronomeDot!: Rectangle;
   private metronomeClock = 0;
@@ -264,6 +280,13 @@ export class Hud {
       this.flashRelicPickup(name, color);
     });
 
+    // CARD_FAIL — player tried to cast something they couldn't afford. Flash
+    // the AP bar red and trigger a small horizontal wiggle so the AP cost
+    // becomes visually obvious.
+    events.on<{ reason: string }>("CARD_FAIL", () => {
+      this.apFailFlashTimer = 0.45;
+    });
+
     // ---- Room transition wipe (full-screen black) ----
     this.wipe = new Rectangle("wipe");
     this.wipe.width = "100%";
@@ -422,7 +445,12 @@ export class Hud {
     label.shadowOffsetX = 1;
     label.shadowOffsetY = 1;
     bg.addControl(label);
-    this.relicBadges.push({ bg, label });
+    // Pop-in: start at scale 0.2 / alpha 0, driven toward target over ~0.32s
+    // with a light overshoot for the "trophy unlocked" pop.
+    bg.scaleX = 0.2;
+    bg.scaleY = 0.2;
+    bg.alpha = 0;
+    this.relicBadges.push({ bg, label, popT: 0 });
   }
 
   /** Strip all relic badges — for in-place run restart. */
@@ -441,6 +469,8 @@ export class Hud {
     this.comboTtl = 0;
     this.bossFlashTimer = 0;
     this.apDisplay = -1;
+    this.hpDisplay = -1;
+    this.tempoDisplay = -1;
   }
 
   private registerKill(): void {
@@ -701,7 +731,7 @@ export class Hud {
     chevron.isVisible = false;
     bg.addControl(chevron);
 
-    return { bg, hotkey, name, cost, costLabel, type, desc, chevron, flashTimer: 0, popTimer: 0, homeLeft: leftPx };
+    return { bg, hotkey, name, cost, costLabel, type, desc, chevron, flashTimer: 0, popTimer: 0, homeLeft: leftPx, selScale: 1, selAlpha: 1 };
   }
 
   private setBossVisible(v: boolean): void {
@@ -734,20 +764,35 @@ export class Hud {
     }
   }
 
-  update(): void {
+  update(realDt: number = 1 / 60): void {
     const p = this.player;
-    const dt = 1 / 60;
+    // Clamp here too (the caller already clamps, but HUD must be robust against
+    // being called standalone from tests).
+    const dt = Math.min(realDt, 1 / 30);
 
-    // HP bar
-    const hpRatio = Math.max(0, p.hp / p.stats.maxHp);
+    // HP bar — displayed value lerps toward real HP so damage animates smoothly.
+    // Damage-taken slides faster than heal so hits still feel punchy; regen is slow.
+    if (this.hpDisplay < 0) this.hpDisplay = p.hp;
+    {
+      const hpDelta = p.hp - this.hpDisplay;
+      if (Math.abs(hpDelta) > 0.01) {
+        const k = dampCoeff(hpDelta < 0 ? 18 : 10, dt);
+        this.hpDisplay += hpDelta * k;
+      } else {
+        this.hpDisplay = p.hp;
+      }
+    }
+    const hpRatio = Math.max(0, this.hpDisplay / p.stats.maxHp);
     this.hpBar.fill.widthInPixels = (this.hpBar.width - 4) * hpRatio;
     this.hpBar.caption.text = `HP  ${Math.max(0, Math.round(p.hp))} / ${p.stats.maxHp}`;
-    // Low-HP color shift — deep-red pulse below 15%, amber below 33%, otherwise default red.
-    if (hpRatio > 0 && hpRatio < 0.15) {
+    // Low-HP color shift uses the TRUE ratio so the pulse kicks in at the
+    // actual threshold, not a smoothed-lagging one.
+    const trueHpRatio = Math.max(0, p.hp / p.stats.maxHp);
+    if (trueHpRatio > 0 && trueHpRatio < 0.15) {
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012);
       const r = Math.round(180 + 60 * pulse);
       this.hpBar.fill.background = `rgb(${r},20,20)`;
-    } else if (hpRatio < 0.33) {
+    } else if (trueHpRatio < 0.33) {
       this.hpBar.fill.background = "#dd4422";
     } else {
       this.hpBar.fill.background = "#cc3344";
@@ -760,16 +805,41 @@ export class Hud {
     if (Math.abs(apDelta) > 0.01) {
       // Drain faster than regen so the slide doesn't feel sluggish.
       const speed = apDelta < 0 ? 10 : 6;
-      this.apDisplay += apDelta * Math.min(1, dt * speed);
+      this.apDisplay += apDelta * dampCoeff(speed, dt);
     } else {
       this.apDisplay = p.ap;
     }
     const apRatio = Math.max(0, this.apDisplay / p.stats.maxAp);
     this.apBar.fill.widthInPixels = (this.apBar.width - 4) * apRatio;
     this.apBar.caption.text = `AP  ${this.apDisplay.toFixed(1)} / ${p.stats.maxAp}`;
+    // CARD_FAIL feedback — red flash on the fill + a small horizontal wiggle
+    // on the bg so the AP cost is unmistakably the reason the cast failed.
+    if (this.apFailFlashTimer > 0) {
+      this.apFailFlashTimer = Math.max(0, this.apFailFlashTimer - dt);
+      const t = this.apFailFlashTimer / 0.45;
+      // Tint the fill toward red, fading back as t → 0.
+      this.apBar.fill.background = t > 0.5 ? "#ff3030" : `rgb(${Math.round(60 + 195 * t)}, ${Math.round(150 - 100 * t)}, ${Math.round(255 - 200 * t)})`;
+      // Wiggle the bar background horizontally — small amplitude that decays.
+      const wiggle = Math.sin(t * Math.PI * 18) * 6 * t;
+      this.apBar.bg.leftInPixels = 24 + wiggle;
+    } else {
+      this.apBar.fill.background = "#3399ff";
+      this.apBar.bg.leftInPixels = 24;
+    }
 
-    // Tempo bar
-    const tempoPct = this.tempo.value / 100;
+    // Tempo bar — lerp the rendered width for a second layer of smoothing on top
+    // of the tempo system's internal 55/s approach. The numeric readout uses the
+    // true value so it still updates crisply.
+    if (this.tempoDisplay < 0) this.tempoDisplay = this.tempo.value;
+    {
+      const tempoDelta = this.tempo.value - this.tempoDisplay;
+      if (Math.abs(tempoDelta) > 0.05) {
+        this.tempoDisplay += tempoDelta * dampCoeff(18, dt);
+      } else {
+        this.tempoDisplay = this.tempo.value;
+      }
+    }
+    const tempoPct = this.tempoDisplay / 100;
     this.tempoBar.fill.widthInPixels = (this.tempoBar.width - 4) * tempoPct;
     this.tempoBar.fill.background = this.tempo.zoneFillColor();
     this.tempoBar.caption.text = `TEMPO  ${Math.round(this.tempo.value)}`;
@@ -866,18 +936,64 @@ export class Hud {
         slot.chevron.isVisible = false;
       }
       if (slot.flashTimer > 0) slot.flashTimer = Math.max(0, slot.flashTimer - dt);
+      // Smooth selection scale + alpha — replaces the previous instant snap when
+      // the selected slot changed. Selected lands at 1.15 / full alpha; unselected
+      // settles at 1.0 / 0.9. Composes with the pop animation below.
+      const scaleTarget = isSelected ? 1.12 : 1.0;
+      const alphaTarget = isSelected ? 1.0 : 0.9;
+      slot.selScale += (scaleTarget - slot.selScale) * dampCoeff(20, dt);
+      slot.selAlpha += (alphaTarget - slot.selAlpha) * dampCoeff(18, dt);
       // Pop animation — scale 1→1.22→1 via sine. Scaling `scaleX`/`scaleY` on a
       // Babylon GUI control scales around its origin; the slot is anchored to
       // bottom-center so the growth reads as "jumping up" toward the player.
+      let popBump = 0;
       if (slot.popTimer > 0) {
         slot.popTimer = Math.max(0, slot.popTimer - dt);
         const tPop = 1 - slot.popTimer / 0.22;
-        const bump = Math.sin(tPop * Math.PI) * 0.22;
-        slot.bg.scaleX = 1 + bump;
-        slot.bg.scaleY = 1 + bump;
+        popBump = Math.sin(tPop * Math.PI) * 0.22;
+      }
+      const totalScale = slot.selScale + popBump;
+      slot.bg.scaleX = totalScale;
+      slot.bg.scaleY = totalScale;
+      // Multiply the pre-computed bg.alpha (affordability + flash) by the
+      // selection-smoothed value so the tween is purely additive.
+      slot.bg.alpha = slot.bg.alpha * slot.selAlpha;
+    }
+
+    // Relic-badge pop-in — scale 0.2 → 1.15 → 1.0 with overshoot over 0.32s,
+    // alpha 0 → 1 in the first half. `popT` is a per-badge timer that only ticks
+    // while < 1; once full it stops touching the badge.
+    const POP_DUR = 0.32;
+    for (const b of this.relicBadges) {
+      if (b.popT >= 1) continue;
+      b.popT = Math.min(1, b.popT + dt / POP_DUR);
+      const t = b.popT;
+      // Easing: 0 → 1.15 at t=0.6 → 1.0 at t=1. Piecewise quadratic.
+      let s: number;
+      if (t < 0.6) {
+        const u = t / 0.6;
+        s = 0.2 + (1.15 - 0.2) * (1 - (1 - u) * (1 - u));
       } else {
-        slot.bg.scaleX = 1;
-        slot.bg.scaleY = 1;
+        const u = (t - 0.6) / 0.4;
+        s = 1.15 + (1.0 - 1.15) * u * u;
+      }
+      b.bg.scaleX = s;
+      b.bg.scaleY = s;
+      b.bg.alpha = Math.min(1, t * 2);
+    }
+
+    // Banner slide-in — y-translate from (home - 30) up to home with cubic ease-out,
+    // alpha 0 → 1 in the same window. Runs once per setBanner().
+    if (this.bannerAnimT > 0 && this.bannerAnimT < this.BANNER_ANIM_DUR) {
+      this.bannerAnimT = Math.min(this.BANNER_ANIM_DUR, this.bannerAnimT + dt);
+      const u = this.bannerAnimT / this.BANNER_ANIM_DUR; // 0 → 1
+      const eased = 1 - Math.pow(1 - u, 3);
+      this.banner.topInPixels = this.bannerHomeTop - 30 * (1 - eased);
+      this.banner.alpha = eased;
+      if (this.bannerAnimT >= this.BANNER_ANIM_DUR) {
+        this.banner.topInPixels = this.bannerHomeTop;
+        this.banner.alpha = 1;
+        this.bannerAnimT = 0;
       }
     }
 
@@ -935,10 +1051,18 @@ export class Hud {
 
   setBanner(text: string | null): void {
     if (text) {
+      // Restart the slide-in animation whenever a banner is shown — even if the
+      // previous banner was still mid-slide, the new text should get its own
+      // entrance moment.
+      const wasSame = this.banner.text === text && this.banner.isVisible;
       this.banner.text = text;
       this.banner.isVisible = true;
+      if (!wasSame) this.bannerAnimT = 0.0001; // trip the animation timer
     } else {
       this.banner.isVisible = false;
+      this.bannerAnimT = 0;
+      this.banner.topInPixels = this.bannerHomeTop;
+      this.banner.alpha = 1;
     }
   }
 

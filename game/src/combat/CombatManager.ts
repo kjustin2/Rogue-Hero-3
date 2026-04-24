@@ -12,6 +12,7 @@ interface ArcSlash {
   mat: StandardMaterial;
   ttl: number;
   initial: number;
+  active: boolean;
 }
 
 /**
@@ -34,8 +35,17 @@ export class CombatManager {
   private previewPulse = 0;
   /** Last (range, arcDeg) used to build the preview geometry — rebuilt only when these change. */
   private previewShape: { range: number; arcDeg: number } | null = null;
-  /** Live slash arc meshes — spawned on triggerFlash, fade + dispose in update(). */
+  /**
+   * Pooled slash arcs. Each entry's mesh + material are pre-allocated and
+   * reused. Pool size 4 covers rapid-fire melee swings without ever growing.
+   * Geometry is rebuilt once per slot the first time it's spawned at a given
+   * range/arcDeg, and cached after — most runs only ever swing one card so
+   * this is effectively a single rebuild per slot.
+   */
+  private readonly SLASH_POOL_SIZE = 4;
   private slashes: ArcSlash[] = [];
+  /** Per-slot cache of the last (range, arcDeg) used to build the geometry. */
+  private slashShape: ({ range: number; arcDeg: number } | null)[] = [];
 
   private readonly MELEE_ARC_DEG = 140; // must match CardCaster.castMelee's arc
   private readonly FLASH_DURATION = 0.18;
@@ -68,35 +78,81 @@ export class CombatManager {
   }
 
   /**
-   * A thin curved band that tilts ~25° off the ground and fades quickly. Built from a disc
-   * with an inner cut (via arc fraction + scaling the edge) parented to the player's aim
-   * pivot so it rotates with facing. Scales XZ outward and fades alpha over ~0.22s.
+   * A thin curved band that tilts ~25° off the ground and fades quickly. Pooled —
+   * the first call at a given range/arcDeg builds the geometry for that slot;
+   * subsequent calls reuse it. If a slot's cached geometry doesn't match, we
+   * rebuild for that slot only.
    */
   private spawnSlashArc(): void {
     const range = this.previewShape ? this.previewShape.range : 3.2;
     const arcDeg = this.previewShape ? this.previewShape.arcDeg : this.MELEE_ARC_DEG;
-    const arcFraction = arcDeg / 360;
-    const mesh = MeshBuilder.CreateDisc(
-      `slashArc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      { radius: range, tessellation: 40, arc: arcFraction },
-      this.scene,
-    );
-    // Same YXZ orientation math as the ground arc preview, but tilted so it reads as a
-    // sword swing in mid-air rather than a stain on the floor.
-    const yaw = (arcDeg / 2) * (Math.PI / 180) - Math.PI / 2;
-    mesh.rotation.x = Math.PI / 2 - 0.35;
-    mesh.rotation.y = yaw;
-    mesh.position = new Vector3(0, 1.15, 0);
+
+    // Find a free slot.
+    let slot = -1;
+    for (let i = 0; i < this.slashes.length; i++) {
+      if (!this.slashes[i].active) { slot = i; break; }
+    }
+    if (slot === -1) {
+      // Pool not yet at capacity — extend it on demand up to SLASH_POOL_SIZE.
+      if (this.slashes.length < this.SLASH_POOL_SIZE) {
+        slot = this.slashes.length;
+        this.slashes.push(this.allocateSlashSlot(slot));
+        this.slashShape.push(null);
+      } else {
+        return; // all 4 slots in flight; drop this one
+      }
+    }
+
+    // Rebuild this slot's geometry only if shape differs from the cached one.
+    const shape = this.slashShape[slot];
+    if (!shape || shape.range !== range || shape.arcDeg !== arcDeg) {
+      this.rebuildSlashSlot(slot, range, arcDeg);
+    }
+
+    const s = this.slashes[slot];
+    s.mesh.scaling.set(0.75, 1, 0.75);
+    s.mat.alpha = 0.85;
+    s.ttl = 0.22;
+    s.initial = 0.22;
+    s.active = true;
+    s.mesh.setEnabled(true);
+  }
+
+  private allocateSlashSlot(idx: number): ArcSlash {
+    // Placeholder — geometry built on first use via rebuildSlashSlot.
+    const mesh = MeshBuilder.CreateDisc(`slashArc_${idx}`, { radius: 1, tessellation: 40, arc: 0.5 }, this.scene);
     mesh.parent = this.player.aimPivot;
-    mesh.scaling.set(0.75, 1, 0.75);
-    const mat = new StandardMaterial(`${mesh.name}_mat`, this.scene);
+    mesh.position = new Vector3(0, 1.15, 0);
+    mesh.setEnabled(false);
+    mesh.isPickable = false;
+    mesh.doNotSyncBoundingInfo = true;
+    const mat = new StandardMaterial(`slashArcMat_${idx}`, this.scene);
     mat.emissiveColor = new Color3(1.0, 0.92, 0.55);
     mat.diffuseColor = new Color3(1.0, 0.85, 0.35);
     mat.disableLighting = true;
     mat.alpha = 0.85;
     mat.backFaceCulling = false;
     mesh.material = mat;
-    this.slashes.push({ mesh, mat, ttl: 0.22, initial: 0.22 });
+    return { mesh, mat, ttl: 0, initial: 0, active: false };
+  }
+
+  private rebuildSlashSlot(idx: number, range: number, arcDeg: number): void {
+    const s = this.slashes[idx];
+    // Dispose old geometry; keep mesh node + material to retain parenting + reused refs.
+    s.mesh.dispose(false, false);
+    const arcFraction = arcDeg / 360;
+    const newMesh = MeshBuilder.CreateDisc(`slashArc_${idx}`, { radius: range, tessellation: 40, arc: arcFraction }, this.scene);
+    newMesh.parent = this.player.aimPivot;
+    newMesh.position = new Vector3(0, 1.15, 0);
+    const yaw = (arcDeg / 2) * (Math.PI / 180) - Math.PI / 2;
+    newMesh.rotation.x = Math.PI / 2 - 0.35;
+    newMesh.rotation.y = yaw;
+    newMesh.material = s.mat;
+    newMesh.isPickable = false;
+    newMesh.doNotSyncBoundingInfo = true;
+    newMesh.setEnabled(false);
+    s.mesh = newMesh;
+    this.slashShape[idx] = { range, arcDeg };
   }
 
   update(dt: number): void {
@@ -110,13 +166,12 @@ export class CombatManager {
       const breath = 0.5 + 0.5 * Math.sin(this.previewPulse);
       this.previewMat.alpha = 0.10 + 0.08 * breath;
     }
-    for (let i = this.slashes.length - 1; i >= 0; i--) {
-      const s = this.slashes[i];
+    for (const s of this.slashes) {
+      if (!s.active) continue;
       s.ttl -= dt;
       if (s.ttl <= 0) {
-        s.mesh.dispose();
-        s.mat.dispose();
-        this.slashes.splice(i, 1);
+        s.active = false;
+        s.mesh.setEnabled(false);
         continue;
       }
       const t = 1 - s.ttl / s.initial;
@@ -194,6 +249,7 @@ export class CombatManager {
   dispose(): void {
     for (const s of this.slashes) { s.mesh.dispose(); s.mat.dispose(); }
     this.slashes.length = 0;
+    this.slashShape.length = 0;
     this.disposeMeshes();
   }
 }

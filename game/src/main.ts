@@ -41,9 +41,12 @@ import { DodgeGhosts } from "./fx/DodgeGhost";
 import { WeaponTrail } from "./fx/WeaponTrail";
 import { RelicAuras } from "./fx/RelicAuras";
 import { Decals } from "./fx/Decals";
+import { StepDust } from "./fx/StepDust";
+import { SwordAura } from "./fx/SwordAura";
 import { DamageNumbers } from "./ui/DamageNumbers";
 import { EnemyHealthPips } from "./ui/EnemyHealthPips";
 import { IntroScreen } from "./ui/IntroScreen";
+import { DevOverlay } from "./ui/DevOverlay";
 import { Enemy } from "./enemies/Enemy";
 
 const AP_REGEN_PER_SEC = 0.5;
@@ -88,10 +91,15 @@ async function boot() {
   input.setFloorReference(arena0.floor);
   enemies.setPillars(arena0.pillars);
 
+  // Tempo first — PlayerController reads tempo.speedMultiplier() each frame
+  // so we need it constructed before the controller.
+  const tempo = new TempoSystem();
+  tempo.setClassPassives(BLADE.passives);
+
   const controller = new PlayerController(player, {
     bounds: arena0.bounds,
     pillars: arena0.pillars,
-  });
+  }, tempo);
 
   // Spawn the player well inside the arena facing the center. Previously we placed the hero 4m
   // from the south wall — that tucked the follow camera outside the wall since the rig sits
@@ -99,14 +107,13 @@ async function boot() {
   function placePlayerAtSpawn(b: { minX: number; maxX: number; minZ: number; maxZ: number }): void {
     player.root.position.x = 0;
     player.root.position.z = b.maxZ - 10;
-    player.facing.set(0, 0, -1);
-    player.aimPivot.rotation.y = Math.PI;
+    // Spawn facing -Z (toward arena center). setFacingDirection syncs the
+    // smoothed-yaw target so tickAnim doesn't slerp away from the spawn pose.
+    player.setFacingDirection(0, -1);
   }
   placePlayerAtSpawn(arena0.bounds);
 
   const combat = new CombatManager(scene, player);
-  const tempo = new TempoSystem();
-  tempo.setClassPassives(BLADE.passives);
   const items = new ItemManager(tempo);
   tempo.itemHooks = {
     shouldDecay: (v) => items.shouldDecay(v),
@@ -141,16 +148,32 @@ async function boot() {
   outline.addMesh(player.head, new Color3(0.2, 0.95, 1.0));
   outline.addMesh(player.sword, new Color3(1.0, 0.9, 0.35));
   let lockedOutlineTarget: Enemy | null = null;
+  // Saved previous rim color per locked enemy — so unlocking restores the red
+  // threat rim that Enemy.ts applies by default, instead of leaving the orange
+  // lock color stuck on.
+  let lockedRimOriginal: Color3 | null = null;
+  const LOCK_RIM_COLOR = new Color3(1.0, 0.75, 0.2);
   function applyLockOutline(e: Enemy | null): void {
     if (lockedOutlineTarget === e) return;
-    // Clear previous target's outline meshes.
+    // Clear previous target's highlight + restore its rim.
     if (lockedOutlineTarget) {
       for (const m of lockedOutlineTarget.getOutlineMeshes()) outline.removeMesh(m);
+      const fp = lockedOutlineTarget.material.emissiveFresnelParameters;
+      if (fp && lockedRimOriginal) fp.leftColor.copyFrom(lockedRimOriginal);
     }
     lockedOutlineTarget = e;
+    lockedRimOriginal = null;
     if (e && e.alive) {
       const c = new Color3(1.0, 0.9, 0.2);
       for (const m of e.getOutlineMeshes()) outline.addMesh(m, c);
+      // Override the fresnel rim with a warm lock color — composes with the
+      // cyan HighlightLayer outline for an unambiguous "this is your target"
+      // read even in a crowd.
+      const fp = e.material.emissiveFresnelParameters;
+      if (fp) {
+        lockedRimOriginal = fp.leftColor.clone();
+        fp.leftColor.copyFrom(LOCK_RIM_COLOR);
+      }
     }
   }
   const rewardPicker = new RewardPicker(scene);
@@ -159,8 +182,59 @@ async function boot() {
   const weaponTrail = new WeaponTrail(scene);
   const relicAuras = new RelicAuras(scene, player);
   const decals = new Decals(scene);
+  const stepDust = new StepDust(scene);
+  events.on<{ x: number; z: number }>("PLAYER_STEP", (p) => stepDust.puff(p.x, p.z));
+  // Sword aura — hot-orange particle vortex when tempo is CRITICAL. Off entirely
+  // outside that zone; intensity lerps via setTargetIntensity for smooth fade.
+  const swordAura = new SwordAura(scene, player.sword);
   const damageNumbers = new DamageNumbers(scene);
   const enemyHpPips = new EnemyHealthPips(scene);
+  // F3 toggles a small top-right overlay with FPS / frame time / mesh count /
+  // draw calls. Off by default so players never see it.
+  const devOverlay = new DevOverlay(scene, engine);
+
+  // ---------- Dynamic resolution scaling (pressure valve) ----------
+  // Tracks an EMA of frame time. When the average climbs above a threshold for
+  // long enough, we step up the engine's hardware scaling level (rendering at
+  // a lower internal resolution) to give the GPU breathing room. When it
+  // drops back, we restore. Conservative thresholds — most players will never
+  // see this engage; it's there to keep the framerate from collapsing on
+  // weaker hardware during heavy combat.
+  let frameTimeEma = 16.67; // ms
+  let scalingLevel = 1.0;
+  let pressureSeconds = 0;
+  let recoverySeconds = 0;
+  const PRESSURE_THRESHOLD_MS = 22;  // ~45 fps
+  const RECOVER_THRESHOLD_MS = 17;   // ~58 fps
+  const SCALING_LOW = 1.25;          // render at 80%
+  const SCALING_HIGH = 1.0;          // full resolution
+  function tickAdaptiveScaling(realDt: number): void {
+    const ms = realDt * 1000;
+    // Fast EMA — alpha 0.1 ≈ ~6 frames of memory, responsive but smoothed.
+    frameTimeEma += (ms - frameTimeEma) * 0.1;
+    if (scalingLevel === SCALING_HIGH && frameTimeEma > PRESSURE_THRESHOLD_MS) {
+      pressureSeconds += realDt;
+      recoverySeconds = 0;
+      if (pressureSeconds > 2) {
+        engine.setHardwareScalingLevel(SCALING_LOW);
+        scalingLevel = SCALING_LOW;
+        pressureSeconds = 0;
+      }
+    } else if (scalingLevel === SCALING_LOW && frameTimeEma < RECOVER_THRESHOLD_MS) {
+      recoverySeconds += realDt;
+      pressureSeconds = 0;
+      if (recoverySeconds > 4) {
+        engine.setHardwareScalingLevel(SCALING_HIGH);
+        scalingLevel = SCALING_HIGH;
+        recoverySeconds = 0;
+      }
+    } else {
+      // Conditions don't match either trigger — let counters drift back so a
+      // brief stutter doesn't accumulate to a downscale 60 seconds later.
+      pressureSeconds = Math.max(0, pressureSeconds - realDt * 0.5);
+      recoverySeconds = Math.max(0, recoverySeconds - realDt * 0.5);
+    }
+  }
   // Arena hazards — only the boss room turns them on. Half-size is injected per
   // room load so the spawn radius matches the current arena.
   const arenaHazards = new ArenaHazards(scene, 27);
@@ -190,6 +264,13 @@ async function boot() {
       addHitstop(p.isBoss ? 0.08 : 0.035);
       // Blood splat on the ground under the kill. Medium/high quality only.
       decals.spawn("blood", new Vector3(pos.x, 0, pos.z), p.isBoss ? 2.6 : 1.3);
+      // Delayed "ember rise" — a small upward second burst at chest height
+      // 200ms after death. Sells the dissolve as the spirit leaving the body.
+      // Captured x/y/z so the closure doesn't retain pos.
+      const ex = p.x, ey = p.y, ez = p.z;
+      setTimeout(() => {
+        hitFx.burst(new Vector3(ex, ey + 0.4, ez), p.isBoss ? 24 : 12, [1.0, 0.85, 0.55], p.isBoss ? 1.4 : 0.7);
+      }, 200);
     } else {
       hitFx.burst(pos, 14, [1.0, 0.85, 0.4], 0.7);
       cam.shake(0.03, 0.18);
@@ -200,9 +281,14 @@ async function boot() {
 
   // Player damage flash — vignette pulses red briefly when player takes damage.
   let damageFlashTimer = 0;
-  events.on("DAMAGE_TAKEN", () => {
+  events.on<{ amount: number; source: string }>("DAMAGE_TAKEN", (p) => {
     damageFlashTimer = 0.35;
     cam.shake(0.12, 0.32);
+    // Red-tinted floating number at the player's chest — makes it obvious how
+    // hard each hit lands during mob scrums.
+    if (p && typeof p.amount === "number" && p.amount > 0) {
+      damageNumbers.spawnPlayerHit(player.root.position, p.amount);
+    }
   });
 
   // Boss kill-cam — when the boss dies, orbit its last position for 2.5s with
@@ -250,50 +336,104 @@ async function boot() {
         curves.shadowsDensity = prevShadowsDensity;
       }, 1600);
     }
-    // Ground shock ring emanating from the boss's current position.
-    const ring = MeshBuilder.CreateTorus(`bossShock_${Date.now()}`, { diameter: 2, thickness: 0.22, tessellation: 36 }, scene);
-    ring.position.set(spawnPos.x, 0.06, spawnPos.z);
-    const ringMat = new StandardMaterial(`${ring.name}_mat`, scene);
-    ringMat.diffuseColor = new Color3(1, 0.25, 0.05);
-    ringMat.emissiveColor = new Color3(1, 0.2, 0.05);
-    ringMat.disableLighting = true;
-    ringMat.alpha = 0.9;
-    ring.material = ringMat;
-    shockRings.push({ mesh: ring, mat: ringMat, ttl: 0.9, initialTtl: 0.9, maxRadius: 10 });
+    // Ground shock ring emanating from the boss's current position — uses the
+    // same pool as the player Crash, with a red tint + longer duration.
+    spawnBossShockRing(spawnPos.x, spawnPos.z);
   });
 
   // ---------- Crash AoE: damages enemies + spawns expanding shock-ring fx ----------
-  interface ShockRing { mesh: Mesh; mat: StandardMaterial; ttl: number; initialTtl: number; maxRadius: number; }
+  // Pooled — pre-allocated ring meshes + materials are hidden instead of disposed
+  // so rapid Crashes (3 staggered rings each) don't churn GPU resources. 6 slots
+  // covers the burst (up to 4 concurrent during boss-phase + one player Crash).
+  interface ShockRing {
+    mesh: Mesh;
+    mat: StandardMaterial;
+    ttl: number;
+    initialTtl: number;
+    maxRadius: number;
+    active: boolean;
+    startAlpha: number;
+    baseDiffuse: Color3;
+    baseEmissive: Color3;
+  }
+  const SHOCK_POOL_SIZE = 6;
   const shockRings: ShockRing[] = [];
-
-  function spawnShockRing(maxRadius: number): void {
-    const ring = MeshBuilder.CreateTorus(`shock_${Date.now()}`, { diameter: 2, thickness: 0.18, tessellation: 36 }, scene);
-    ring.position.x = player.root.position.x;
+  for (let i = 0; i < SHOCK_POOL_SIZE; i++) {
+    const ring = MeshBuilder.CreateTorus(`shock_${i}`, { diameter: 2, thickness: 0.18, tessellation: 36 }, scene);
     ring.position.y = 0.06;
-    ring.position.z = player.root.position.z;
-    const mat = new StandardMaterial(`shockMat_${Date.now()}`, scene);
+    ring.isPickable = false;
+    ring.doNotSyncBoundingInfo = true;
+    ring.setEnabled(false);
+    const mat = new StandardMaterial(`shockMat_${i}`, scene);
     mat.diffuseColor = new Color3(1, 0.8, 0.3);
     mat.emissiveColor = new Color3(1, 0.7, 0.2);
     mat.alpha = 0.85;
     mat.disableLighting = true;
     ring.material = mat;
-    shockRings.push({ mesh: ring, mat, ttl: 0.55, initialTtl: 0.55, maxRadius });
+    shockRings.push({
+      mesh: ring, mat, ttl: 0, initialTtl: 0, maxRadius: 0,
+      active: false, startAlpha: 0.85,
+      baseDiffuse: new Color3(1, 0.8, 0.3),
+      baseEmissive: new Color3(1, 0.7, 0.2),
+    });
+  }
+
+  function acquireShockRing(): ShockRing | null {
+    for (const r of shockRings) if (!r.active) return r;
+    return null; // all slots busy — drop this ring; better than allocating
+  }
+
+  function spawnShockRing(maxRadius: number): void {
+    const r = acquireShockRing();
+    if (!r) return;
+    r.mesh.position.x = player.root.position.x;
+    r.mesh.position.z = player.root.position.z;
+    r.mesh.scaling.x = r.mesh.scaling.z = 1;
+    r.mat.diffuseColor.copyFrom(r.baseDiffuse);
+    r.mat.emissiveColor.copyFrom(r.baseEmissive);
+    r.mat.alpha = 0.85;
+    r.startAlpha = 0.85;
+    r.ttl = 0.55;
+    r.initialTtl = 0.55;
+    r.maxRadius = maxRadius;
+    r.active = true;
+    r.mesh.setEnabled(true);
+  }
+
+  /**
+   * Custom-spawn variant used by the boss-phase moment — different position,
+   * tint, and duration. Same pool.
+   */
+  function spawnBossShockRing(x: number, z: number): void {
+    const r = acquireShockRing();
+    if (!r) return;
+    r.mesh.position.x = x;
+    r.mesh.position.z = z;
+    r.mesh.scaling.x = r.mesh.scaling.z = 1;
+    r.mat.diffuseColor.set(1, 0.25, 0.05);
+    r.mat.emissiveColor.set(1, 0.2, 0.05);
+    r.mat.alpha = 0.9;
+    r.startAlpha = 0.9;
+    r.ttl = 0.9;
+    r.initialTtl = 0.9;
+    r.maxRadius = 10;
+    r.active = true;
+    r.mesh.setEnabled(true);
   }
 
   function updateShockRings(dt: number): void {
-    for (let i = shockRings.length - 1; i >= 0; i--) {
-      const r = shockRings[i];
+    for (const r of shockRings) {
+      if (!r.active) continue;
       r.ttl -= dt;
       if (r.ttl <= 0) {
-        r.mesh.dispose();
-        r.mat.dispose();
-        shockRings.splice(i, 1);
+        r.mesh.setEnabled(false);
+        r.active = false;
         continue;
       }
       const t = 1 - r.ttl / r.initialTtl;
       const scale = 1 + (r.maxRadius - 1) * t;
       r.mesh.scaling.x = r.mesh.scaling.z = scale;
-      r.mat.alpha = 0.85 * (1 - t);
+      r.mat.alpha = r.startAlpha * (1 - t);
     }
   }
 
@@ -368,6 +508,23 @@ async function boot() {
 
   events.on<CardArcFx>("CARD_FX", (p) => spawnCardFx(p));
 
+  // Cast FX — small hand-level flare + particle burst at the spawn point when a
+  // non-melee card fires. Sells the moment of casting at chest height, not the
+  // feet. Pooled HitParticles handles both.
+  events.on<{ kind: "bolt" | "dash"; x: number; y: number; z: number }>("CAST_FX", (p) => {
+    const pos = new Vector3(p.x, p.y, p.z);
+    if (p.kind === "bolt") {
+      // Small outward burst in cool gold (matches projectile emissive) + a tiny
+      // ground flare so the cast reads from overhead too.
+      hitFx.burst(pos, 18, [1.0, 0.85, 0.35], 0.8);
+      hitFx.flare(new Vector3(p.x, 0, p.z), [1.0, 0.85, 0.35], 1.1, 0.14);
+    } else {
+      // Dash: purple ground flare + small burst at the start position.
+      hitFx.burst(pos, 14, [0.8, 0.55, 1.0], 0.9);
+      hitFx.flare(new Vector3(p.x, 0, p.z), [0.8, 0.55, 1.0], 1.4, 0.18);
+    }
+  });
+
   // Chromatic aberration burst timer — separate from the low-HP ramp so they
   // compose cleanly. Peak amount 14px, decays linearly.
   let crashAberrationTimer = 0;
@@ -387,6 +544,9 @@ async function boot() {
     hitFx.flare(new Vector3(player.root.position.x, 0, player.root.position.z), [1.0, 0.85, 0.25], 5.5, 0.5);
     // Scorch decal under the Crash — visible proof of the blast for a while.
     decals.spawn("scorch", new Vector3(player.root.position.x, 0, player.root.position.z), 5.5);
+    // Cracked-earth decal sits slightly smaller than the scorch so the lines
+    // read through the dark scorch tint — "split open by the blast".
+    decals.spawn("crack", new Vector3(player.root.position.x, 0, player.root.position.z), 4.2);
     // Kick the chromatic aberration ramp — driven by the render loop so it composes
     // with any low-HP aberration that might already be running.
     crashAberrationTimer = crashAberrationDuration;
@@ -403,6 +563,43 @@ async function boot() {
         const d = Math.sqrt(dx * dx + dz * dz);
         if (d > 1e-4) e.knockback(dx / d, dz / d, 9);
       }
+    }
+  });
+
+  // ---------- Tempo zone-transition VFX ----------
+  // The biggest "I just powered up" moment was previously invisible. On any
+  // climb (FLOWING→HOT, HOT→CRITICAL) we kick a shock ring + camera shake +
+  // vignette flash; on any drop we do a brief desaturation pulse so falling
+  // out of the zone reads as a setback. Existing TempoSystem.ZONE_TRANSITION
+  // already fires both directions.
+  const ZONE_RANK: Record<string, number> = { COLD: 0, FLOWING: 1, HOT: 2, CRITICAL: 3 };
+  let zoneTransitionFlashTimer = 0;
+  let zoneTransitionFlashColor = new Color3(1, 0.6, 0.2);
+  events.on<{ oldZone: string; newZone: string }>("ZONE_TRANSITION", ({ oldZone, newZone }) => {
+    const oldR = ZONE_RANK[oldZone] ?? 1;
+    const newR = ZONE_RANK[newZone] ?? 1;
+    if (newR > oldR) {
+      // Climb — celebrate. HOT gets warm orange + medium ring; CRITICAL gets
+      // red-white + larger ring + bigger shake.
+      const isCritical = newZone === "CRITICAL";
+      spawnShockRing(isCritical ? 8 : 6);
+      cam.shake(isCritical ? 0.16 : 0.10, isCritical ? 0.45 : 0.32);
+      hitFx.flare(
+        new Vector3(player.root.position.x, 0, player.root.position.z),
+        isCritical ? [1.0, 0.55, 0.25] : [1.0, 0.75, 0.25],
+        isCritical ? 4.4 : 3.2,
+        isCritical ? 0.42 : 0.30,
+      );
+      zoneTransitionFlashTimer = 0.5;
+      zoneTransitionFlashColor.set(
+        isCritical ? 1.0 : 1.0,
+        isCritical ? 0.45 : 0.65,
+        isCritical ? 0.10 : 0.18,
+      );
+    } else if (newR < oldR) {
+      // Drop — brief blue desaturation flash via the same vignette path.
+      zoneTransitionFlashTimer = 0.35;
+      zoneTransitionFlashColor.set(0.3, 0.4, 0.85);
     }
   });
 
@@ -552,13 +749,25 @@ async function boot() {
     const options = pickRewardOptions();
     if (options.length > 0) {
       hud.setBanner("ROOM CLEARED");
-      const picked = await rewardPicker.open(options);
-      if (picked) {
-        items.equip(picked.id);
-        // HUD listens for RELIC_EQUIPPED to show the banner + expanding ring + persistent badge.
-        events.emit("RELIC_EQUIPPED", { id: picked.id, name: picked.name, color: picked.color });
+      // Enable depth-of-field while the picker is up so the world behind blurs
+      // out — pulls the player's focus to the cards. Restored on close even if
+      // the picker is dismissed without a pick.
+      pipeline.depthOfFieldEnabled = true;
+      pipeline.depthOfField.focalLength = 50;
+      pipeline.depthOfField.fStop = 1.4;
+      pipeline.depthOfField.focusDistance = 8000; // mm — focuses ~8m out, behind player
+      pipeline.depthOfField.lensSize = 50;
+      try {
+        const picked = await rewardPicker.open(options);
+        if (picked) {
+          items.equip(picked.id);
+          // HUD listens for RELIC_EQUIPPED to show the banner + expanding ring + persistent badge.
+          events.emit("RELIC_EQUIPPED", { id: picked.id, name: picked.name, color: picked.color });
+        }
+      } finally {
+        pipeline.depthOfFieldEnabled = false;
+        hud.setBanner(null);
       }
-      hud.setBanner(null);
     }
 
     if (run.isLastRoom()) {
@@ -607,8 +816,15 @@ async function boot() {
     arenaHazards.reset();
     decals.reset();
     hitFx.resetFlares();
-    for (const r of shockRings) { r.mesh.dispose(); r.mat.dispose(); }
-    shockRings.length = 0;
+    stepDust.reset();
+    swordAura.reset();
+    // Shock rings are pre-allocated pools now — hide and reset state instead
+    // of disposing (which would empty the pool for the rest of the session).
+    for (const r of shockRings) {
+      r.active = false;
+      r.ttl = 0;
+      r.mesh.setEnabled(false);
+    }
     for (const f of cardFx) {
       const pivot = (f.mesh as Mesh & { __pivot?: TransformNode }).__pivot;
       f.mesh.dispose();
@@ -669,18 +885,49 @@ async function boot() {
       // restart if those settings would actually differ.
       const q = cycleQuality();
       setHeavyPostFx(cam.camera, { ssao: q.ssaoEnabled, godRays: q.godRaysEnabled });
+      // Adaptive scaling may have downscaled the framebuffer in response to a
+      // load spike. A manual quality cycle should reset that — otherwise the
+      // user wonders why "high" quality is rendering at 80% resolution.
+      engine.setHardwareScalingLevel(1.0);
+      scalingLevel = 1.0;
+      pressureSeconds = 0;
+      recoverySeconds = 0;
       hud.setBanner(`GRAPHICS: ${q.tier.toUpperCase()}`);
       setTimeout(() => { if (gs.phase === "playing") hud.setBanner(null); }, 1200);
     }
   });
+
+  // All materials are created by this point (arena, env, player, enemies for
+  // room 0, FX pools). Freeze the dirty-material check so Babylon skips the
+  // per-frame "which uniforms changed" scan on every material. Rebuilds on room
+  // load and relic equips are fine — they create *new* materials, not mutate
+  // existing flags.
+  scene.blockMaterialDirtyMechanism = true;
 
   // Intro screen — wait for user dismissal before starting the loop
   const intro = new IntroScreen(scene);
   engine.runRenderLoop(() => scene.render());
   await intro.wait();
 
+  // Tab-blur / stall recovery: after the tab becomes visible again, the first
+  // frame's engine.getDeltaTime() reflects the wall-clock gap (seconds to minutes).
+  // Even with the dt clamp below, timers/physics would still step forward by the
+  // clamp's max per frame after a long stall. Instead, skip one frame on resume.
+  let skipNextFrame = true; // also skip the very first render frame after boot
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") skipNextFrame = true;
+  });
+
   scene.onBeforeRenderObservable.add(() => {
-    const realDt = engine.getDeltaTime() / 1000;
+    if (skipNextFrame) {
+      skipNextFrame = false;
+      return;
+    }
+
+    // Clamp dt to at most 1/30s. Protects against single long frames (GC pause,
+    // alt-tab without the visibility event firing, browser throttling) from
+    // teleporting the player through walls or advancing timers by seconds.
+    const realDt = Math.min(engine.getDeltaTime() / 1000, 1 / 30);
     const camForward = cam.camera.getForwardRay().direction;
     const frame = input.consume(camForward);
 
@@ -786,9 +1033,19 @@ async function boot() {
     }
 
     // Weapon trail samples every frame; records new samples only during the
-    // brief swing window so trails stay concise.
+    // brief swing window so trails stay concise. Intensity scales with tempo:
+    // 0.6 at COLD, 1.0 at FLOWING, 1.5 at CRITICAL — visible thickening of
+    // the swing as the player rides higher zones.
     player.getSwordTipWorld(swordTipBuf);
-    weaponTrail.tick(swordTipBuf, player.isSwinging());
+    const trailIntensity = 0.6 + 0.9 * (tempo.value / 100);
+    weaponTrail.tick(swordTipBuf, player.isSwinging(), trailIntensity);
+
+    // Sword aura — only at CRITICAL (tempo >= 90). Ramps in/out smoothly via
+    // SwordAura's internal lerp so zone transitions look like the aura
+    // "ignites" rather than snapping on.
+    const auraTarget = tempo.value >= 90 ? Math.min(1, (tempo.value - 90) / 8) : 0;
+    swordAura.setTargetIntensity(auraTarget);
+    swordAura.tick(realDt);
 
     // Relic auras — Runaway trail, Berserker Heart emissive ramp, Metronome dot.
     // `movingSpeed` = approximate magnitude of movement this frame (not per-second).
@@ -831,6 +1088,15 @@ async function boot() {
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.0075);
       vc.r = 1.0; vc.g = 0.08; vc.b = 0.08;
       vc.a = (0.35 + 0.35 * pulse) * urgency;
+    } else if (zoneTransitionFlashTimer > 0) {
+      // Transient flash from a tempo zone change — overrides the ambient zone
+      // tint for a brief moment so the transition reads as a discrete event.
+      zoneTransitionFlashTimer = Math.max(0, zoneTransitionFlashTimer - realDt);
+      const t = zoneTransitionFlashTimer / 0.5;
+      vc.r = zoneTransitionFlashColor.r;
+      vc.g = zoneTransitionFlashColor.g;
+      vc.b = zoneTransitionFlashColor.b;
+      vc.a = 0.55 * t;
     } else {
       // Zone-driven ambient tint: subtle in COLD/HOT, hot red in CRITICAL.
       const zone = tempo.stateName();
@@ -893,7 +1159,11 @@ async function boot() {
     if (player.root.position.z > a.bounds.maxZ - r) player.root.position.z = a.bounds.maxZ - r;
 
     cam.update(dt);
-    hud.update();
+    // HUD animates in real time — hitstop shouldn't freeze bar lerps, that'd
+    // read as a UI bug. Pass realDt.
+    hud.update(realDt);
+    devOverlay.update(realDt);
+    tickAdaptiveScaling(realDt);
   });
 
   // eslint-disable-next-line no-console

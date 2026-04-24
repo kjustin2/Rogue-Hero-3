@@ -6,8 +6,25 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
+import { FresnelParameters } from "@babylonjs/core/Materials/fresnelParameters";
 import { Player } from "../player/Player";
 import { events } from "../engine/EventBus";
+
+/**
+ * Red rim fresnel on enemy bodies — helps silhouette against the green verdant
+ * floor, and tips the visual language "this thing is a threat". Bosses get a
+ * stronger rim via isBoss below.
+ */
+function applyEnemyRim(mat: StandardMaterial, isBoss: boolean): void {
+  const f = new FresnelParameters();
+  f.bias = 0.22;
+  f.power = 2.5;
+  f.leftColor = isBoss
+    ? new Color3(1.0, 0.22, 0.12)
+    : new Color3(0.85, 0.20, 0.14);
+  f.rightColor = new Color3(0, 0, 0);
+  mat.emissiveFresnelParameters = f;
+}
 
 export type EnemyState = "idle" | "chase" | "telegraph" | "attack" | "recover" | "dead";
 
@@ -76,6 +93,7 @@ export abstract class Enemy {
     const mat = new StandardMaterial(`${this.id}_mat`, scene);
     mat.diffuseColor = this.baseColor;
     mat.specularColor = new Color3(0.05, 0.05, 0.05);
+    applyEnemyRim(mat, def.name.startsWith("boss_"));
     this.material = mat;
     this.body.material = mat;
     shadow.addShadowCaster(this.body);
@@ -180,6 +198,12 @@ export abstract class Enemy {
     mat.specularColor = new Color3(0.05, 0.05, 0.05);
     if (opts?.emissive) mat.emissiveColor = opts.emissive.clone();
     if (opts?.disableLighting) mat.disableLighting = true;
+    // Apply the same rim as the main body so secondary parts read consistently.
+    // Parts with disableLighting already have their own emissive pop, so skip
+    // those — the fresnel would fight with the unlit look.
+    if (!opts?.disableLighting) {
+      applyEnemyRim(mat, this.def.name.startsWith("boss_"));
+    }
     mesh.material = mat;
     const rec = { mesh, mat, baseColor: color.clone() };
     this.extraParts.push(rec);

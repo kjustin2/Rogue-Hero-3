@@ -34,6 +34,13 @@ export interface QualitySettings {
   bloomEnabled: boolean;
   /** Radius of the bloom kernel — smaller on lower tiers. */
   bloomKernel: number;
+  /**
+   * How often the shadow map re-renders. 1 = every frame (default Babylon
+   * behavior). 2 = every other frame, etc. At these camera distances and
+   * enemy speeds the lag is imperceptible, and the shadow pass is typically
+   * the single most expensive per-frame cost — so throttling is pure win.
+   */
+  shadowRefreshRate: number;
 }
 
 const STORAGE_KEY = "rh3.quality";
@@ -52,6 +59,7 @@ function tierDefaults(tier: QualityTier): QualitySettings {
         moteDensity: 0.4,
         bloomEnabled: false,
         bloomKernel: 32,
+        shadowRefreshRate: 3,
       };
     case "high":
       return {
@@ -65,6 +73,7 @@ function tierDefaults(tier: QualityTier): QualitySettings {
         moteDensity: 1.0,
         bloomEnabled: true,
         bloomKernel: 96,
+        shadowRefreshRate: 2,
       };
     case "medium":
     default:
@@ -79,6 +88,7 @@ function tierDefaults(tier: QualityTier): QualitySettings {
         moteDensity: 0.8,
         bloomEnabled: true,
         bloomKernel: 64,
+        shadowRefreshRate: 2,
       };
   }
 }

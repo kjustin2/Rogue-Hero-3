@@ -87,6 +87,11 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
   floor.material = floorMat;
   floor.receiveShadows = true;
   floor.parent = root;
+  // Floor never moves — freeze the world matrix so Babylon skips recomputation
+  // (same treatment as walls/pillars below). doNotSyncBoundingInfo is safe too
+  // since the floor never deforms or reparents.
+  floor.freezeWorldMatrix();
+  floor.doNotSyncBoundingInfo = true;
 
   // Walls (4 boxes around floor)
   const wallMat = new StandardMaterial("wallMat", scene);

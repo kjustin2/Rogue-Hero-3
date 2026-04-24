@@ -8,6 +8,25 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { LinesMesh } from "@babylonjs/core/Meshes/linesMesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
+import { FresnelParameters } from "@babylonjs/core/Materials/fresnelParameters";
+import { events } from "../engine/EventBus";
+import { dampCoeff } from "../util/Smoothing";
+
+/**
+ * Warm rim fresnel for the player silhouette. Added as an additive emissive on
+ * grazing angles so the capsule body reads against the arena floor from any
+ * camera angle. Bias 0.2 = rim starts at the edge and fades ~20% in; power 3 =
+ * sharp rim, not a wash. Right color (facing the camera) is black so the rim is
+ * additive on top of the normal shading, not a replacement.
+ */
+function applyPlayerRim(mat: StandardMaterial): void {
+  const f = new FresnelParameters();
+  f.bias = 0.2;
+  f.power = 3;
+  f.leftColor = new Color3(1.0, 0.85, 0.45);  // warm gold at grazing angles
+  f.rightColor = new Color3(0, 0, 0);         // no addition at head-on
+  mat.emissiveFresnelParameters = f;
+}
 
 export interface PlayerStats {
   hp: number;
@@ -64,6 +83,23 @@ export class Player {
   swingDuration = 0.22;
   /** Run cycle clock for the walk bob on the torso + arm sway. */
   private locoClock = 0;
+  /**
+   * Cast-animation timer for non-melee cards. Counts down from castDuration.
+   * `castKind` chooses which animation branch runs in tickAnim:
+   *  - "bolt": off-arm thrusts forward + slight torso pitch (evokes "shoot a bolt")
+   *  - "dash": sword arm sweeps back for the follow-through pose during the dash
+   */
+  castTimer = 0;
+  castDuration = 0.32;
+  castKind: "bolt" | "dash" | null = null;
+  /**
+   * Target yaw for the aim pivot. faceTowards() updates this; tickAnim slerps
+   * the actual aimPivot.rotation.y toward it, so the body rotates smoothly
+   * instead of snapping. Cards that need an instant snap (Dash) call
+   * `snapFacingNextFrame()` to bypass the slerp for the next tick.
+   */
+  private facingYawTarget = 0;
+  private snapFacing = true; // true on first frame so spawn pose is exact
 
   // Live state
   hp: number;
@@ -111,6 +147,7 @@ export class Player {
     mat.diffuseColor = new Color3(0.85, 0.78, 0.45);
     mat.specularColor = new Color3(0.1, 0.1, 0.1);
     mat.emissiveColor = new Color3(0.05, 0.05, 0.02);
+    applyPlayerRim(mat);
     this.body.material = mat;
     this.bodyMat = mat;
     shadow.addShadowCaster(this.body);
@@ -126,6 +163,7 @@ export class Player {
     const headMat = new StandardMaterial("playerHeadMat", scene);
     headMat.diffuseColor = new Color3(0.92, 0.82, 0.55);
     headMat.specularColor = new Color3(0.08, 0.08, 0.08);
+    applyPlayerRim(headMat);
     this.head.material = headMat;
     shadow.addShadowCaster(this.head);
 
@@ -140,6 +178,7 @@ export class Player {
     const armMat = new StandardMaterial("playerArmMat", scene);
     armMat.diffuseColor = new Color3(0.7, 0.62, 0.35);
     armMat.specularColor = new Color3(0.08, 0.08, 0.08);
+    applyPlayerRim(armMat);
     this.offArm.material = armMat;
     shadow.addShadowCaster(this.offArm);
 
@@ -250,6 +289,33 @@ export class Player {
   }
 
   /**
+   * Trigger a non-melee cast animation. Replaces any in-flight cast. Melee
+   * swings use `triggerSwing` directly; this is for Bolt / Dash (and future
+   * projectile or dash-like cards) to get their own character pose.
+   */
+  triggerCast(kind: "bolt" | "dash"): void {
+    this.castKind = kind;
+    this.castTimer = this.castDuration;
+  }
+
+  /**
+   * World-space position of the off-hand "palm" — roughly where a Bolt leaves
+   * the character during the cast animation. Used by CardCaster to pick a more
+   * grounded spawn origin than the player's feet. Computed from the body mesh
+   * world matrix + a local offset so it tracks torso lean and facing.
+   */
+  getOffHandWorld(out: Vector3): Vector3 {
+    const m = this.offArm.getWorldMatrix();
+    // The off-arm box is 0.9m tall with origin at its center (1.05m above root
+    // locally); the "palm" is at the bottom tip, which is roughly -0.45 from
+    // the mesh's local origin along Y. During the Bolt cast anim the arm
+    // rotates forward, so world-space transform captures that pose.
+    const localTip = new Vector3(0, -0.45, 0);
+    Vector3.TransformCoordinatesToRef(localTip, m, out);
+    return out;
+  }
+
+  /**
    * World-space position of the sword tip. Used by WeaponTrail to sample the
    * blade's motion during a swing. We compute it from the sword's world matrix
    * + a local offset down the blade (origin is at the hand, blade extends
@@ -276,8 +342,35 @@ export class Player {
    * for loco-bob tuning and the dodge flag for the body lean.
    */
   tickAnim(dt: number, moving: boolean): void {
+    // Slerp the body yaw toward the facing target. Snap on the first frame
+    // (or whenever a card requested it) so the start pose is exact; otherwise
+    // ease so mouse aiming doesn't snap-rotate the character.
+    if (this.snapFacing) {
+      this.aimPivot.rotation.y = this.facingYawTarget;
+      this.snapFacing = false;
+    } else {
+      let diff = this.facingYawTarget - this.aimPivot.rotation.y;
+      // Wrap to [-π, π] so we always rotate the short way.
+      diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+      this.aimPivot.rotation.y += diff * dampCoeff(18, dt);
+    }
+
     // Advance the run-cycle clock when moving so the bob scales with activity.
+    // Detect step beats (two per walk cycle, at multiples of π) by watching for
+    // a floor(locoClock/π) change — emits a PLAYER_STEP event for FX consumers
+    // like StepDust. Only fires while moving so idle dust doesn't puff forever.
+    const prevLoco = this.locoClock;
     if (moving) this.locoClock += dt * 8;
+    if (moving && !this.isDodging) {
+      const prevStep = Math.floor(prevLoco / Math.PI);
+      const currStep = Math.floor(this.locoClock / Math.PI);
+      if (currStep !== prevStep) {
+        events.emit("PLAYER_STEP", {
+          x: this.root.position.x,
+          z: this.root.position.z,
+        });
+      }
+    }
     // Decay locoClock continuity when idle so we settle back to upright.
     const bob = moving ? Math.sin(this.locoClock) * 0.03 : 0;
     this.torsoPivot.position.y = bob;
@@ -292,6 +385,9 @@ export class Player {
 
     // Sword swing: ease-out rotation forward then recover. Swing goes around
     // the shoulder's local X axis (overhead → down), scaled to ~120° at peak.
+    // Cast animations ride on top of the resting pose, so we compute a base
+    // sword-arm rotation first and let branches below add to it.
+    let swordArmRot = 0;
     if (this.swingTimer > 0) {
       this.swingTimer = Math.max(0, this.swingTimer - dt);
       const t = 1 - this.swingTimer / this.swingDuration;
@@ -299,22 +395,56 @@ export class Player {
       const eased = 1 - Math.pow(1 - t, 3);
       // Peak near t=0.4, decay back after. Easier to read as a swing than a hold.
       const swing = Math.sin(eased * Math.PI);
-      this.swordArm.rotation.x = -Math.PI * 0.72 * swing;
+      swordArmRot = -Math.PI * 0.72 * swing;
     } else {
       // Resting: arm trails behind body slightly while moving.
-      this.swordArm.rotation.x = moving ? Math.sin(this.locoClock + Math.PI) * 0.25 : 0;
+      swordArmRot = moving ? Math.sin(this.locoClock + Math.PI) * 0.25 : 0;
     }
 
-    // Dodge lean — tilt forward into the dodge direction. Implemented as a Z roll
-    // plus a slight X pitch scaled by the dodge fraction that remains.
+    // Cast animations (non-melee cards). Drives the off-arm, sword arm, and
+    // torso lean together for a cohesive pose. Progress eases in quickly and
+    // releases over the full duration so the moment is readable.
+    let offArmCastRot = 0;
+    let torsoCastPitch = 0;
+    if (this.castTimer > 0) {
+      this.castTimer = Math.max(0, this.castTimer - dt);
+      const t = 1 - this.castTimer / this.castDuration;       // 0 → 1
+      // sin(tπ) peaks at 0.5 — gives a "raise then release" motion rather than a snap-and-hold.
+      const pulse = Math.sin(t * Math.PI);
+      if (this.castKind === "bolt") {
+        // Off-hand thrusts forward: arm rotates around X (down-arm → forward
+        // along +Z local), peaks at ~-115° (hand pointing forward), recovers.
+        offArmCastRot = -Math.PI * 0.65 * pulse;
+        // Sword arm counterbalances slightly back.
+        swordArmRot += Math.PI * 0.15 * pulse;
+        // Gentle torso pitch forward into the cast.
+        torsoCastPitch = 0.18 * pulse;
+      } else if (this.castKind === "dash") {
+        // Dash prep pose: sword swept up-and-back for a follow-through read
+        // (the dash itself teleports the player; this sells it as a motion).
+        swordArmRot += Math.PI * 0.55 * pulse;
+        // Off-arm trails behind.
+        offArmCastRot = Math.PI * 0.35 * pulse;
+      }
+      if (this.castTimer === 0) this.castKind = null;
+    }
+    this.swordArm.rotation.x = swordArmRot;
+
+    // Compose off-arm pose: cast overrides walk sway, otherwise use walk sway.
+    if (this.castTimer > 0) {
+      this.offArm.rotation.x = offArmCastRot;
+    }
+
+    // Dodge lean — tilt forward into the dodge direction. Cast pitch adds to
+    // the dodge lean so a dash-cast reads as "explode forward". Implemented as
+    // a simple X pitch scaled by the dodge fraction + cast pulse.
     if (this.isDodging) {
-      const leanAmount = 0.35;
-      // Convert dodgeDir (world XZ) to local relative-to-root — root rotation.y
-      // is captured in aimPivot, but the dodge usually runs independent of facing.
-      // A simple pitch along +Z gives a "sprinting forward" tilt that reads well.
-      this.torsoPivot.rotation.x = leanAmount;
+      // Dash card routes through here via its post-cast i-frames; deepen the
+      // lean a touch during a dash-cast so the pose reads dramatic.
+      const leanAmount = 0.35 + (this.castKind === "dash" ? 0.18 : 0);
+      this.torsoPivot.rotation.x = leanAmount + torsoCastPitch;
     } else {
-      this.torsoPivot.rotation.x = 0;
+      this.torsoPivot.rotation.x = torsoCastPitch;
     }
   }
 
@@ -326,7 +456,38 @@ export class Player {
     if (len < 1e-4) return;
     this.facing.x = dx / len;
     this.facing.z = dz / len;
-    this.aimPivot.rotation.y = Math.atan2(this.facing.x, this.facing.z);
+    // Store the target yaw — actual rotation is slerped in tickAnim each
+    // frame so the body doesn't snap with mouse movement. snapFacing forces
+    // an immediate apply for the next frame (used at spawn + by Dash).
+    this.facingYawTarget = Math.atan2(this.facing.x, this.facing.z);
+    if (this.snapFacing) {
+      this.aimPivot.rotation.y = this.facingYawTarget;
+    }
+  }
+
+  /**
+   * Mark the next tickAnim to snap the body yaw instantly to the facing target
+   * instead of slerping. Used by Dash so the body jumps to the new direction
+   * the moment the dash teleports — slerping over 50ms in that situation
+   * would look like the body got left behind.
+   */
+  snapFacingNextFrame(): void {
+    this.snapFacing = true;
+  }
+
+  /**
+   * Set the body's facing direction immediately. Used at spawn / room
+   * transitions where snapping is correct (the player isn't doing a smooth
+   * turn — they're being placed). XZ is normalized internally.
+   */
+  setFacingDirection(fx: number, fz: number): void {
+    const len = Math.hypot(fx, fz);
+    if (len < 1e-4) return;
+    this.facing.x = fx / len;
+    this.facing.z = fz / len;
+    this.facingYawTarget = Math.atan2(this.facing.x, this.facing.z);
+    this.aimPivot.rotation.y = this.facingYawTarget;
+    this.snapFacing = true;
   }
 
   setAimMarker(point: Vector3 | null) {
@@ -371,11 +532,17 @@ export class Player {
     this.bodyMat.alpha = 1;
     this.footRingMat.emissiveColor.copyFrom(this.footRingBaseEmissive);
     this.swingTimer = 0;
+    this.castTimer = 0;
+    this.castKind = null;
     this.locoClock = 0;
     this.torsoPivot.rotation.x = 0;
     this.torsoPivot.position.y = 0;
     this.swordArm.rotation.x = 0;
     this.offArm.rotation.x = 0;
+    // Reset facing yaw target so the in-place restart pose matches the
+    // freshly-set aimPivot.rotation.y (which is 0 above).
+    this.facingYawTarget = 0;
+    this.snapFacing = true;
   }
 
   dispose() {

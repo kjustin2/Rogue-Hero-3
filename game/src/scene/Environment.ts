@@ -144,9 +144,19 @@ export function buildEnvironment(
 
   // ---------- Prop master meshes (hidden templates) ----------
   // Each master has its own material; instances share both geometry and material.
-  const grassMaster = makeGrassTuft(scene, palette.grass, palette.grassTip);
-  grassMaster.parent = root;
-  grassMaster.isVisible = false;
+  // Grass is split across 4 masters with staggered animation phases so blades
+  // sway out of unison — reads as a real breeze instead of a single heartbeat.
+  // Cost is still O(4) per frame regardless of instance count, since instances
+  // inherit the master's transform.
+  const GRASS_GROUPS = 4;
+  const grassMasters: Mesh[] = [];
+  for (let g = 0; g < GRASS_GROUPS; g++) {
+    const m = makeGrassTuft(scene, palette.grass, palette.grassTip);
+    m.parent = root;
+    m.isVisible = false;
+    m.name = `grassMaster_${g}`;
+    grassMasters.push(m);
+  }
 
   const rockMaster = makeRock(scene, palette.rock);
   rockMaster.parent = root;
@@ -187,7 +197,10 @@ export function buildEnvironment(
   for (let i = 0; i < grassCount; i++) {
     const spot = pickSpot();
     if (!spot) continue;
-    const inst = grassMaster.createInstance(`grass_i${i}`);
+    // Round-robin which group's master each blade inherits from. Combined
+    // with each master's animation phase below, this breaks the unison sway.
+    const groupMaster = grassMasters[i % GRASS_GROUPS];
+    const inst = groupMaster.createInstance(`grass_i${i}`);
     inst.position.copyFrom(spot);
     inst.rotation.y = rng() * Math.PI * 2;
     const s = 0.6 + rng() * 0.9;
@@ -237,16 +250,25 @@ export function buildEnvironment(
   const motes = makeAmbientMotes(scene, arenaSize, palette.moteColor);
   motes.start();
 
-  // Grass wind — we animate the grass MASTER's scaling.y in a gentle sine wave
-  // plus a side lean. Every instance inherits the motion through its parent
-  // chain, so cost is O(1) per frame regardless of instance count. It doesn't
-  // simulate real per-blade wave (all blades sway in unison) but sells "alive".
+  // Grass wind — animate each of the 4 grass masters with a phase-offset sine
+  // wave so blades from different groups sway at different times. Adds a
+  // low-frequency global gust on top so the whole field surges occasionally.
+  // Cost: O(GRASS_GROUPS) = 4 transform writes per frame regardless of blade count.
   let grassClock = 0;
   function tick(dt: number): void {
     grassClock += dt;
-    grassMaster.scaling.y = 1 + Math.sin(grassClock * 1.6) * 0.06; // ±6% Y
-    grassMaster.rotation.z = Math.sin(grassClock * 1.1) * 0.06;    // gentle side lean
-    // Master is intentionally NOT frozen — we mutate its transform per frame.
+    // Slow envelope — gentle "gust" that modulates the sway amplitude across
+    // all groups. Two periods (a fast and a slow) layered for organic-feeling
+    // wind without a single dominant frequency.
+    const gust = 0.7 + 0.3 * Math.sin(grassClock * 0.27);
+    for (let g = 0; g < GRASS_GROUPS; g++) {
+      const phaseY = (g / GRASS_GROUPS) * Math.PI * 2;
+      const phaseZ = phaseY + 0.7;
+      const m = grassMasters[g];
+      m.scaling.y = 1 + Math.sin(grassClock * 1.6 + phaseY) * 0.06 * gust;
+      m.rotation.z = Math.sin(grassClock * 1.1 + phaseZ) * 0.07 * gust;
+    }
+    // Masters are intentionally NOT frozen — we mutate their transforms per frame.
   }
 
   return {

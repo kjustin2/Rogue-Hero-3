@@ -28,7 +28,19 @@ export class TempoSystem {
   targetValue = 50;
   prevValue = 50;
   readonly REST = 50;
-  readonly DECAY_RATE = 7;
+  /**
+   * Drift toward REST in tempo units / second when no sustain is active.
+   * 2.0 means a peak (100) takes ~25 seconds to fall back to 50, and a 0
+   * cold takes the same to climb back. Previously 7 (which collapsed back
+   * to neutral in ~7 seconds, killing the "I'm in the zone" feel).
+   */
+  readonly DECAY_RATE = 2.0;
+  /**
+   * After a tempo gain (combo hit, kill, etc.), pin the value at its current
+   * level for this many seconds before resuming decay. Lets the player ride
+   * a HOT zone for a moment without immediately bleeding back to FLOWING.
+   */
+  readonly SUSTAIN_AFTER_GAIN = 1.5;
   isCrashed = false;
   crashRecoverTimer = 0;
   sustainedTimer = 0;
@@ -134,6 +146,10 @@ export class TempoSystem {
     let amt = amount;
     if (amt > 0) amt *= this.modifiers.gainMult;
     this.targetValue += amt;
+    // Any positive gain pins the value briefly before decay resumes — the
+    // player gets a moment to ride a HOT zone instead of seeing it bleed back
+    // to FLOWING the instant they stop attacking.
+    if (amt > 0) this.sustainedTimer = this.SUSTAIN_AFTER_GAIN;
     if (this.targetValue >= 100) {
       this.targetValue = 100;
       this._triggerAccidentalCrash();
@@ -202,11 +218,25 @@ export class TempoSystem {
     return 1.8;
   }
 
+  /**
+   * Move/dodge speed scalar. Reshaped to make tempo zones feel physically
+   * different — COLD is sluggish, CRITICAL is a rush. Previous values
+   * (1.0/1.2/0.9) were both subtle AND not even consumed anywhere in the
+   * game. Now multiplied through PlayerController each frame.
+   *
+   * Tier breakdown:
+   *   <15  (deep cold): 0.55 — molasses
+   *   <30  (cold):      0.7
+   *   <70  (flowing):   1.0  — neutral baseline
+   *   <90  (hot):       1.4  — visibly faster
+   *   >=90 (critical):  1.55 — blistering, "I am the storm"
+   */
   speedMultiplier(): number {
-    if (this.value >= 90) return 1.0;
-    if (this.value >= 70) return 1.2;
-    if (this.value < 30) return 0.9;
-    return 1.0;
+    if (this.value < 15) return 0.55;
+    if (this.value < 30) return 0.7;
+    if (this.value < 70) return 1.0;
+    if (this.value < 90) return 1.4;
+    return 1.55;
   }
 
   stateName(): TempoZone {

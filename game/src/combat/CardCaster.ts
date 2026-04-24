@@ -110,7 +110,20 @@ export class CardCaster {
     } else {
       dir = new Vector3(this.player.facing.x, 0, this.player.facing.z);
     }
-    this.projectiles.fire(origin, dir, 28, dmg, card.range / 28 + 0.1);
+    // Offset the spawn point a short way forward so the bolt leaves from the
+    // character's front rather than the feet. ProjectileSystem.fire then
+    // elevates to Y=1 (chest level) internally.
+    const len = Math.hypot(dir.x, dir.z);
+    const offsetDist = 0.7;
+    const spawn = len > 1e-4
+      ? new Vector3(origin.x + (dir.x / len) * offsetDist, origin.y, origin.z + (dir.z / len) * offsetDist)
+      : origin;
+    this.projectiles.fire(spawn, dir, 28, dmg, card.range / 28 + 0.1);
+    // Trigger the character cast animation + surface a CAST_FX event for the
+    // main.ts FX layer to spawn a small hand flare. Keeping the flare as an
+    // event instead of a direct call preserves CardCaster's "I don't own FX" boundary.
+    this.player.triggerCast("bolt");
+    events.emit("CAST_FX", { kind: "bolt", x: spawn.x, y: 1.2, z: spawn.z });
   }
 
   private castDash(card: CardDef, dmg: number): void {
@@ -158,5 +171,11 @@ export class CardCaster {
     this.player.root.position.z = endZ;
     this.player.isDodging = true;
     this.player.dodgeTimer = 0.12; // brief i-frames after dash
+    // Character cast pose — sword sweeps up and back for the follow-through.
+    this.player.triggerCast("dash");
+    // Body must snap to the dash direction this frame; slerping would leave
+    // the model facing the old direction for ~50ms during the teleport, which
+    // looks like a bug.
+    this.player.snapFacingNextFrame();
   }
 }

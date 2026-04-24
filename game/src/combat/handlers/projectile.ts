@@ -10,18 +10,32 @@ import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTextur
 import { EnemyManager } from "../../enemies/EnemyManager";
 import { events } from "../../engine/EventBus";
 
-interface ActiveProjectile {
+interface PooledProjectile {
   mesh: Mesh;
+  /** Larger additive halo sphere parented to `mesh` — breathes in size for life. */
+  halo: Mesh;
+  trail: ParticleSystem;
   vel: Vector3;
   damage: number;
   ttl: number;
+  elapsed: number;
   alreadyHit: Set<string>;
-  trail: ParticleSystem;
+  active: boolean;
 }
 
+/**
+ * Pooled projectile system — 16 pre-allocated sphere+particle-system pairs.
+ *
+ * Previously each shot called MeshBuilder.CreateSphere + new ParticleSystem and
+ * disposed both when consumed. During sustained fire that's the single biggest
+ * GC source in the hot path. Pre-allocating a fixed pool and toggling visibility
+ * eliminates those allocations. Follows the same pattern as HitParticles.
+ */
 export class ProjectileSystem {
-  private active: ActiveProjectile[] = [];
+  private readonly POOL_SIZE = 16;
+  private pool: PooledProjectile[] = [];
   private mat: StandardMaterial;
+  private haloMat: StandardMaterial;
   private trailTex: Texture;
 
   constructor(private scene: Scene, private enemies: EnemyManager) {
@@ -29,6 +43,18 @@ export class ProjectileSystem {
     this.mat.emissiveColor = new Color3(0.9, 0.7, 0.2);
     this.mat.diffuseColor = new Color3(1, 0.85, 0.3);
     this.mat.disableLighting = true;
+    this.mat.freeze();
+
+    // Halo — additive, low alpha. Shared across all pooled projectiles since
+    // every halo looks the same; per-slot scaling drives the breathing motion.
+    this.haloMat = new StandardMaterial("projectileHaloMat", scene);
+    this.haloMat.emissiveColor = new Color3(1.0, 0.85, 0.35);
+    this.haloMat.diffuseColor = new Color3(0, 0, 0);
+    this.haloMat.disableLighting = true;
+    this.haloMat.alpha = 0.45;
+    this.haloMat.alphaMode = 1; // BABYLON.Engine.ALPHA_ADD
+    this.haloMat.backFaceCulling = false;
+    this.haloMat.freeze();
 
     // Procedural soft-glow sprite for the trail — one shared texture across all projectiles.
     const dt = new DynamicTexture("projTrailTex", { width: 64, height: 64 }, scene, false);
@@ -41,25 +67,26 @@ export class ProjectileSystem {
     ctx.fillRect(0, 0, 64, 64);
     dt.update();
     this.trailTex = dt;
+
+    for (let i = 0; i < this.POOL_SIZE; i++) this.pool.push(this.allocate(i));
   }
 
-  fire(origin: Vector3, dir: Vector3, speed: number, damage: number, ttl = 1.6): void {
-    const mesh = MeshBuilder.CreateSphere("proj", { diameter: 0.35, segments: 8 }, this.scene);
-    mesh.position = origin.clone();
-    mesh.position.y = 1;
+  private allocate(idx: number): PooledProjectile {
+    const mesh = MeshBuilder.CreateSphere(`proj_${idx}`, { diameter: 0.35, segments: 8 }, this.scene);
     mesh.material = this.mat;
-    const v = dir.clone();
-    v.y = 0;
-    const len = Math.hypot(v.x, v.z);
-    if (len < 1e-4) return;
-    v.x /= len;
-    v.z /= len;
-    v.scaleInPlace(speed);
+    mesh.doNotSyncBoundingInfo = true;
+    mesh.isPickable = false;
+    mesh.setEnabled(false);
 
-    // Trail: emits additive glowing sprites from the mesh each frame. Particles
-    // inherit no velocity so they hang in place while the bolt pulls ahead, which
-    // reads as a streak. Capacity 120 covers the bolt's ~1s flight at 200/s.
-    const trail = new ParticleSystem(`${mesh.name}_trail`, 120, this.scene);
+    // Halo child — slightly larger additive sphere that breathes in size while
+    // the bolt flies. Parented to the core so it tracks position for free.
+    const halo = MeshBuilder.CreateSphere(`proj_${idx}_halo`, { diameter: 0.72, segments: 8 }, this.scene);
+    halo.material = this.haloMat;
+    halo.parent = mesh;
+    halo.doNotSyncBoundingInfo = true;
+    halo.isPickable = false;
+
+    const trail = new ParticleSystem(`proj_${idx}_trail`, 120, this.scene);
     trail.particleTexture = this.trailTex;
     trail.emitter = mesh;
     trail.minEmitBox = new Vector3(-0.05, -0.05, -0.05);
@@ -77,17 +104,64 @@ export class ProjectileSystem {
     trail.gravity = new Vector3(0, 0, 0);
     trail.blendMode = ParticleSystem.BLENDMODE_ADD;
     trail.updateSpeed = 0.016;
-    trail.start();
 
-    this.active.push({ mesh, vel: v, damage, ttl, alreadyHit: new Set(), trail });
+    return {
+      mesh,
+      halo,
+      trail,
+      vel: new Vector3(),
+      damage: 0,
+      ttl: 0,
+      elapsed: 0,
+      alreadyHit: new Set(),
+      active: false,
+    };
+  }
+
+  private acquire(): PooledProjectile | null {
+    for (const p of this.pool) if (!p.active) return p;
+    // All slots busy — shouldn't happen at POOL_SIZE=16 under normal play, but
+    // if someone spams fire faster than projectiles resolve, silently drop the
+    // shot rather than allocating. Matches the "degrade gracefully" pattern of
+    // the decal FIFO cap.
+    return null;
+  }
+
+  fire(origin: Vector3, dir: Vector3, speed: number, damage: number, ttl = 1.6): void {
+    const v = dir.clone();
+    v.y = 0;
+    const len = Math.hypot(v.x, v.z);
+    if (len < 1e-4) return;
+    v.x = (v.x / len) * speed;
+    v.z = (v.z / len) * speed;
+
+    const p = this.acquire();
+    if (!p) return;
+
+    p.mesh.position.copyFrom(origin);
+    p.mesh.position.y = 1;
+    p.vel.set(v.x, 0, v.z);
+    p.damage = damage;
+    p.ttl = ttl;
+    p.elapsed = 0;
+    p.alreadyHit.clear();
+    p.active = true;
+    p.mesh.setEnabled(true);
+    p.halo.scaling.setAll(1);
+    p.trail.start();
   }
 
   update(dt: number): void {
-    for (let i = this.active.length - 1; i >= 0; i--) {
-      const p = this.active[i];
+    for (const p of this.pool) {
+      if (!p.active) continue;
       p.ttl -= dt;
+      p.elapsed += dt;
       p.mesh.position.x += p.vel.x * dt;
       p.mesh.position.z += p.vel.z * dt;
+      // Halo breathe — ~3 Hz pulse, ±12%. Applied in parent's local space so
+      // it scales around the core's center.
+      const breathe = 1 + 0.12 * Math.sin(p.elapsed * 18);
+      p.halo.scaling.x = p.halo.scaling.y = p.halo.scaling.z = breathe;
 
       // Hit check (squared distance)
       let consumed = false;
@@ -108,34 +182,35 @@ export class ProjectileSystem {
         }
       }
 
-      if (consumed || p.ttl <= 0) {
-        // Stop emission but let in-flight particles finish fading, then dispose after a short delay.
-        p.trail.stop();
-        p.trail.disposeOnStop = true;
-        p.mesh.dispose();
-        this.active.splice(i, 1);
-      }
+      if (consumed || p.ttl <= 0) this.release(p);
     }
+  }
+
+  private release(p: PooledProjectile): void {
+    // Stop emission; in-flight particles finish fading via their own lifetime.
+    // The mesh is hidden immediately so the bolt vanishes cleanly at impact.
+    p.trail.stop();
+    p.mesh.setEnabled(false);
+    p.active = false;
   }
 
   /** Drop all in-flight projectiles — for in-place run restart. */
   reset(): void {
-    for (const p of this.active) {
-      p.trail.stop();
-      p.trail.disposeOnStop = true;
-      p.mesh.dispose();
+    for (const p of this.pool) {
+      if (p.active) this.release(p);
     }
-    this.active.length = 0;
   }
 
   dispose(): void {
-    for (const p of this.active) {
+    for (const p of this.pool) {
       p.trail.stop();
-      p.trail.disposeOnStop = true;
+      p.trail.dispose();
+      p.halo.dispose();
       p.mesh.dispose();
     }
-    this.active.length = 0;
+    this.pool.length = 0;
     this.mat.dispose();
+    this.haloMat.dispose();
     this.trailTex.dispose();
   }
 }

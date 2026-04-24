@@ -8,7 +8,7 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { getQuality } from "../engine/Quality";
 
-type DecalKind = "blood" | "scorch";
+type DecalKind = "blood" | "scorch" | "crack";
 
 interface Decal {
   mesh: Mesh;
@@ -33,11 +33,13 @@ interface Decal {
 export class Decals {
   private bloodTex: Texture;
   private scorchTex: Texture;
+  private crackTex: Texture;
   private active: Decal[] = [];
 
   constructor(private scene: Scene) {
     this.bloodTex = buildBloodTex(scene);
     this.scorchTex = buildScorchTex(scene);
+    this.crackTex = buildCrackTex(scene);
   }
 
   /**
@@ -54,8 +56,10 @@ export class Decals {
       if (oldest) { oldest.mesh.dispose(); oldest.mat.dispose(); }
     }
 
-    const tex = kind === "blood" ? this.bloodTex : this.scorchTex;
-    const lifetime = kind === "blood" ? 18 : 14;
+    const tex = kind === "blood" ? this.bloodTex
+              : kind === "scorch" ? this.scorchTex
+              : this.crackTex;
+    const lifetime = kind === "blood" ? 18 : kind === "scorch" ? 14 : 20;
     const mesh = MeshBuilder.CreateGround(
       `decal_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       { width: size, height: size, subdivisions: 1 },
@@ -74,9 +78,13 @@ export class Decals {
     mat.specularColor = new Color3(0, 0, 0);
     if (kind === "blood") {
       mat.diffuseColor = new Color3(0.45, 0.05, 0.05);
-    } else {
+    } else if (kind === "scorch") {
       mat.diffuseColor = new Color3(0.12, 0.10, 0.10);
       mat.emissiveColor = new Color3(0.35, 0.15, 0.05); // cooling-embers glow
+    } else {
+      // crack — dark with a faint orange glow leaking from the split earth.
+      mat.diffuseColor = new Color3(0.06, 0.05, 0.04);
+      mat.emissiveColor = new Color3(0.45, 0.18, 0.06);
     }
     mesh.material = mat;
     mesh.freezeWorldMatrix();
@@ -112,7 +120,70 @@ export class Decals {
     this.reset();
     this.bloodTex.dispose();
     this.scorchTex.dispose();
+    this.crackTex.dispose();
   }
+}
+
+/**
+ * Procedural cracked-earth texture — a radial set of jagged lines fanning out
+ * from the center, on a transparent background, so the decal reads as a rupture
+ * rather than a stain. Opacity is baked into the texture alpha.
+ */
+function buildCrackTex(scene: Scene): Texture {
+  const size = 128;
+  const dt = new DynamicTexture("decalCrackTex", { width: size, height: size }, scene, false);
+  const ctx = dt.getContext();
+  ctx.clearRect(0, 0, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  // Draw ~9 primary cracks radiating outward. Each is a polyline with a little
+  // zig-zag so it looks organic instead of surveyor's-tape straight.
+  const rays = 9;
+  for (let i = 0; i < rays; i++) {
+    const baseAngle = (i / rays) * Math.PI * 2 + Math.random() * 0.3;
+    const segments = 5 + Math.floor(Math.random() * 3);
+    const maxLen = size * 0.46;
+    let px = cx;
+    let py = cy;
+    ctx.strokeStyle = `rgba(0,0,0,${0.65 + Math.random() * 0.25})`;
+    ctx.lineWidth = 2.5 - i * 0.08;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    for (let s = 1; s <= segments; s++) {
+      const t = s / segments;
+      const r = t * maxLen;
+      const jitter = (Math.random() - 0.5) * 0.4;
+      const a = baseAngle + jitter;
+      px = cx + Math.cos(a) * r;
+      py = cy + Math.sin(a) * r;
+      ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    // Short branch at roughly the mid-point.
+    if (Math.random() < 0.7) {
+      const branchAngle = baseAngle + (Math.random() - 0.5) * 1.1;
+      const midR = maxLen * 0.45;
+      const bx = cx + Math.cos(baseAngle) * midR;
+      const by = cy + Math.sin(baseAngle) * midR;
+      const blen = maxLen * 0.22 * Math.random();
+      ctx.beginPath();
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx + Math.cos(branchAngle) * blen, by + Math.sin(branchAngle) * blen);
+      ctx.stroke();
+    }
+  }
+  // Glowing core — a faint orange radial at the center so emissive material
+  // picks up a hot spot where the crack meets.
+  const grad = ctx.createRadialGradient(cx, cy, 1, cx, cy, size * 0.12);
+  grad.addColorStop(0, "rgba(255,150,60,0.6)");
+  grad.addColorStop(1, "rgba(255,150,60,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  dt.hasAlpha = true;
+  dt.update();
+  return dt;
 }
 
 function buildBloodTex(scene: Scene): Texture {

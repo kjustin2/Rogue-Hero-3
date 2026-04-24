@@ -132,11 +132,13 @@ export class Chaser extends Enemy {
         this.telegraph.scaling.x = this.telegraph.scaling.z = 0.35 + 0.75 * t;
         this.telegraphMat.alpha = 0.3 + 0.5 * t;
       }
-      // Subtle body flare — brighter red as the strike approaches.
-      this.material.emissiveColor = new Color3(0.25 + 0.55 * t, 0.04, 0.04);
+      // Subtle body flare — brighter red as the strike approaches. Mutates
+      // the existing Color3 so we don't allocate a new one every frame
+      // (otherwise this is N×60 alloc/sec across all chasers).
+      this.material.emissiveColor.set(0.25 + 0.55 * t, 0.04, 0.04);
 
       if (this.windupTimer <= 0) {
-        this.material.emissiveColor = new Color3(0, 0, 0);
+        this.material.emissiveColor.set(0, 0, 0);
         if (this.telegraph) this.telegraph.isVisible = false;
         // Strike: if the player is still within contact range, deal damage.
         if (distSq <= (touchDist + this.ATTACK_RADIUS) * (touchDist + this.ATTACK_RADIUS) && !player.isDodging) {

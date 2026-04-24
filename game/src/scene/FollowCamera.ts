@@ -2,6 +2,28 @@ import { Scene } from "@babylonjs/core/scene";
 import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { dampCoeff } from "../util/Smoothing";
+
+/**
+ * 1D value noise — smooth interpolation between deterministic random values
+ * keyed on a continuous input. Unlike Math.random() per frame, this produces
+ * a temporally-coherent wobble that reads as "heavy impact" rather than static.
+ * Three samplers with coprime frequencies give uncorrelated axes.
+ */
+function hash1(n: number): number {
+  // cheap integer hash → [-1, 1]
+  const x = Math.sin(n * 12.9898) * 43758.5453;
+  return (x - Math.floor(x)) * 2 - 1;
+}
+function valueNoise1D(t: number): number {
+  const i = Math.floor(t);
+  const f = t - i;
+  const a = hash1(i);
+  const b = hash1(i + 1);
+  // smoothstep interpolation
+  const u = f * f * (3 - 2 * f);
+  return a + (b - a) * u;
+}
 
 /**
  * Third-person over-the-shoulder rig.
@@ -170,9 +192,10 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
         cam.alpha = killCamAngle;
         cam.radius = killCamRadius;
         const t = cam.target as Vector3;
-        t.x += (killCamCenter.x - t.x) * Math.min(1, dt * 6);
-        t.y += (killCamCenter.y + 1.2 - t.y) * Math.min(1, dt * 6);
-        t.z += (killCamCenter.z - t.z) * Math.min(1, dt * 6);
+        const kk = dampCoeff(6, dt);
+        t.x += (killCamCenter.x - t.x) * kk;
+        t.y += (killCamCenter.y + 1.2 - t.y) * kk;
+        t.z += (killCamCenter.z - t.z) * kk;
         return;
       }
 
@@ -194,7 +217,11 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
         }
       }
       const t = cam.target as Vector3;
-      const k = Math.min(1, dt * 12);
+      // dampCoeff keeps the follow rate constant in wall-clock time regardless
+      // of refresh rate. At 60Hz this lands on ≈0.181 — near-identical to the
+      // old `dt*12` clamp of 0.2 — but stays stable at 144Hz+ instead of
+      // over-lerping.
+      const k = dampCoeff(12, dt);
       t.x += (desiredTarget.x - t.x) * k;
       t.y += (desiredTarget.y - t.y) * k;
       t.z += (desiredTarget.z - t.z) * k;
@@ -203,9 +230,14 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
         shakeTime = Math.max(0, shakeTime - dt);
         const remaining = shakeTotal > 0 ? shakeTime / shakeTotal : 0;
         const s = shakeAmp * remaining * remaining; // ease-out
-        t.x += (Math.random() * 2 - 1) * s;
-        t.y += (Math.random() * 2 - 1) * s * 0.5;
-        t.z += (Math.random() * 2 - 1) * s;
+        // Value-noise shake — three coprime frequencies give uncorrelated
+        // XYZ wobble that reads as "heavy impact" rather than the jittery
+        // hash Math.random() produced. The `performance.now()` seeds each
+        // axis so a new shake doesn't visibly restart the waveform.
+        const nowMs = performance.now();
+        t.x += valueNoise1D(nowMs * 0.028) * s;        // ~28 Hz
+        t.y += valueNoise1D(nowMs * 0.034 + 71.3) * s * 0.5; // ~34 Hz, offset seed
+        t.z += valueNoise1D(nowMs * 0.024 + 137.1) * s;      // ~24 Hz, offset seed
         if (shakeTime === 0) shakeAmp = 0;
       }
 
@@ -213,8 +245,7 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
       // lands on the target smoothly — useful for the boss-phase zoom beat.
       const tgt = fovTarget ?? defaultFov;
       if (Math.abs(cam.fov - tgt) > 0.001) {
-        const k = Math.min(1, dt * fovSpeed);
-        cam.fov += (tgt - cam.fov) * k;
+        cam.fov += (tgt - cam.fov) * dampCoeff(fovSpeed, dt);
       }
 
       // Alpha lerp — "swing to new target" feel when the player hits Q. Wraps
@@ -223,7 +254,7 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
       if (alphaTarget !== null) {
         let diff = alphaTarget - cam.alpha;
         diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-        const step = diff * Math.min(1, dt * ALPHA_LERP_RATE);
+        const step = diff * dampCoeff(ALPHA_LERP_RATE, dt);
         cam.alpha += step;
         if (Math.abs(diff) < 0.02) alphaTarget = null;
       }

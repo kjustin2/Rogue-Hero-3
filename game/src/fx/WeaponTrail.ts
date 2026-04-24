@@ -44,12 +44,20 @@ export class WeaponTrail {
     this.mat.alphaMode = 2; // BABYLON.Engine.ALPHA_COMBINE
   }
 
+  /** Tempo-driven intensity 0..1.5 — modulates trail alpha + thickness in rebuild. */
+  private intensity = 1.0;
+
   /**
    * Call once per frame with the current sword-tip world position. `active`
    * controls whether new samples are recorded — set true briefly during a
    * swing so the trail paints. Old samples fade out naturally either way.
+   *
+   * `intensity` is a 0..1.5 multiplier applied to width + alpha so high tempo
+   * thickens the swing and low tempo thins it. Defaults to 1.0 — caller passes
+   * `0.6 + 0.9 * tempoNormalized` for a smooth ramp from sluggish to roaring.
    */
-  tick(tipWorld: Vector3, active: boolean): void {
+  tick(tipWorld: Vector3, active: boolean, intensity = 1.0): void {
+    this.intensity = intensity;
     const now = performance.now();
     if (active) {
       this.samples.push({ p: tipWorld.clone(), t: now });
@@ -79,8 +87,9 @@ export class WeaponTrail {
       const srcIdx = i < pad ? 0 : i - pad;
       const s = i < pad ? oldest : this.samples[srcIdx];
       const age = (now - s.t) / SAMPLE_TTL_MS;
-      const thickness = (1 - age) * WIDTH_TOP;
-      const bottomT = (1 - age) * WIDTH_BOTTOM;
+      // Intensity widens the trail at high tempo, thins it at low.
+      const thickness = (1 - age) * WIDTH_TOP * this.intensity;
+      const bottomT = (1 - age) * WIDTH_BOTTOM * this.intensity;
       top[i] = new Vector3(s.p.x, s.p.y + thickness * 0.5, s.p.z);
       bot[i] = new Vector3(s.p.x, s.p.y - bottomT, s.p.z);
     }
@@ -99,9 +108,10 @@ export class WeaponTrail {
       MeshBuilder.CreateRibbon("weaponTrail", { pathArray: [top, bot], instance: this.ribbon });
     }
     this.ribbon.isVisible = true;
-    // Fade the whole ribbon as the newest sample ages out.
+    // Fade the whole ribbon as the newest sample ages out, modulated by tempo
+    // intensity so high-tempo swings paint a bolder trail.
     const newestAge = n > 0 ? (now - this.samples[n - 1].t) / SAMPLE_TTL_MS : 1;
-    this.mat.alpha = 0.85 * (1 - Math.min(1, newestAge * 0.8));
+    this.mat.alpha = 0.85 * (1 - Math.min(1, newestAge * 0.8)) * this.intensity;
   }
 
   /** Wipe the buffer — for in-place run restart. */
