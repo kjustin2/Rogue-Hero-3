@@ -1,0 +1,33 @@
+{
+  "name": "rogue-hero-3",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Rogue Hero 3 — single-player 3D roguelike on Babylon.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "verify:runtime": "tsx scripts/verify-babylon-runtime.ts",
+    "test:smoke": "tsx scripts/test-smoke.ts",
+    "test:startup": "tsx scripts/test-startup.ts",
+    "test:sideeffects": "tsx scripts/test-side-effects-sync.ts",
+    "test": "tsx scripts/test-side-effects-sync.ts && tsx scripts/test-smoke.ts && tsx scripts/test-startup.ts",
+    "verify": "tsc --noEmit && tsx scripts/test-side-effects-sync.ts && tsx scripts/verify-babylon-runtime.ts && tsx scripts/test-smoke.ts && tsx scripts/test-startup.ts && vite build"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^9.3.4",
+    "@babylonjs/gui": "^9.3.4",
+    "@babylonjs/loaders": "^9.3.4",
+    "@babylonjs/materials": "^9.3.4",
+    "@babylonjs/post-processes": "^9.3.4"
+  },
+  "devDependencies": {
+    "@babylonjs/inspector": "^9.3.4",
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  }
+}
