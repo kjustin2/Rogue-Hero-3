@@ -1,12 +1,37 @@
 import { Scene } from "@babylonjs/core/scene";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
+import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
+import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { buildEnvironment, EnvBundle, EnvPalette } from "./Environment";
+
+export interface Door {
+  /** The plank mesh that visually fills the doorway when locked. */
+  mesh: Mesh;
+  /** Trim around the opening — purely cosmetic. */
+  frame: Mesh;
+  /** The threshold Z plane on the -Z wall (doorway lives here). */
+  zPlane: number;
+  /** X-range of the open passage. */
+  xMin: number;
+  xMax: number;
+  /** Animate the door open + flip the unlocked state (emissive on, mesh slides up). */
+  setLocked(locked: boolean): void;
+  isLocked(): boolean;
+  /** Per-frame animation tick so the door can lerp open after unlock. */
+  tick(dt: number): void;
+}
+
+export interface DoorPass {
+  active: boolean;
+  xMin: number;
+  xMax: number;
+}
 
 export interface Arena {
   root: Mesh;
@@ -14,6 +39,12 @@ export interface Arena {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   pillars: Mesh[];
   env: EnvBundle | null;
+  /** Ceiling slab if the arena was built enclosed; null otherwise. */
+  ceiling: Mesh | null;
+  /** Exit door on the -Z wall if the arena has one; null for the final room. */
+  door: Door | null;
+  /** Mutable bound override allowing the player to step past minZ when active. */
+  doorPass: DoorPass;
   dispose(): void;
 }
 
@@ -24,9 +55,15 @@ export interface ArenaOptions {
   paletteFloor?: Color3;
   paletteWall?: Color3;
   palettePillar?: Color3;
+  paletteCeiling?: Color3;
   /** Optional env palette — when omitted, a Verdant default is used. */
   envPalette?: EnvPalette;
   rngSeed?: number;
+  /** When true (default), build a stone ceiling on top of the walls. */
+  ceiling?: boolean;
+  /** When true (default), cut a doorway opening into the south (-Z) wall and
+   *  attach a Door mesh that can be unlocked on room clear. */
+  exitDoor?: boolean;
 }
 
 /** Default env palette — verdant forest floor with warm horizon. Reused for all three rooms
@@ -61,11 +98,18 @@ export const PIT_ENV_PALETTE: EnvPalette = {
   mushroomCount: 2,
 };
 
+// Doorway opening dimensions on the -Z wall — kept as constants so PlayerController
+// and main.ts can reference the same canonical width when wiring the trigger zone.
+export const DOOR_OPENING_WIDTH = 3.5;
+export const DOOR_OPENING_HEIGHT = 4.5;
+
 export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOptions = {}): Arena {
   const size = opts.size ?? 40;
   const half = size / 2;
   const wallHeight = opts.wallHeight ?? 4;
   const pillarCount = opts.pillarCount ?? 0;
+  const buildCeiling = opts.ceiling !== false;
+  const buildExitDoor = opts.exitDoor !== false;
 
   const root = new Mesh("arenaRoot", scene);
 
@@ -113,9 +157,46 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     return wall;
   };
   makeWall("wallN", size + wallThickness * 2, wallThickness, 0, half + wallThickness / 2);
-  makeWall("wallS", size + wallThickness * 2, wallThickness, 0, -half - wallThickness / 2);
   makeWall("wallE", wallThickness, size, half + wallThickness / 2, 0);
   makeWall("wallW", wallThickness, size, -half - wallThickness / 2, 0);
+
+  // South wall — when the room has an exit door, split it into two side
+  // segments + a lintel above the opening. Otherwise build a solid box like
+  // the other walls. The doorway sits centered on x=0.
+  const southZ = -half - wallThickness / 2;
+  if (buildExitDoor) {
+    const opening = DOOR_OPENING_WIDTH;
+    const lintelStart = DOOR_OPENING_HEIGHT;
+    const sideWallW = (size + wallThickness * 2 - opening) / 2;
+    const totalW = size + wallThickness * 2;
+    // Left segment: from -totalW/2 to -opening/2.
+    const leftCenter = -totalW / 2 + sideWallW / 2;
+    makeWall("wallS_left", sideWallW, wallThickness, leftCenter, southZ);
+    // Right segment: from +opening/2 to +totalW/2.
+    const rightCenter = totalW / 2 - sideWallW / 2;
+    makeWall("wallS_right", sideWallW, wallThickness, rightCenter, southZ);
+    // Lintel — spans the opening above the door, sits between DOOR_OPENING_HEIGHT
+    // and wallHeight. We build it as a separate makeWall variant inline since the
+    // shared helper places centered at wallHeight/2.
+    if (wallHeight > lintelStart) {
+      const lintelH = wallHeight - lintelStart;
+      const lintel = MeshBuilder.CreateBox(
+        "wallS_lintel",
+        { width: opening, height: lintelH, depth: wallThickness },
+        scene,
+      );
+      lintel.position = new Vector3(0, lintelStart + lintelH / 2, southZ);
+      lintel.material = wallMat;
+      lintel.receiveShadows = true;
+      lintel.checkCollisions = true;
+      lintel.parent = root;
+      lintel.doNotSyncBoundingInfo = true;
+      lintel.freezeWorldMatrix();
+      shadow.addShadowCaster(lintel);
+    }
+  } else {
+    makeWall("wallS", size + wallThickness * 2, wallThickness, 0, southZ);
+  }
 
   // Pillars
   const pillars: Mesh[] = [];
@@ -142,6 +223,245 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     }
   }
 
+  // Ceiling — a single thin slab on top of the walls. Not a shadow caster
+  // (would tank perf with no visible gain since the sun shines down through
+  // it onto a mesh nobody sees from above), and receiveShadows off because
+  // the floor below is the only surface that needs them.
+  let ceiling: Mesh | null = null;
+  if (buildCeiling) {
+    ceiling = MeshBuilder.CreateBox(
+      "ceiling",
+      { width: size + wallThickness * 2, height: 0.5, depth: size + wallThickness * 2 },
+      scene,
+    );
+    ceiling.position = new Vector3(0, wallHeight + 0.25, 0);
+    const ceilingMat = new StandardMaterial("ceilingMat", scene);
+    ceilingMat.diffuseColor = opts.paletteCeiling ?? new Color3(0.18, 0.16, 0.14);
+    ceilingMat.specularColor = new Color3(0.04, 0.04, 0.04);
+    ceiling.material = ceilingMat;
+    ceiling.receiveShadows = false;
+    // checkCollisions on so the orbit camera can't pop above the roof at
+    // extreme pitch — same treatment we already use on walls.
+    ceiling.checkCollisions = true;
+    ceiling.parent = root;
+    ceiling.doNotSyncBoundingInfo = true;
+    ceiling.freezeWorldMatrix();
+    ceilingMat.freeze();
+  }
+
+  // Door — the visible plank that fills the opening while locked. Slides up
+  // into the lintel when unlocked. Only built when exitDoor is enabled.
+  let door: Door | null = null;
+  if (buildExitDoor) {
+    const opening = DOOR_OPENING_WIDTH;
+    const doorH = DOOR_OPENING_HEIGHT - 0.2;
+    const doorMesh = MeshBuilder.CreateBox(
+      "doorPlank",
+      { width: opening - 0.1, height: doorH, depth: 0.18 },
+      scene,
+    );
+    const closedY = doorH / 2 + 0.05;
+    doorMesh.position = new Vector3(0, closedY, southZ);
+    const doorMat = new StandardMaterial("doorMat", scene);
+    doorMat.diffuseColor = new Color3(0.32, 0.20, 0.10);
+    doorMat.specularColor = new Color3(0.08, 0.06, 0.04);
+    doorMat.emissiveColor = new Color3(0, 0, 0);
+    doorMesh.material = doorMat;
+    doorMesh.receiveShadows = true;
+    doorMesh.checkCollisions = true;
+    doorMesh.parent = root;
+    doorMesh.doNotSyncBoundingInfo = true;
+    shadow.addShadowCaster(doorMesh);
+
+    // Frame — a thin bright trim around the opening so the door reads even
+    // before unlock. One narrow box per side; merged would be cheaper but
+    // three boxes is already negligible for a single arena.
+    const frameThickness = 0.18;
+    const sideHeight = DOOR_OPENING_HEIGHT;
+    const frameMat = new StandardMaterial("doorFrameMat", scene);
+    frameMat.diffuseColor = new Color3(0.45, 0.36, 0.22);
+    frameMat.emissiveColor = new Color3(0.05, 0.04, 0.02);
+    frameMat.specularColor = new Color3(0.05, 0.05, 0.05);
+    const frameLeft = MeshBuilder.CreateBox(
+      "doorFrameL",
+      { width: frameThickness, height: sideHeight, depth: 0.4 },
+      scene,
+    );
+    frameLeft.position = new Vector3(-opening / 2 - frameThickness / 2, sideHeight / 2, southZ);
+    frameLeft.material = frameMat;
+    frameLeft.parent = root;
+    frameLeft.checkCollisions = true;
+    frameLeft.freezeWorldMatrix();
+    frameLeft.doNotSyncBoundingInfo = true;
+    const frameRight = MeshBuilder.CreateBox(
+      "doorFrameR",
+      { width: frameThickness, height: sideHeight, depth: 0.4 },
+      scene,
+    );
+    frameRight.position = new Vector3(opening / 2 + frameThickness / 2, sideHeight / 2, southZ);
+    frameRight.material = frameMat;
+    frameRight.parent = root;
+    frameRight.checkCollisions = true;
+    frameRight.freezeWorldMatrix();
+    frameRight.doNotSyncBoundingInfo = true;
+    const frameTop = MeshBuilder.CreateBox(
+      "doorFrameT",
+      { width: opening + frameThickness * 2, height: frameThickness, depth: 0.4 },
+      scene,
+    );
+    frameTop.position = new Vector3(0, sideHeight + frameThickness / 2, southZ);
+    frameTop.material = frameMat;
+    frameTop.parent = root;
+    frameTop.freezeWorldMatrix();
+    frameTop.doNotSyncBoundingInfo = true;
+    shadow.addShadowCaster(frameLeft);
+    shadow.addShadowCaster(frameRight);
+    shadow.addShadowCaster(frameTop);
+    frameMat.freeze();
+
+    // Light shaft — a faint warm vertical "beam" inside the doorway, made
+    // visible only when the door unlocks. Single emissive plane, billboarded
+    // so it always reads from the player's POV. Hidden until setLocked(false).
+    const shaft = MeshBuilder.CreatePlane(
+      "doorShaft",
+      { width: opening * 0.85, height: DOOR_OPENING_HEIGHT * 1.1, sideOrientation: Mesh.DOUBLESIDE },
+      scene,
+    );
+    shaft.position = new Vector3(0, DOOR_OPENING_HEIGHT * 0.55, southZ - 0.05);
+    const shaftMat = new StandardMaterial("doorShaftMat", scene);
+    shaftMat.disableLighting = true;
+    shaftMat.emissiveColor = new Color3(1.0, 0.78, 0.35);
+    shaftMat.diffuseColor = new Color3(0, 0, 0);
+    shaftMat.alpha = 0;
+    shaftMat.alphaMode = 1; // ALPHA_ADD
+    shaft.material = shaftMat;
+    shaft.applyFog = false;
+    shaft.isPickable = false;
+    shaft.parent = root;
+    shaft.doNotSyncBoundingInfo = true;
+
+    // Dust mote particle system — drifts upward inside the doorway when open.
+    // Reuse a soft white sprite procedurally so we don't ship a texture file.
+    let dustTex: Texture;
+    {
+      const dt = new DynamicTexture("doorDustTex", { width: 16, height: 16 }, scene, false);
+      const ctx = dt.getContext();
+      const grad = ctx.createRadialGradient(8, 8, 0.5, 8, 8, 7);
+      grad.addColorStop(0, "rgba(255,240,200,1)");
+      grad.addColorStop(1, "rgba(255,240,200,0)");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 16, 16);
+      dt.update();
+      dt.hasAlpha = true;
+      dustTex = dt;
+    }
+    const dust = new ParticleSystem("doorDust", 50, scene);
+    dust.particleTexture = dustTex;
+    dust.emitter = new Vector3(0, 0.2, southZ);
+    dust.minEmitBox = new Vector3(-opening / 2 + 0.4, 0, -0.1);
+    dust.maxEmitBox = new Vector3(opening / 2 - 0.4, 0.4, 0.2);
+    dust.color1 = new Color4(1.0, 0.85, 0.55, 0.7);
+    dust.color2 = new Color4(0.95, 0.75, 0.45, 0.5);
+    dust.colorDead = new Color4(0.9, 0.7, 0.4, 0);
+    dust.minSize = 0.04;
+    dust.maxSize = 0.10;
+    dust.minLifeTime = 1.8;
+    dust.maxLifeTime = 3.4;
+    dust.emitRate = 0; // off until door unlocks
+    dust.gravity = new Vector3(0, 0.4, 0);
+    dust.direction1 = new Vector3(-0.1, 0.2, -0.05);
+    dust.direction2 = new Vector3(0.1, 0.5, 0.05);
+    dust.minEmitPower = 0.05;
+    dust.maxEmitPower = 0.2;
+    dust.blendMode = ParticleSystem.BLENDMODE_ADD;
+    dust.start();
+
+    // Bundle into one container so we can add controls + share state.
+    let locked = true;
+    let openProgress = 0; // 0 = closed, 1 = fully retracted
+    let shaftTargetAlpha = 0;
+    const openTargetY = closedY + doorH + 0.2; // slid up into the lintel
+    door = {
+      mesh: doorMesh,
+      frame: frameTop,
+      zPlane: southZ,
+      xMin: -opening / 2,
+      xMax: opening / 2,
+      setLocked(b: boolean) {
+        locked = b;
+        if (!b) {
+          // Glowing rune effect — emissive ramps up while the door slides open.
+          doorMat.emissiveColor = new Color3(0.85, 0.55, 0.20);
+          // Beam fades in to ~0.65 over the door slide; dust starts emitting.
+          shaftTargetAlpha = 0.65;
+          dust.emitRate = 18;
+        } else {
+          doorMat.emissiveColor = new Color3(0, 0, 0);
+          openProgress = 0;
+          doorMesh.position.y = closedY;
+          doorMesh.checkCollisions = true;
+          shaftTargetAlpha = 0;
+          dust.emitRate = 0;
+        }
+      },
+      isLocked() { return locked; },
+      tick(dt: number) {
+        if (!locked && openProgress < 1) {
+          openProgress = Math.min(1, openProgress + dt * 1.2);
+          // Ease-out so the slide settles softly into the lintel.
+          const eased = 1 - (1 - openProgress) * (1 - openProgress);
+          doorMesh.position.y = closedY + (openTargetY - closedY) * eased;
+          if (openProgress >= 0.6) doorMesh.checkCollisions = false;
+        }
+        // Lerp shaft alpha — fades in/out over ~0.5s, with a slight breathing
+        // pulse on top so the light feels alive instead of static.
+        const breath = 0.85 + 0.15 * Math.sin(performance.now() * 0.003);
+        const target = shaftTargetAlpha * breath;
+        shaftMat.alpha += (target - shaftMat.alpha) * Math.min(1, dt * 4);
+      },
+    };
+  }
+
+  // Wall sconces — emissive billboards near the top of each side wall to give
+  // the enclosed rooms a warm interior glow without adding real lights (which
+  // would force a shadow-map rebuild + cost a draw call). Pure additive
+  // sprites; they don't illuminate anything but they read as torches.
+  if (buildCeiling) {
+    const sconceMat = new StandardMaterial("sconceMat", scene);
+    sconceMat.disableLighting = true;
+    sconceMat.emissiveColor = new Color3(1.0, 0.55, 0.18);
+    sconceMat.diffuseColor = new Color3(0, 0, 0);
+    sconceMat.alpha = 0.85;
+    sconceMat.alphaMode = 1; // ALPHA_ADD
+    const sconceY = wallHeight - 1.6;
+    // 6 sconces: 2 on each side wall (E/W), 2 on the north wall.
+    type Sconce = { x: number; z: number };
+    const placements: Sconce[] = [
+      { x: half - 0.6, z: -half / 2 + 2 },
+      { x: half - 0.6, z: half / 2 - 2 },
+      { x: -half + 0.6, z: -half / 2 + 2 },
+      { x: -half + 0.6, z: half / 2 - 2 },
+      { x: -half / 3, z: half - 0.6 },
+      { x: half / 3, z: half - 0.6 },
+    ];
+    for (let i = 0; i < placements.length; i++) {
+      const p = placements[i];
+      const sconce = MeshBuilder.CreatePlane(
+        `sconce_${i}`,
+        { size: 0.9, sideOrientation: Mesh.DOUBLESIDE },
+        scene,
+      );
+      sconce.position.set(p.x, sconceY, p.z);
+      sconce.material = sconceMat;
+      sconce.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      sconce.applyFog = false;
+      sconce.isPickable = false;
+      sconce.parent = root;
+      sconce.doNotSyncBoundingInfo = true;
+    }
+    sconceMat.freeze();
+  }
+
   // Environment decor (grass/rocks/mushrooms/sky/mountains/motes) — placed around
   // the combat area and disposed with the arena. Uses instanced meshes + frozen
   // world matrices internally for minimal draw-call overhead.
@@ -151,6 +471,7 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     pillars,
     opts.envPalette ?? VERDANT_ENV_PALETTE,
     (opts.rngSeed ?? 1337) ^ 0x7f,
+    { wallHeight, enclosed: buildCeiling },
   );
   env.root.parent = root;
 
@@ -168,6 +489,9 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     bounds: { minX: -half + 0.5, maxX: half - 0.5, minZ: -half + 0.5, maxZ: half - 0.5 },
     pillars,
     env,
+    ceiling,
+    door,
+    doorPass: { active: false, xMin: door ? door.xMin : 0, xMax: door ? door.xMax : 0 },
     dispose() {
       env.dispose();
       // Dispose all descendants then root

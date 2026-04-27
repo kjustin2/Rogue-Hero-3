@@ -8,24 +8,34 @@ import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { getQuality } from "../engine/Quality";
 
-type DecalKind = "blood" | "scorch" | "crack";
+type DecalKind = "blood" | "scorch" | "crack" | "frost";
 
-interface Decal {
+/** One slot in the pre-allocated decal pool. Reused — never disposed mid-run. */
+interface DecalSlot {
   mesh: Mesh;
   mat: StandardMaterial;
   ttl: number;
   initialTtl: number;
   /** Total life in seconds. */
   life: number;
+  active: boolean;
+  /** Insertion order — used for FIFO eviction when all slots are busy. */
+  spawnSeq: number;
 }
 
 /**
- * Capped pool of ground decals — blood splats on kills + scorch rings after
- * Caster AoEs and Crash blasts. Cap enforced via FIFO eviction so we can drop
- * the oldest decal when we hit the limit. Fade over `life` seconds and dispose.
+ * Pooled ground decals — blood splats on kills + scorch rings after Caster
+ * AoEs + Crash scorch/crack + Cold-Crash frost.
  *
- * On low quality the decalCap is 0, so `spawn()` becomes a no-op — no meshes
- * are ever created. Medium 16 / high 28.
+ * Pool sizing: HIGH_TIER_CAP slots pre-allocated up front so heavy combat
+ * doesn't pay for `MeshBuilder.CreateGround` + `new StandardMaterial` per hit.
+ * Slots are square 1m planes at construction; each `spawn()` re-skins one with
+ * the right texture/colors and rescales it via `mesh.scaling`. When all slots
+ * are active and a new spawn is requested, the slot with the lowest spawnSeq
+ * (= earliest spawn) is recycled — same FIFO behavior as the old shift-based
+ * design, but without disposal.
+ *
+ * On low quality `decalCap === 0` and `spawn()` is a no-op.
  *
  * Textures are built once at construction and shared across all decals of that
  * kind — one DynamicTexture per decal kind.
@@ -34,94 +44,201 @@ export class Decals {
   private bloodTex: Texture;
   private scorchTex: Texture;
   private crackTex: Texture;
-  private active: Decal[] = [];
+  private frostTex: Texture;
+  /** Maximum decals we'll ever pre-allocate (matches HIGH tier `decalCap`). */
+  private readonly POOL_SIZE = 28;
+  private pool: DecalSlot[] = [];
+  private nextSeq = 0;
 
   constructor(private scene: Scene) {
     this.bloodTex = buildBloodTex(scene);
     this.scorchTex = buildScorchTex(scene);
     this.crackTex = buildCrackTex(scene);
+    this.frostTex = buildFrostTex(scene);
+    for (let i = 0; i < this.POOL_SIZE; i++) this.pool.push(this.allocate(i));
+  }
+
+  private allocate(idx: number): DecalSlot {
+    const mesh = MeshBuilder.CreateGround(
+      `decal_${idx}`,
+      { width: 1, height: 1, subdivisions: 1 },
+      this.scene,
+    );
+    mesh.isPickable = false;
+    mesh.doNotSyncBoundingInfo = true;
+    mesh.setEnabled(false);
+    const mat = new StandardMaterial(`decal_${idx}_mat`, this.scene);
+    mat.disableLighting = true;
+    mat.specularColor = new Color3(0, 0, 0);
+    mesh.material = mat;
+    return {
+      mesh, mat,
+      ttl: 0, initialTtl: 0, life: 0,
+      active: false, spawnSeq: 0,
+    };
+  }
+
+  private acquire(): DecalSlot | null {
+    // Prefer a free slot.
+    for (const s of this.pool) if (!s.active) return s;
+    // All busy — evict the slot with the smallest spawnSeq (oldest spawn).
+    let oldest = this.pool[0];
+    for (const s of this.pool) if (s.spawnSeq < oldest.spawnSeq) oldest = s;
+    return oldest;
   }
 
   /**
    * Spawn a decal at a world position. `size` in meters controls the decal's
-   * footprint. Returns true if spawned, false if filtered by quality / cap.
+   * footprint. Returns true if spawned, false if filtered by quality.
    */
   spawn(kind: DecalKind, pos: Vector3, size = 1.2): boolean {
     const cap = getQuality().decalCap;
     if (cap <= 0) return false;
 
-    // FIFO eviction — oldest (front of array) gets disposed when we'd overflow.
-    while (this.active.length >= cap) {
-      const oldest = this.active.shift();
-      if (oldest) { oldest.mesh.dispose(); oldest.mat.dispose(); }
+    // Honor the dynamic cap — count active decals and skip if we're already at
+    // the per-tier limit (medium 16, high 28). When a slot must be recycled,
+    // we still cap by oldest-eviction semantics.
+    let activeCount = 0;
+    for (const s of this.pool) if (s.active) activeCount++;
+    let slot: DecalSlot;
+    if (activeCount >= cap) {
+      // Force-evict oldest active to honor the cap.
+      let oldest = this.pool[0];
+      for (const s of this.pool) {
+        if (s.active && s.spawnSeq < oldest.spawnSeq) oldest = s;
+      }
+      slot = oldest;
+    } else {
+      const s = this.acquire();
+      if (!s) return false;
+      slot = s;
     }
 
     const tex = kind === "blood" ? this.bloodTex
               : kind === "scorch" ? this.scorchTex
-              : this.crackTex;
-    const lifetime = kind === "blood" ? 18 : kind === "scorch" ? 14 : 20;
-    const mesh = MeshBuilder.CreateGround(
-      `decal_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      { width: size, height: size, subdivisions: 1 },
-      this.scene,
-    );
-    // Decals sit just above the floor to avoid Z-fighting with the arena ground.
-    mesh.position.set(pos.x, 0.015 + Math.random() * 0.004, pos.z);
-    mesh.rotation.y = Math.random() * Math.PI * 2;
-    mesh.isPickable = false;
-    mesh.doNotSyncBoundingInfo = true;
-    const mat = new StandardMaterial(`${mesh.name}_mat`, this.scene);
-    mat.diffuseTexture = tex;
-    mat.opacityTexture = tex; // use the texture's alpha for the cut-out shape
-    // Use unlit + alpha blend so shadow/fog don't smear the decal's outline.
-    mat.disableLighting = true;
-    mat.specularColor = new Color3(0, 0, 0);
+              : kind === "crack" ? this.crackTex
+              : this.frostTex;
+    const lifetime = kind === "blood" ? 18
+                   : kind === "scorch" ? 14
+                   : kind === "crack" ? 20
+                   : 8;
+    slot.mesh.scaling.x = size;
+    slot.mesh.scaling.z = size;
+    slot.mesh.position.set(pos.x, 0.015 + Math.random() * 0.004, pos.z);
+    slot.mesh.rotation.y = Math.random() * Math.PI * 2;
+    slot.mesh.visibility = 1;
+    // Re-skin the shared material per kind. We mutate the slot's own material
+    // (one mat per slot) instead of swapping — avoids a mat handoff.
+    slot.mat.diffuseTexture = tex;
+    slot.mat.opacityTexture = tex;
     if (kind === "blood") {
-      mat.diffuseColor = new Color3(0.45, 0.05, 0.05);
+      slot.mat.diffuseColor.set(0.45, 0.05, 0.05);
+      slot.mat.emissiveColor.set(0, 0, 0);
     } else if (kind === "scorch") {
-      mat.diffuseColor = new Color3(0.12, 0.10, 0.10);
-      mat.emissiveColor = new Color3(0.35, 0.15, 0.05); // cooling-embers glow
+      slot.mat.diffuseColor.set(0.12, 0.10, 0.10);
+      slot.mat.emissiveColor.set(0.35, 0.15, 0.05);
+    } else if (kind === "crack") {
+      slot.mat.diffuseColor.set(0.06, 0.05, 0.04);
+      slot.mat.emissiveColor.set(0.45, 0.18, 0.06);
     } else {
-      // crack — dark with a faint orange glow leaking from the split earth.
-      mat.diffuseColor = new Color3(0.06, 0.05, 0.04);
-      mat.emissiveColor = new Color3(0.45, 0.18, 0.06);
+      slot.mat.diffuseColor.set(0.85, 0.95, 1.0);
+      slot.mat.emissiveColor.set(0.35, 0.55, 0.85);
     }
-    mesh.material = mat;
-    mesh.freezeWorldMatrix();
-
-    this.active.push({ mesh, mat, ttl: lifetime, initialTtl: lifetime, life: lifetime });
+    slot.ttl = lifetime;
+    slot.initialTtl = lifetime;
+    slot.life = lifetime;
+    slot.active = true;
+    slot.spawnSeq = this.nextSeq++;
+    slot.mesh.setEnabled(true);
     return true;
   }
 
   update(dt: number): void {
-    for (let i = this.active.length - 1; i >= 0; i--) {
-      const d = this.active[i];
-      d.ttl -= dt;
-      if (d.ttl <= 0) {
-        d.mesh.dispose();
-        d.mat.dispose();
-        this.active.splice(i, 1);
+    for (const s of this.pool) {
+      if (!s.active) continue;
+      s.ttl -= dt;
+      if (s.ttl <= 0) {
+        s.active = false;
+        s.mesh.setEnabled(false);
         continue;
       }
       // Fade in the last 4s to avoid pop-out.
-      if (d.ttl < 4) {
-        d.mesh.visibility = d.ttl / 4;
+      if (s.ttl < 4) {
+        s.mesh.visibility = s.ttl / 4;
       }
     }
   }
 
-  /** Drop all active decals — for in-place run restart. */
+  /** Hide all active decals — for in-place run restart. Pool slots persist. */
   reset(): void {
-    for (const d of this.active) { d.mesh.dispose(); d.mat.dispose(); }
-    this.active.length = 0;
+    for (const s of this.pool) {
+      s.active = false;
+      s.ttl = 0;
+      s.mesh.setEnabled(false);
+    }
+    this.nextSeq = 0;
   }
 
   dispose(): void {
-    this.reset();
+    for (const s of this.pool) { s.mesh.dispose(); s.mat.dispose(); }
+    this.pool.length = 0;
     this.bloodTex.dispose();
     this.scorchTex.dispose();
     this.crackTex.dispose();
+    this.frostTex.dispose();
   }
+}
+
+/**
+ * Procedural frost burst — radial ice shards on a pale halo. Sells the
+ * cold-crash freeze as a literal ground-frost ring under the player.
+ */
+function buildFrostTex(scene: Scene): Texture {
+  const size = 128;
+  const dt = new DynamicTexture("decalFrostTex", { width: size, height: size }, scene, false);
+  const ctx = dt.getContext();
+  ctx.clearRect(0, 0, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  // Soft icy halo — bright center fading to transparent.
+  const halo = ctx.createRadialGradient(cx, cy, 1, cx, cy, size * 0.5);
+  halo.addColorStop(0, "rgba(220,240,255,0.85)");
+  halo.addColorStop(0.5, "rgba(150,200,240,0.45)");
+  halo.addColorStop(1, "rgba(80,140,200,0)");
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, size, size);
+  // Thin ice shards radiating out — bright cyan strokes.
+  const rays = 14;
+  for (let i = 0; i < rays; i++) {
+    const baseAngle = (i / rays) * Math.PI * 2 + Math.random() * 0.2;
+    const len = size * (0.32 + Math.random() * 0.18);
+    ctx.strokeStyle = `rgba(220,240,255,${0.55 + Math.random() * 0.3})`;
+    ctx.lineWidth = 1.2 + Math.random() * 1.4;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(baseAngle) * len, cy + Math.sin(baseAngle) * len);
+    ctx.stroke();
+    // Branch — feather barb halfway out.
+    if (Math.random() < 0.7) {
+      const midR = len * 0.55;
+      const mx = cx + Math.cos(baseAngle) * midR;
+      const my = cy + Math.sin(baseAngle) * midR;
+      const branchA1 = baseAngle + 0.5 + Math.random() * 0.3;
+      const branchA2 = baseAngle - 0.5 - Math.random() * 0.3;
+      const blen = len * (0.18 + Math.random() * 0.12);
+      ctx.lineWidth = 0.9;
+      ctx.strokeStyle = "rgba(220,240,255,0.6)";
+      ctx.beginPath();
+      ctx.moveTo(mx, my);
+      ctx.lineTo(mx + Math.cos(branchA1) * blen, my + Math.sin(branchA1) * blen);
+      ctx.moveTo(mx, my);
+      ctx.lineTo(mx + Math.cos(branchA2) * blen, my + Math.sin(branchA2) * blen);
+      ctx.stroke();
+    }
+  }
+  dt.hasAlpha = true;
+  dt.update();
+  return dt;
 }
 
 /**

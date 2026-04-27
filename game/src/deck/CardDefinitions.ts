@@ -16,6 +16,9 @@ export interface CardDef {
   type: CardType;
   rarity: "common" | "uncommon" | "rare";
   desc: string;
+  /** Single glyph drawn prominently on the card slot — gives each card a
+   *  distinct silhouette read at a glance, independent of name length. */
+  glyph: string;
 }
 
 export const CardDefinitions: Record<string, CardDef> = {
@@ -29,6 +32,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     type: "melee",
     rarity: "common",
     desc: "Wide arc swing in front of you. +6 Tempo.",
+    glyph: "⚔",
   },
   bolt: {
     id: "bolt",
@@ -40,6 +44,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     type: "projectile",
     rarity: "common",
     desc: "Fire a fast bolt at the cursor. First enemy hit takes damage. +4 Tempo.",
+    glyph: "➶",
   },
   dashstrike: {
     id: "dashstrike",
@@ -51,6 +56,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     type: "dash",
     rarity: "common",
     desc: "Dash forward 5m, damaging enemies you pass through. +8 Tempo.",
+    glyph: "↯",
   },
 };
 

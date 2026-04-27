@@ -26,7 +26,16 @@ interface Sample {
 }
 
 export class WeaponTrail {
+  /**
+   * Pooled sample slots — `samples[]` is a windowed view into this fixed-size
+   * array, so `tick()` doesn't allocate Sample objects or Vector3 instances on
+   * every frame. We rotate the head pointer instead of `.shift()`-ing.
+   */
+  private samplePool: Sample[];
   private samples: Sample[] = [];
+  /** Pre-allocated ribbon path arrays — reused every rebuild() in-place. */
+  private topPath: Vector3[];
+  private botPath: Vector3[];
   private ribbon: Mesh | null = null;
   private mat: StandardMaterial;
   private scene: Scene;
@@ -42,10 +51,23 @@ export class WeaponTrail {
     this.mat.backFaceCulling = false;
     this.mat.alpha = 0.85;
     this.mat.alphaMode = 2; // BABYLON.Engine.ALPHA_COMBINE
+    // Pre-allocate sample + path pools so combat frames stay alloc-free.
+    this.samplePool = new Array(SAMPLE_CAP);
+    for (let i = 0; i < SAMPLE_CAP; i++) {
+      this.samplePool[i] = { p: new Vector3(), t: 0 };
+    }
+    this.topPath = new Array(SAMPLE_CAP);
+    this.botPath = new Array(SAMPLE_CAP);
+    for (let i = 0; i < SAMPLE_CAP; i++) {
+      this.topPath[i] = new Vector3();
+      this.botPath[i] = new Vector3();
+    }
   }
 
   /** Tempo-driven intensity 0..1.5 — modulates trail alpha + thickness in rebuild. */
   private intensity = 1.0;
+  /** Cursor into samplePool for the next sample we're about to overwrite. */
+  private poolCursor = 0;
 
   /**
    * Call once per frame with the current sword-tip world position. `active`
@@ -60,7 +82,12 @@ export class WeaponTrail {
     this.intensity = intensity;
     const now = performance.now();
     if (active) {
-      this.samples.push({ p: tipWorld.clone(), t: now });
+      // Acquire the next pool slot and overwrite in place.
+      const slot = this.samplePool[this.poolCursor];
+      this.poolCursor = (this.poolCursor + 1) % SAMPLE_CAP;
+      slot.p.copyFrom(tipWorld);
+      slot.t = now;
+      this.samples.push(slot);
       if (this.samples.length > SAMPLE_CAP) this.samples.shift();
     }
     // Retire samples older than TTL so the trail fades after the swing ends.
@@ -76,11 +103,12 @@ export class WeaponTrail {
       if (this.ribbon) this.ribbon.isVisible = false;
       return;
     }
-    // Build two parallel paths (top + bottom), always padded to SAMPLE_CAP so
-    // Babylon's in-place `instance` update path keeps working — it requires the
-    // same point count as the original ribbon.
-    const top: Vector3[] = new Array(SAMPLE_CAP);
-    const bot: Vector3[] = new Array(SAMPLE_CAP);
+    // Reuse the pre-allocated topPath/botPath arrays — Babylon's in-place
+    // `instance` update path requires the same point count as the original
+    // ribbon (SAMPLE_CAP), so we always pass the full-length arrays even when
+    // fewer real samples are recorded (older slots collapse onto the oldest).
+    const top = this.topPath;
+    const bot = this.botPath;
     const oldest = this.samples[0];
     const pad = SAMPLE_CAP - n;
     for (let i = 0; i < SAMPLE_CAP; i++) {
@@ -90,8 +118,8 @@ export class WeaponTrail {
       // Intensity widens the trail at high tempo, thins it at low.
       const thickness = (1 - age) * WIDTH_TOP * this.intensity;
       const bottomT = (1 - age) * WIDTH_BOTTOM * this.intensity;
-      top[i] = new Vector3(s.p.x, s.p.y + thickness * 0.5, s.p.z);
-      bot[i] = new Vector3(s.p.x, s.p.y - bottomT, s.p.z);
+      top[i].set(s.p.x, s.p.y + thickness * 0.5, s.p.z);
+      bot[i].set(s.p.x, s.p.y - bottomT, s.p.z);
     }
 
     if (!this.ribbon) {
@@ -117,6 +145,7 @@ export class WeaponTrail {
   /** Wipe the buffer — for in-place run restart. */
   reset(): void {
     this.samples.length = 0;
+    this.poolCursor = 0;
     if (this.ribbon) this.ribbon.isVisible = false;
   }
 

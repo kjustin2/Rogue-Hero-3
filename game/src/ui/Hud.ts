@@ -10,6 +10,7 @@ import { DeckManager } from "../deck/DeckManager";
 import { CardType } from "../deck/CardDefinitions";
 import { events } from "../engine/EventBus";
 import { dampCoeff } from "../util/Smoothing";
+import { ItemDefinitions } from "../items/ItemDefinitions";
 
 interface Bar {
   bg: Rectangle;
@@ -21,9 +22,11 @@ interface Bar {
 interface HandSlot {
   bg: Rectangle;
   hotkey: TextBlock;
+  glyph: TextBlock;
   name: TextBlock;
   cost: TextBlock;
   costLabel: TextBlock;
+  dmg: TextBlock;
   type: TextBlock;
   desc: TextBlock;
   chevron: TextBlock;
@@ -89,7 +92,24 @@ export class Hud {
   private wipeAlphaSpeed = 0;
 
   // Relic-equip feedback: expanding ring + banner + persistent badge stack.
-  private relicBadges: { bg: Rectangle; label: TextBlock; popT: number }[] = [];
+  // Each badge carries its source item id so the click handler can look up
+  // the full description and rarity from ItemDefinitions for the popover.
+  private relicBadges: {
+    bg: Rectangle;
+    label: TextBlock;
+    popT: number;
+    itemId: string;
+    name: string;
+    desc: string;
+    rarity: string;
+    color: string;
+  }[] = [];
+  // Singleton tooltip — built on demand, reused across clicks. Clicking another
+  // badge re-targets it; clicking outside or its close X dismisses it.
+  private relicTooltip: Rectangle | null = null;
+  private relicTooltipName: TextBlock | null = null;
+  private relicTooltipRarity: TextBlock | null = null;
+  private relicTooltipDesc: TextBlock | null = null;
   private relicRing: Rectangle;
   private relicRingTtl = 0;
   private relicBanner: TextBlock;
@@ -144,9 +164,28 @@ export class Hud {
     this.roomLabel.fontWeight = "bold";
 
     // ---- Boss HP bar (top-center, below room label) ----
-    this.bossBar = this.makeBar("boss", 0, 64, 520, 22, "#3a0a0aef", "#cc2200", "center");
-    this.bossLabel = this.makeText("", 0, 60, "#ffeecc", 16, "center", "top");
+    // Tall enough to host the name centered inside the bar.
+    this.bossBar = this.makeBar("boss", 0, 64, 540, 28, "#3a0a0aef", "#cc2200", "center");
+    // Boss name sits INSIDE the bar, centered both axes — the previous top
+    // anchor floated the label above the bar's top edge.
+    this.bossLabel = new TextBlock("bossLabel");
+    this.bossLabel.text = "";
+    this.bossLabel.color = "#ffeecc";
+    this.bossLabel.fontSize = 16;
+    this.bossLabel.fontFamily = "monospace";
     this.bossLabel.fontWeight = "bold";
+    this.bossLabel.widthInPixels = 520;
+    this.bossLabel.heightInPixels = 24;
+    this.bossLabel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    this.bossLabel.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    this.bossLabel.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    this.bossLabel.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    this.bossLabel.shadowColor = "#000";
+    this.bossLabel.shadowOffsetX = 1;
+    this.bossLabel.shadowOffsetY = 1;
+    this.bossLabel.outlineColor = "#000";
+    this.bossLabel.outlineWidth = 3;
+    this.bossBar.bg.addControl(this.bossLabel);
     // Phase tick — a short vertical bar at the 50% mark inside the boss bar.
     this.bossPhaseTick = new Rectangle("bossPhaseTick");
     this.bossPhaseTick.widthInPixels = 3;
@@ -159,21 +198,26 @@ export class Hud {
     // Positioned inside the boss bar background (centered bar → half-width offset).
     this.bossPhaseTick.leftInPixels = this.bossBar.width / 2 - 1.5;
     this.bossBar.bg.addControl(this.bossPhaseTick);
+    this.bossPhaseTick.zIndex = -1; // sits behind the boss name text
+    this.bossLabel.zIndex = 2;       // ensure name renders above tick + fill
     this.setBossVisible(false);
 
     // ---- Center banner (room cleared / defeat / victory) ----
     this.banner = new TextBlock("banner");
     this.banner.text = "";
     this.banner.color = "#ffe066";
-    this.banner.fontSize = 56;
+    this.banner.fontSize = 60;
     this.banner.fontFamily = "monospace";
     this.banner.fontWeight = "bold";
     this.banner.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
     this.banner.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
     this.banner.topInPixels = -120;
     this.banner.shadowColor = "#000";
-    this.banner.shadowOffsetX = 2;
-    this.banner.shadowOffsetY = 2;
+    this.banner.shadowOffsetX = 3;
+    this.banner.shadowOffsetY = 3;
+    this.banner.shadowBlur = 0;
+    this.banner.outlineColor = "#000";
+    this.banner.outlineWidth = 6;
     this.banner.isVisible = false;
     this.ui.addControl(this.banner);
 
@@ -276,8 +320,8 @@ export class Hud {
     events.on("KILL", () => this.registerKill());
 
     // Relic equipped: banner "RELIC ACQUIRED: {name}" + expanding gold ring + persistent badge.
-    events.on<{ id: string; name: string; color: string }>("RELIC_EQUIPPED", ({ name, color }) => {
-      this.flashRelicPickup(name, color);
+    events.on<{ id: string; name: string; color: string }>("RELIC_EQUIPPED", ({ id, name, color }) => {
+      this.flashRelicPickup(id, name, color);
     });
 
     // CARD_FAIL — player tried to cast something they couldn't afford. Flash
@@ -309,6 +353,9 @@ export class Hud {
     this.wipeLabel.shadowColor = "#000";
     this.wipeLabel.shadowOffsetX = 3;
     this.wipeLabel.shadowOffsetY = 3;
+    this.wipeLabel.shadowBlur = 0;
+    this.wipeLabel.outlineColor = "#000";
+    this.wipeLabel.outlineWidth = 5;
     this.wipe.addControl(this.wipeLabel);
 
     // ---- Relic acquisition banner (transient; sits above the room banner) ----
@@ -324,6 +371,9 @@ export class Hud {
     this.relicBanner.shadowColor = "#000";
     this.relicBanner.shadowOffsetX = 2;
     this.relicBanner.shadowOffsetY = 2;
+    this.relicBanner.shadowBlur = 0;
+    this.relicBanner.outlineColor = "#000";
+    this.relicBanner.outlineWidth = 4;
     this.relicBanner.isVisible = false;
     this.ui.addControl(this.relicBanner);
 
@@ -370,8 +420,9 @@ export class Hud {
     this.comboLabel.shadowColor = "#000";
     this.comboLabel.shadowOffsetX = 2;
     this.comboLabel.shadowOffsetY = 2;
-    this.comboLabel.outlineColor = "#2a1a00";
-    this.comboLabel.outlineWidth = 2;
+    this.comboLabel.shadowBlur = 0;
+    this.comboLabel.outlineColor = "#000";
+    this.comboLabel.outlineWidth = 4;
     this.comboLabel.isVisible = false;
     this.ui.addControl(this.comboLabel);
   }
@@ -403,6 +454,32 @@ export class Hud {
     });
   }
 
+  /**
+   * Brief full-screen flash — used by the door-walk transition to mask the
+   * arena swap. Reuses the wipe overlay rectangle so we don't add another
+   * layer of GUI controls, restoring its black color when the flash fades.
+   * `peakAlpha` defaults to 0.85; `durationMs` covers the full in→out cycle.
+   */
+  playFlash(color: string = "#ffffff", durationMs: number = 150, peakAlpha: number = 0.85): Promise<void> {
+    const halfMs = Math.max(20, durationMs / 2);
+    const halfSec = halfMs / 1000;
+    const originalBg = this.wipe.background;
+    this.wipe.background = color;
+    this.wipeLabel.text = "";
+    this.wipeTargetAlpha = peakAlpha;
+    this.wipeAlphaSpeed = peakAlpha / Math.max(0.01, halfSec);
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        this.wipeTargetAlpha = 0;
+        this.wipeAlphaSpeed = peakAlpha / Math.max(0.01, halfSec);
+        setTimeout(() => {
+          this.wipe.background = originalBg;
+          resolve();
+        }, halfMs);
+      }, halfMs);
+    });
+  }
+
   /** Flash the boss HP bar yellow — called via BOSS_PHASE event hookup in main.ts. */
   flashBossPhase(): void {
     this.bossFlashTimer = 0.6;
@@ -413,15 +490,20 @@ export class Hud {
     this.metronomeDot.isVisible = active;
   }
 
-  private flashRelicPickup(name: string, color: string): void {
+  private flashRelicPickup(id: string, name: string, color: string): void {
     this.relicBanner.text = `RELIC ACQUIRED — ${name.toUpperCase()}`;
     this.relicBanner.color = color;
     this.relicBanner.isVisible = true;
     this.relicBannerTtl = 1.2;
     this.relicRing.isVisible = true;
     this.relicRingTtl = 0.55;
-    // Append a persistent badge in the top-right stack. Clicks are not handled;
-    // these are purely a reminder of what's equipped.
+
+    const def = ItemDefinitions[id];
+    const desc = def?.desc ?? name;
+    const rarity = def?.rarity ?? "common";
+
+    // Append a persistent badge in the top-right stack. Each badge is now
+    // clickable — opens a tooltip with the full description.
     const badgeIdx = this.relicBadges.length;
     const bg = new Rectangle(`relicBadge_${badgeIdx}`);
     bg.widthInPixels = 210;
@@ -434,9 +516,12 @@ export class Hud {
     bg.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
     bg.leftInPixels = -24;
     bg.topInPixels = 56 + badgeIdx * 36;
+    bg.isPointerBlocker = true;
+    bg.hoverCursor = "pointer";
     this.ui.addControl(bg);
     const label = new TextBlock(`relicBadgeLabel_${badgeIdx}`);
-    label.text = `◈ ${name}`;
+    // Tiny "?" hint in the corner so players know it's interactive.
+    label.text = `◈ ${name}    [?]`;
     label.color = color;
     label.fontSize = 14;
     label.fontFamily = "monospace";
@@ -445,12 +530,172 @@ export class Hud {
     label.shadowOffsetX = 1;
     label.shadowOffsetY = 1;
     bg.addControl(label);
+
+    // Hover state — bumps thickness + brightens background so the click target
+    // is unmistakable.
+    bg.onPointerEnterObservable.add(() => {
+      bg.thickness = 3;
+      bg.background = "#1a1a26ee";
+    });
+    bg.onPointerOutObservable.add(() => {
+      bg.thickness = 2;
+      bg.background = "#0b0b12d8";
+    });
+    bg.onPointerClickObservable.add(() => {
+      this.toggleRelicTooltip(id);
+    });
+
     // Pop-in: start at scale 0.2 / alpha 0, driven toward target over ~0.32s
     // with a light overshoot for the "trophy unlocked" pop.
     bg.scaleX = 0.2;
     bg.scaleY = 0.2;
     bg.alpha = 0;
-    this.relicBadges.push({ bg, label, popT: 0 });
+    this.relicBadges.push({ bg, label, popT: 0, itemId: id, name, desc, rarity, color });
+  }
+
+  /**
+   * Build the tooltip on first call, then either show with this badge's
+   * content or hide if it's already showing the same item.
+   */
+  private toggleRelicTooltip(id: string): void {
+    const badge = this.relicBadges.find((b) => b.itemId === id);
+    if (!badge) return;
+    if (!this.relicTooltip) this.buildRelicTooltip();
+    const tip = this.relicTooltip!;
+    const sameItem = tip.isVisible && this.relicTooltipName?.text === badge.name;
+    if (sameItem) {
+      this.hideRelicTooltip();
+      return;
+    }
+    this.relicTooltipName!.text = badge.name;
+    this.relicTooltipName!.color = badge.color;
+    this.relicTooltipRarity!.text = `${badge.rarity.toUpperCase()} RELIC`;
+    this.relicTooltipRarity!.color = badge.color;
+    this.relicTooltipDesc!.text = badge.desc;
+    tip.color = badge.color;
+    // Position next to the badge stack — fixed left of the right edge so the
+    // popover sits inside the play area, not off the screen.
+    tip.leftInPixels = -244;
+    tip.topInPixels = badge.bg.topInPixels;
+    tip.isVisible = true;
+  }
+
+  private buildRelicTooltip(): void {
+    const tip = new Rectangle("relicTooltip");
+    tip.widthInPixels = 320;
+    tip.heightInPixels = 140;
+    tip.background = "#0a0a14f0";
+    tip.color = "#ffd060";
+    tip.thickness = 2;
+    tip.cornerRadius = 10;
+    tip.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    tip.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    tip.isPointerBlocker = true;
+    tip.shadowColor = "#000";
+    tip.shadowBlur = 8;
+    tip.shadowOffsetX = 2;
+    tip.shadowOffsetY = 2;
+    tip.zIndex = 50;
+    tip.isVisible = false;
+    this.ui.addControl(tip);
+
+    const name = new TextBlock("relicTooltipName");
+    name.text = "";
+    name.color = "#ffd060";
+    name.fontSize = 18;
+    name.fontFamily = "monospace";
+    name.fontWeight = "bold";
+    name.widthInPixels = 290;
+    name.heightInPixels = 24;
+    name.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    name.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    name.leftInPixels = 12;
+    name.topInPixels = 10;
+    name.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    name.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    tip.addControl(name);
+
+    const rarity = new TextBlock("relicTooltipRarity");
+    rarity.text = "";
+    rarity.color = "#ffd060";
+    rarity.fontSize = 11;
+    rarity.fontFamily = "monospace";
+    rarity.fontWeight = "bold";
+    rarity.widthInPixels = 290;
+    rarity.heightInPixels = 16;
+    rarity.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    rarity.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    rarity.leftInPixels = 12;
+    rarity.topInPixels = 36;
+    rarity.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    rarity.alpha = 0.7;
+    tip.addControl(rarity);
+
+    const desc = new TextBlock("relicTooltipDesc");
+    desc.text = "";
+    desc.color = "#f0f0f0";
+    desc.fontSize = 13;
+    desc.fontFamily = "monospace";
+    desc.textWrapping = true;
+    desc.widthInPixels = 296;
+    desc.heightInPixels = 70;
+    desc.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    desc.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    desc.leftInPixels = 12;
+    desc.topInPixels = 58;
+    desc.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    desc.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    desc.lineSpacing = "3px";
+    tip.addControl(desc);
+
+    // Close button — small × in the corner. Tooltip itself blocks pointer so
+    // clicks elsewhere on the screen will dismiss via a global listener below.
+    const closeBtn = new Rectangle("relicTooltipClose");
+    closeBtn.widthInPixels = 22;
+    closeBtn.heightInPixels = 22;
+    closeBtn.background = "#22222e";
+    closeBtn.color = "#888";
+    closeBtn.thickness = 1;
+    closeBtn.cornerRadius = 4;
+    closeBtn.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    closeBtn.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    closeBtn.leftInPixels = -8;
+    closeBtn.topInPixels = 8;
+    closeBtn.isPointerBlocker = true;
+    closeBtn.hoverCursor = "pointer";
+    const closeLabel = new TextBlock("relicTooltipCloseLabel");
+    closeLabel.text = "×";
+    closeLabel.color = "#dddddd";
+    closeLabel.fontSize = 18;
+    closeLabel.fontFamily = "monospace";
+    closeBtn.addControl(closeLabel);
+    closeBtn.onPointerClickObservable.add(() => this.hideRelicTooltip());
+    tip.addControl(closeBtn);
+
+    // Click-anywhere-else dismissal — the background pointer events on the
+    // top-level UI fire when nothing handled the click. We listen to scene
+    // pointer-down via the canvas.
+    this.ui.onControlPickedObservable.add((ctrl) => {
+      if (!this.relicTooltip || !this.relicTooltip.isVisible) return;
+      // If the click was on the tooltip itself, a relic badge, or any of its
+      // descendants, ignore. Otherwise dismiss.
+      let n: Control | null = ctrl;
+      while (n) {
+        if (n === this.relicTooltip) return;
+        for (const b of this.relicBadges) if (n === b.bg) return;
+        n = n.parent ?? null;
+      }
+      this.hideRelicTooltip();
+    });
+
+    this.relicTooltip = tip;
+    this.relicTooltipName = name;
+    this.relicTooltipRarity = rarity;
+    this.relicTooltipDesc = desc;
+  }
+
+  private hideRelicTooltip(): void {
+    if (this.relicTooltip) this.relicTooltip.isVisible = false;
   }
 
   /** Strip all relic badges — for in-place run restart. */
@@ -460,6 +705,7 @@ export class Hud {
       b.label.dispose();
     }
     this.relicBadges.length = 0;
+    this.hideRelicTooltip();
     this.relicBanner.isVisible = false;
     this.relicBannerTtl = 0;
     this.relicRing.isVisible = false;
@@ -559,9 +805,16 @@ export class Hud {
     t.color = color;
     t.fontSize = size;
     t.fontFamily = "monospace";
+    // Crisp drop shadow with NO blur — shadowBlur was making small text mushy.
+    // The outline below carries the readability against busy backgrounds.
     t.shadowColor = "#000";
     t.shadowOffsetX = 1;
     t.shadowOffsetY = 1;
+    t.shadowBlur = 0;
+    // Black outline — scaled with font size so 11px labels don't get drowned
+    // in their own outline (a 2px outline on 11px text fattens every glyph).
+    t.outlineColor = "#000";
+    t.outlineWidth = size <= 14 ? 1 : 2;
     t.horizontalAlignment = horiz === "center"
       ? Control.HORIZONTAL_ALIGNMENT_CENTER
       : horiz === "right"
@@ -657,12 +910,33 @@ export class Hud {
     cost.shadowOffsetY = 1;
     bg.addControl(cost);
 
+    // Glyph watermark — large symbol drawn behind the card name. Each card
+    // type uses a distinct symbol (⚔ ➶ ↯ etc) so the player can pattern-match
+    // their hand from peripheral vision. Low alpha + tinted by the card type
+    // color so it reads as silhouette, not foreground.
+    const glyph = new TextBlock(`hand_${idx}_glyph`);
+    glyph.text = "";
+    glyph.color = "#ffffff";
+    glyph.fontSize = 78;
+    glyph.fontFamily = "monospace";
+    glyph.fontWeight = "bold";
+    glyph.widthInPixels = w;
+    glyph.heightInPixels = h;
+    glyph.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    glyph.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    glyph.topInPixels = -10;
+    glyph.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    glyph.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    glyph.alpha = 0.16;
+    glyph.zIndex = -1; // sits behind name + desc
+    bg.addControl(glyph);
+
     // Card name — its own band with an explicit height so it can never fall
     // into the description area below it.
     const name = new TextBlock(`hand_${idx}_name`);
     name.text = "—";
     name.color = "#fff";
-    name.fontSize = 20;
+    name.fontSize = 22;
     name.fontFamily = "monospace";
     name.fontWeight = "bold";
     name.widthInPixels = w - 16;
@@ -675,6 +949,9 @@ export class Hud {
     name.shadowColor = "#000";
     name.shadowOffsetX = 1;
     name.shadowOffsetY = 1;
+    name.shadowBlur = 0;
+    name.outlineColor = "#000";
+    name.outlineWidth = 3;
     bg.addControl(name);
 
     // Type tag — uppercase mini-label sitting in its own band.
@@ -691,14 +968,42 @@ export class Hud {
     type.topInPixels = TYPE_Y;
     type.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
     type.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    // Type tag now anchored LEFT inside its band so the right side can host
+    // a prominent DMG number for the same row.
+    type.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    type.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+    type.leftInPixels = 12;
+    type.widthInPixels = (w - 24) / 2;
     bg.addControl(type);
+
+    // Damage readout — bold, type-colored, sits to the right of the type tag
+    // so the player sees "MELEE … 18 DMG" at a glance without parsing the
+    // longer description below.
+    const dmg = new TextBlock(`hand_${idx}_dmg`);
+    dmg.text = "";
+    dmg.color = "#ffe066";
+    dmg.fontSize = 13;
+    dmg.fontFamily = "monospace";
+    dmg.fontWeight = "bold";
+    dmg.widthInPixels = (w - 24) / 2;
+    dmg.heightInPixels = TYPE_H;
+    dmg.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    dmg.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    dmg.topInPixels = TYPE_Y;
+    dmg.leftInPixels = -12;
+    dmg.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    dmg.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    dmg.shadowColor = "#000";
+    dmg.shadowOffsetX = 1;
+    dmg.shadowOffsetY = 1;
+    bg.addControl(dmg);
 
     // Description — wrapped into its own explicit band so it can't drift up
     // into the type-label or name bands even when the text is tall.
     const desc = new TextBlock(`hand_${idx}_desc`);
     desc.text = "";
-    desc.color = "#dddddd";
-    desc.fontSize = 12;
+    desc.color = "#f0f0f0";
+    desc.fontSize = 13;
     desc.fontFamily = "monospace";
     desc.textWrapping = true;
     desc.widthInPixels = w - 18;
@@ -709,6 +1014,11 @@ export class Hud {
     desc.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
     desc.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
     desc.lineSpacing = "3px";
+    desc.shadowColor = "#000";
+    desc.shadowOffsetX = 1;
+    desc.shadowOffsetY = 1;
+    desc.outlineColor = "#000";
+    desc.outlineWidth = 1;
     bg.addControl(desc);
 
     // "▲ SELECTED" chevron that appears above the currently-selected card.
@@ -731,7 +1041,7 @@ export class Hud {
     chevron.isVisible = false;
     bg.addControl(chevron);
 
-    return { bg, hotkey, name, cost, costLabel, type, desc, chevron, flashTimer: 0, popTimer: 0, homeLeft: leftPx, selScale: 1, selAlpha: 1 };
+    return { bg, hotkey, glyph, name, cost, costLabel, dmg, type, desc, chevron, flashTimer: 0, popTimer: 0, homeLeft: leftPx, selScale: 1, selAlpha: 1 };
   }
 
   private setBossVisible(v: boolean): void {
@@ -903,6 +1213,14 @@ export class Hud {
         slot.cost.text = String(card.cost);
         slot.costLabel.isVisible = true;
         slot.hotkey.isVisible = true;
+        // Big watermark glyph behind the name + a clear DMG number on the
+        // type row. Glyph color matches the card type for instant pattern
+        // recognition; dmg color is gold so it pops against everything.
+        slot.glyph.text = card.glyph;
+        slot.glyph.color = tColor;
+        slot.glyph.isVisible = true;
+        slot.dmg.text = `${card.damage} DMG`;
+        slot.dmg.isVisible = true;
         const affordable = p.ap >= card.cost;
         const flashBoost = slot.flashTimer > 0 ? slot.flashTimer / 0.32 : 0;
         slot.bg.alpha = (affordable ? 1.0 : 0.5) * (1 - 0.3 * flashBoost) + 0.3 * flashBoost;
@@ -929,6 +1247,10 @@ export class Hud {
         slot.desc.isVisible = false;
         slot.costLabel.isVisible = false;
         slot.hotkey.isVisible = false;
+        slot.glyph.text = "";
+        slot.glyph.isVisible = false;
+        slot.dmg.text = "";
+        slot.dmg.isVisible = false;
         slot.bg.color = "#333";
         slot.bg.thickness = 2;
         slot.bg.alpha = 0.25;

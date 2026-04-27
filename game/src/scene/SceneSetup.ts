@@ -22,6 +22,7 @@ export interface SceneBundle {
   scene: Scene;
   shadow: ShadowGenerator;
   sun: DirectionalLight;
+  hemi: HemisphericLight;
   /** Created lazily after the camera exists. Call attachPostFx(camera) once. */
   attachPostFx(camera: Camera): DefaultRenderingPipeline;
   /**
@@ -161,7 +162,107 @@ export function createSceneBundle(canvas: HTMLCanvasElement): SceneBundle {
     }
   }
 
-  return { engine, scene, shadow, sun, attachPostFx, setHeavyPostFx };
+  return { engine, scene, shadow, sun, hemi, attachPostFx, setHeavyPostFx };
+}
+
+/**
+ * Boss-room dramatic lighting overlay. Dims the hemispheric fill, drops the
+ * sun intensity, and shifts the sun toward a hot amber so the boss arena
+ * reads as a charged, hostile space — paired with the existing "pit" color
+ * grading preset. Pass `on=false` to restore baseline values for normal rooms.
+ *
+ * Stored baseline as static module-level so a single import owns the saved
+ * values; calling with on=false from any context will revert correctly.
+ */
+let _bossBaseline: {
+  hemiI: number;
+  hemiDiff: Color3;
+  hemiGround: Color3;
+  sunI: number;
+  sunDiff: Color3;
+  clear: Color4;
+  fog: Color3;
+  fogDensity: number;
+} | null = null;
+
+/**
+ * Boss-room sun + hemi flicker state. tickBossLighting reads `active` and the
+ * captured boss baseline intensities to wobble the lights around them at low
+ * amplitude. Reads as firelight breathing in a hot pit — we never let the
+ * intensity drift far enough to look like a bug. Off when applyBossLighting
+ * is called with `on=false`.
+ */
+const _bossFlicker = {
+  active: false,
+  baseSun: 1.45,
+  baseHemi: 0.32,
+  clock: 0,
+};
+
+export function applyBossLighting(bundle: SceneBundle, on: boolean): void {
+  const { scene, hemi, sun } = bundle;
+  if (on) {
+    // Capture baseline lazily — only on the first transition into boss
+    // lighting. Subsequent flips just swap between baseline and boss values.
+    if (!_bossBaseline) {
+      _bossBaseline = {
+        hemiI: hemi.intensity,
+        hemiDiff: hemi.diffuse.clone(),
+        hemiGround: hemi.groundColor.clone(),
+        sunI: sun.intensity,
+        sunDiff: sun.diffuse.clone(),
+        clear: scene.clearColor.clone(),
+        fog: scene.fogColor.clone(),
+        fogDensity: scene.fogDensity,
+      };
+    }
+    // Crushed ambient + cooler ground + warm hot-coal sun. The room ends up
+    // looking like dusk-firelight under a deep amber sky.
+    hemi.intensity = 0.32;
+    hemi.diffuse.set(0.55, 0.42, 0.38);
+    hemi.groundColor.set(0.10, 0.08, 0.07);
+    sun.intensity = 1.45;
+    sun.diffuse.set(1.0, 0.55, 0.30);
+    scene.clearColor.set(0.07, 0.035, 0.04, 1);
+    scene.fogColor.set(0.12, 0.06, 0.05);
+    scene.fogDensity = 0.018;
+    // Activate the firelight flicker — tickBossLighting modulates around
+    // baseSun/baseHemi from the render loop. Captured here from the boss
+    // values we just set so the flicker tracks any future re-tuning.
+    _bossFlicker.active = true;
+    _bossFlicker.baseSun = sun.intensity;
+    _bossFlicker.baseHemi = hemi.intensity;
+    _bossFlicker.clock = 0;
+  } else if (_bossBaseline) {
+    hemi.intensity = _bossBaseline.hemiI;
+    hemi.diffuse.copyFrom(_bossBaseline.hemiDiff);
+    hemi.groundColor.copyFrom(_bossBaseline.hemiGround);
+    sun.intensity = _bossBaseline.sunI;
+    sun.diffuse.copyFrom(_bossBaseline.sunDiff);
+    scene.clearColor.copyFrom(_bossBaseline.clear);
+    scene.fogColor.copyFrom(_bossBaseline.fog);
+    scene.fogDensity = _bossBaseline.fogDensity;
+    _bossFlicker.active = false;
+  }
+}
+
+/**
+ * Per-frame boss-lighting flicker. Call from the render loop unconditionally;
+ * does nothing unless boss lighting is active. Wobbles sun + hemi intensity
+ * around their boss baselines at compound frequencies (3 Hz primary, 1.5 Hz
+ * secondary on the sun) so the flicker reads as living firelight rather than
+ * a single sine wave.
+ */
+export function tickBossLighting(bundle: SceneBundle, dt: number): void {
+  if (!_bossFlicker.active) return;
+  _bossFlicker.clock += dt;
+  const c = _bossFlicker.clock;
+  // ω = 2π * f, so 18.85 ≈ 3 Hz primary, 9.4 ≈ 1.5 Hz secondary, 12.6 ≈ 2 Hz on hemi.
+  bundle.sun.intensity = _bossFlicker.baseSun
+    + Math.sin(c * 18.85) * 0.06
+    + Math.sin(c * 9.4) * 0.03;
+  bundle.hemi.intensity = _bossFlicker.baseHemi
+    + Math.sin(c * 12.6) * 0.025;
 }
 
 /**

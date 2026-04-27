@@ -46,6 +46,9 @@ export class Caster extends Enemy {
     );
     body.position = new Vector3(0, 0.95, 0);
     super(scene, shadow, CASTER_DEF, spawnPos, body, idSuffix);
+    // Floating spectre — slow, longer-amplitude lift sells the "channeling" pose.
+    this.swayAmpY = 0.06;
+    this.swayFreqHz = 0.55;
 
     // Robe hem — a flat torus at the base, sells the floating-robe read.
     const hem = MeshBuilder.CreateTorus(

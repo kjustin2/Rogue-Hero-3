@@ -4,10 +4,13 @@
   "version": "0.0.1",
   "type": "module",
   "description": "Rogue Hero 3 — single-player 3D roguelike on Babylon.js",
+  "main": "electron-main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "electron": "electron .",
+    "standalone": "npm run build && electron .",
     "typecheck": "tsc --noEmit",
     "verify:runtime": "tsx scripts/verify-babylon-runtime.ts",
     "test:smoke": "tsx scripts/test-smoke.ts",
@@ -26,6 +29,7 @@
   "devDependencies": {
     "@babylonjs/inspector": "^9.3.4",
     "@types/node": "^25.6.0",
+    "electron": "^33.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.6.3",
     "vite": "^6.0.0"

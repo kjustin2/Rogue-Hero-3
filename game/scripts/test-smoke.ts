@@ -98,23 +98,41 @@ check(t.damageMultiplier() > 1, "damage multiplier > 1 in CRITICAL");
 // Boundary — 89 is HOT, 90+ is CRITICAL.
 t.setValue(89); check(t.stateName() === "HOT", "tempo 89 is HOT (< 90 boundary)");
 t.setValue(90); check(t.stateName() === "CRITICAL", "tempo 90 is CRITICAL");
-// Crash path — setting to 100 should trigger the accidental crash.
+// Crash path — natural tempo gain caps at 99; only triggerCrash() (F key)
+// fires a Crash. Cold-crash on hitting 0 stays automatic.
 t.reset();
 t.setValue(100);
-check(t.isCrashed, "tempo set to 100 triggers crash");
+check(!t.isCrashed, "natural tempo set to 100 no longer auto-crashes");
+check(t.value <= 99, "tempo value caps at 99 from natural gain");
+check(t.canCrash(), "tempo at cap reports canCrash() = true");
+const fired = t.triggerCrash();
+check(fired, "triggerCrash() returns true when ready");
+check(t.isCrashed, "triggerCrash() puts the system into crashed state");
 check(t.value !== 100, "tempo value reset below 100 after crash");
+// Below threshold: triggerCrash() should be a no-op.
+t.reset();
+t.setValue(60);
+check(!t.canCrash(), "below threshold canCrash() = false");
+check(!t.triggerCrash(), "triggerCrash() returns false when below threshold");
 
 // ---------------------------------------------------------- GameState
 section("GameState");
 const gs = new GameState();
-check(gs.phase === "playing", "new GameState starts in 'playing'");
+check(gs.phase === "menu", "new GameState starts in 'menu'");
+check(!gs.isInteractive(), "'menu' phase is non-interactive");
+check(gs.isFrozen(), "'menu' phase freezes the gameplay tick");
+gs.setPhase("playing");
 check(gs.isInteractive(), "'playing' phase is interactive");
+check(!gs.isFrozen(), "'playing' phase is not frozen");
 const phases: GamePhase[] = ["reward", "transitioning", "victory", "dead"];
 for (const p of phases) {
   gs.setPhase(p);
   check(gs.phase === p, `can transition to '${p}'`);
   check(!gs.isInteractive(), `'${p}' phase is non-interactive`);
 }
+gs.setPhase("paused");
+check(!gs.isInteractive(), "'paused' phase is non-interactive");
+check(gs.isFrozen(), "'paused' phase freezes the gameplay tick");
 gs.setPhase("playing");
 check(gs.isInteractive(), "can return to 'playing'");
 

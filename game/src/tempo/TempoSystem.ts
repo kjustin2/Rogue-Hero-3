@@ -23,6 +23,12 @@ export interface ClassPassives {
  * Group resonance and Players-array logic dropped.
  * Class-passive crashResetValue + crash double-reset (value + targetValue) preserved.
  */
+/** Tempo threshold at or above which the player can manually trigger a Crash (F). */
+export const CRASH_READY_THRESHOLD = 85;
+/** Crash AOE radius in meters. Used both by the gameplay damage check and the
+ *  HUD's ground telegraph so the visible ring matches the kill zone exactly. */
+export const CRASH_RADIUS = 6;
+
 export class TempoSystem {
   value = 50;
   targetValue = 50;
@@ -123,7 +129,13 @@ export class TempoSystem {
 
   setValue(newVal: number, isLerpStep = false): void {
     const oldZone = this.stateName();
-    const actualVal = Math.max(0, Math.min(100, newVal));
+    // Cap positive tempo at 99 — natural gain no longer auto-crashes when it
+    // reaches 100. The player must press F to trigger a Crash via
+    // triggerCrash(), which sets a "manual crash" flag that allows passing
+    // 100 momentarily for the visual peak. Cold-crash on <=0 still auto-fires
+    // because it's a punishment, not an ability.
+    const cap = this._allowingManualCrash ? 100 : 99;
+    const actualVal = Math.max(0, Math.min(cap, newVal));
 
     if (isLerpStep) {
       this.value = actualVal;
@@ -136,8 +148,7 @@ export class TempoSystem {
     if (oldZone !== newZone) events.emit("ZONE_TRANSITION", { oldZone, newZone });
 
     if (!isLerpStep && !this.isCrashed) {
-      if (newVal >= 100) this._triggerAccidentalCrash();
-      else if (newVal <= 0) this._triggerColdCrash();
+      if (newVal <= 0) this._triggerColdCrash();
     }
   }
 
@@ -150,14 +161,40 @@ export class TempoSystem {
     // player gets a moment to ride a HOT zone instead of seeing it bleed back
     // to FLOWING the instant they stop attacking.
     if (amt > 0) this.sustainedTimer = this.SUSTAIN_AFTER_GAIN;
-    if (this.targetValue >= 100) {
-      this.targetValue = 100;
-      this._triggerAccidentalCrash();
+    // Cap at 99 on natural gain — F-trigger is the only way to spend the
+    // built-up energy. Cold-crash on full drain stays automatic.
+    if (this.targetValue >= 99) {
+      this.targetValue = 99;
     } else if (this.targetValue <= 0) {
       this.targetValue = 0;
       this._triggerColdCrash();
     }
   }
+
+  /** Player is at-or-above the crash threshold and not currently mid-crash. */
+  canCrash(): boolean {
+    return this.value >= CRASH_READY_THRESHOLD && !this.isCrashed;
+  }
+
+  /**
+   * Manually fire a Crash (F key). No-op when canCrash() is false — callers
+   * don't need to gate themselves. Sets `_allowingManualCrash` briefly so the
+   * 100 peak is allowed through `setValue` without triggering the old
+   * auto-crash path (which is now gone anyway, but keeps the peak readable
+   * to UI bars during the same frame).
+   */
+  triggerCrash(): boolean {
+    if (!this.canCrash()) return false;
+    this._allowingManualCrash = true;
+    this.value = 100;
+    this.targetValue = 100;
+    this._allowingManualCrash = false;
+    this._triggerManualCrash();
+    return true;
+  }
+
+  /** Internal flag — see setValue() for usage. */
+  private _allowingManualCrash = false;
 
   onComboHit(hitNum: number): void { this.add(hitNum === 3 ? 15 : 4); }
   onKill(): void { this.add(10); }
@@ -179,11 +216,14 @@ export class TempoSystem {
   }
   onDrained(): void { this.add(-20); }
 
-  private _triggerAccidentalCrash(): void {
+  private _triggerManualCrash(): void {
     if (this.isCrashed) return;
-    const radius = 100 * this.modifiers.crashRadiusBonus;
-    const dmg = Math.round(this.damageMultiplier() * 2.5 * 10);
-    events.emit("CRASH_ATTACK", { radius, dmg, accidental: true });
+    // Crash now reads as a tight burst around the player rather than an
+    // arena-clearing omni-blast. Radius shrunk 100→6m and damage cut by ~40%
+    // so it's a strong-but-spaced ability the player has to position for.
+    const radius = CRASH_RADIUS * this.modifiers.crashRadiusBonus;
+    const dmg = Math.round(this.damageMultiplier() * 1.5 * 10);
+    events.emit("CRASH_ATTACK", { radius, dmg, accidental: false });
     this._doCrash(0.4, 1.0);
   }
 

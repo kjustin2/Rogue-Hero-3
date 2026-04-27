@@ -1,7 +1,15 @@
-export type GamePhase = "playing" | "reward" | "transitioning" | "victory" | "dead";
+export type GamePhase =
+  | "menu"
+  | "playing"
+  | "paused"
+  | "door_open"
+  | "reward"
+  | "transitioning"
+  | "victory"
+  | "dead";
 
 export class GameState {
-  phase: GamePhase = "playing";
+  phase: GamePhase = "menu";
   roomIndex = 0;
   totalRooms = 1;
 
@@ -10,6 +18,12 @@ export class GameState {
   }
 
   isInteractive(): boolean {
-    return this.phase === "playing";
+    // door_open lets the player walk to the exit, so input must remain live.
+    return this.phase === "playing" || this.phase === "door_open";
+  }
+
+  /** Should the entire gameplay observable bail out (no movement, no AI, no FX ticks)? */
+  isFrozen(): boolean {
+    return this.phase === "menu" || this.phase === "paused";
   }
 }

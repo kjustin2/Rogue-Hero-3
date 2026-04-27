@@ -41,6 +41,9 @@ export class Elite extends Enemy {
     );
     body.position = new Vector3(0, 1.05, 0);
     super(scene, shadow, ELITE_DEF, spawnPos, body, idSuffix);
+    // Heavy armor — barely-perceptible weight shift; turned off during the charge attack.
+    this.swayAmpY = 0.014;
+    this.swayFreqHz = 0.45;
 
     // Armor plates — shoulders + helmet, darker gold-brass tint on the armored silhouette.
     const armor = new Color3(0.55, 0.38, 0.10);
@@ -128,6 +131,11 @@ export class Elite extends Enemy {
       this.state = "telegraph";
     }
 
+    // Disable idle sway while telegraphing or charging — body.scaling is being
+    // animated and the root Y bob would fight it. Re-enabled by tickCommon
+    // automatically next frame when state returns to chase/recover.
+    this.swayActive = this.state !== "telegraph" && this.state !== "attack";
+
     if (this.state === "telegraph") {
       this.chargeWindup -= dt;
       const d = Math.sqrt(distSq);
@@ -138,7 +146,9 @@ export class Elite extends Enemy {
       const t = 1 - this.chargeWindup / 0.45;
       // body pulse + emissive red flare so the enemy visibly "charges up"
       this.body.scaling.x = this.body.scaling.z = 1 + 0.25 * t;
-      this.material.emissiveColor = new Color3(0.2 + 0.6 * t, 0.08, 0.02);
+      // Mutate the existing emissive in place — was allocating a fresh
+      // Color3 every frame for the entire telegraph window.
+      this.material.emissiveColor.set(0.2 + 0.6 * t, 0.08, 0.02);
 
       // Ground bar along the charge line so the player can SEE where the charge will go.
       this.ensureTelegraph();
@@ -156,7 +166,7 @@ export class Elite extends Enemy {
 
       if (this.chargeWindup <= 0) {
         if (this.telegraphBar) this.telegraphBar.isVisible = false;
-        this.material.emissiveColor = new Color3(0, 0, 0);
+        this.material.emissiveColor.set(0, 0, 0);
         this.state = "attack";
         this.chargeActive = 0.4;
       }

@@ -51,9 +51,29 @@ export abstract class Enemy {
   hp: number;
   alive = true;
   protected hitFlashTimer = 0;
+  /** How long the current hit flash lasts. Set by takeDamage so subclasses can override duration. */
+  protected hitFlashDur = 0.14;
   protected baseColor: Color3;
   /** Transient knockback velocity (m/s). Decays exponentially each frame. */
   private kbVel = new Vector3(0, 0, 0);
+  /**
+   * Per-type idle sway tuning. Subclasses set these in their constructor to
+   * pick a Y-bob amplitude + frequency. tickCommon applies the Y offset to the
+   * root each frame so static enemies don't feel statue-still. Zero amplitude
+   * = no sway (used during chase/attack states by setting `swayActive = false`).
+   */
+  protected swayAmpY = 0;
+  protected swayFreqHz = 0;
+  /** Per-instance phase so a wave of Chasers don't all bob in lockstep. */
+  protected swayPhase = Math.random() * Math.PI * 2;
+  /**
+   * When true, the idle Y bob is applied each frame. Subclasses flip this off
+   * during chase/attack so the bob doesn't compound with movement / charges.
+   */
+  protected swayActive = true;
+  /** Cached y baseline so the sway can compose additively without drift. */
+  private swayBaseY = 0;
+  private swayBaseCaptured = false;
   /**
    * Extra body primitives (heads, limbs, spikes, etc). Each tracks its own base
    * color so the hit flash can tint them without losing their tint on rest.
@@ -125,7 +145,11 @@ export abstract class Enemy {
   takeDamage(amount: number): void {
     if (!this.alive) return;
     this.hp -= amount;
-    this.hitFlashTimer = 0.12;
+    // Scale the white-flash with the hit's damage relative to the enemy's
+    // max HP — a 30% chunk lands a longer flash than a 5% chip. Capped at
+    // 2× baseline so massive crits don't strobe forever.
+    const ratio = Math.max(0, Math.min(1, amount / Math.max(1, this.def.hp)));
+    this.hitFlashTimer = this.hitFlashDur * (1 + Math.min(1, ratio * 3));
     const killed = this.hp <= 0;
     events.emit("ENEMY_HIT", {
       enemyId: this.id,
@@ -213,23 +237,40 @@ export abstract class Enemy {
   /** Common per-frame work — call at top of update loop. */
   tickCommon(dt: number): void {
     this.partClock += dt;
+    // Capture the resting Y once so the sway is purely additive — subclass logic
+    // continues to write root.position.y for movement/stagger and the sway
+    // composes around it without drifting.
+    if (!this.swayBaseCaptured) {
+      this.swayBaseY = this.root.position.y;
+      this.swayBaseCaptured = true;
+    }
     if (this.hitFlashTimer > 0) {
       this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt);
-      const t = this.hitFlashTimer / 0.12;
+      const t = this.hitFlashTimer / this.hitFlashDur;
+      // Pure white pop — lands as "I hit it" rather than the previous red-tint
+      // which dilutes against the already-red threat language. Lerp from
+      // baseColor toward (1,1,1) by `t` so the flash peaks at full white and
+      // eases back to baseline.
       this.material.diffuseColor.copyFrom(this.baseColor).scale(1 - t);
       this.material.diffuseColor.r += t;
-      this.material.diffuseColor.g += t * 0.4;
-      this.material.diffuseColor.b += t * 0.4;
-      // Secondary parts flash along with the body — lerp to near-white then back.
+      this.material.diffuseColor.g += t;
+      this.material.diffuseColor.b += t;
       for (const p of this.extraParts) {
         p.mat.diffuseColor.copyFrom(p.baseColor).scale(1 - t);
         p.mat.diffuseColor.r += t;
-        p.mat.diffuseColor.g += t * 0.4;
-        p.mat.diffuseColor.b += t * 0.4;
+        p.mat.diffuseColor.g += t;
+        p.mat.diffuseColor.b += t;
       }
     } else {
       this.material.diffuseColor.copyFrom(this.baseColor);
       for (const p of this.extraParts) p.mat.diffuseColor.copyFrom(p.baseColor);
+    }
+    // Idle Y sway — only when configured AND the subclass deems it appropriate
+    // (e.g. not during a charge). Phase per-instance so a group bobs out of
+    // sync. Composed additively on top of swayBaseY.
+    if (this.swayAmpY > 0 && this.swayActive) {
+      const t = this.partClock * this.swayFreqHz * Math.PI * 2;
+      this.root.position.y = this.swayBaseY + Math.sin(t + this.swayPhase) * this.swayAmpY;
     }
   }
 

@@ -11,7 +11,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { HighlightLayer } from "@babylonjs/core/Layers/highlightLayer";
 
-import { createSceneBundle, applyGradingPreset, GradingPreset } from "./scene/SceneSetup";
+import { createSceneBundle, applyGradingPreset, applyBossLighting, tickBossLighting, GradingPreset } from "./scene/SceneSetup";
 import { getQuality, cycleQuality } from "./engine/Quality";
 import { ArenaHazards } from "./scene/ArenaHazards";
 import { createFollowCamera } from "./scene/FollowCamera";
@@ -43,9 +43,14 @@ import { RelicAuras } from "./fx/RelicAuras";
 import { Decals } from "./fx/Decals";
 import { StepDust } from "./fx/StepDust";
 import { SwordAura } from "./fx/SwordAura";
+import { PlayerGroundPulse } from "./fx/PlayerGroundPulse";
+import { CrashTelegraph } from "./fx/CrashTelegraph";
+import { CRASH_RADIUS } from "./tempo/TempoSystem";
+import { Fireflies } from "./fx/Fireflies";
+import { EnvDecals } from "./fx/EnvDecals";
 import { DamageNumbers } from "./ui/DamageNumbers";
 import { EnemyHealthPips } from "./ui/EnemyHealthPips";
-import { IntroScreen } from "./ui/IntroScreen";
+import { MenuSystem } from "./ui/MenuSystem";
 import { DevOverlay } from "./ui/DevOverlay";
 import { Enemy } from "./enemies/Enemy";
 
@@ -65,7 +70,8 @@ async function boot() {
   const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("renderCanvas not found");
 
-  const { engine, scene, shadow, attachPostFx, setHeavyPostFx } = createSceneBundle(canvas);
+  const sceneBundle = createSceneBundle(canvas);
+  const { engine, scene, shadow, attachPostFx, setHeavyPostFx } = sceneBundle;
 
   const player = new Player(scene, shadow);
   const cam = createFollowCamera(scene, canvas);
@@ -99,6 +105,7 @@ async function boot() {
   const controller = new PlayerController(player, {
     bounds: arena0.bounds,
     pillars: arena0.pillars,
+    doorPass: arena0.doorPass,
   }, tempo);
 
   // Spawn the player well inside the arena facing the center. Previously we placed the hero 4m
@@ -153,19 +160,29 @@ async function boot() {
   // lock color stuck on.
   let lockedRimOriginal: Color3 | null = null;
   const LOCK_RIM_COLOR = new Color3(1.0, 0.75, 0.2);
+  const LOCK_OUTLINE_COLOR = new Color3(1.0, 0.9, 0.2);
+  // Soft warm outline applied to every alive enemy so silhouettes pop against
+  // the floor at distance. addMesh REPLACES the color when called twice on the
+  // same mesh, so applyLockOutline below can swap to LOCK_OUTLINE_COLOR and
+  // back to this default without ever calling removeMesh until the enemy is
+  // disposed.
+  const DEFAULT_ENEMY_OUTLINE_COLOR = new Color3(0.9, 0.55, 0.35);
   function applyLockOutline(e: Enemy | null): void {
     if (lockedOutlineTarget === e) return;
-    // Clear previous target's highlight + restore its rim.
+    // Restore previous target's default outline (rather than removing it
+    // entirely — it stays in the layer with its baseline tint until dispose).
     if (lockedOutlineTarget) {
-      for (const m of lockedOutlineTarget.getOutlineMeshes()) outline.removeMesh(m);
+      if (lockedOutlineTarget.alive) {
+        for (const m of lockedOutlineTarget.getOutlineMeshes()) outline.addMesh(m, DEFAULT_ENEMY_OUTLINE_COLOR);
+      }
       const fp = lockedOutlineTarget.material.emissiveFresnelParameters;
       if (fp && lockedRimOriginal) fp.leftColor.copyFrom(lockedRimOriginal);
     }
     lockedOutlineTarget = e;
     lockedRimOriginal = null;
     if (e && e.alive) {
-      const c = new Color3(1.0, 0.9, 0.2);
-      for (const m of e.getOutlineMeshes()) outline.addMesh(m, c);
+      // Hoisted outline color — was being allocated fresh on every lock change.
+      for (const m of e.getOutlineMeshes()) outline.addMesh(m, LOCK_OUTLINE_COLOR);
       // Override the fresnel rim with a warm lock color — composes with the
       // cyan HighlightLayer outline for an unambiguous "this is your target"
       // read even in a crowd.
@@ -176,8 +193,33 @@ async function boot() {
       }
     }
   }
+  // Register a default outline on each spawned enemy and clear it on dispose,
+  // plus a small end-of-dissolve ash puff. Wired AFTER hitFx is created below
+  // so onDispose's burst() call has a target — see also the catch-up loop right
+  // after wiring that registers enemies that already spawned during room 0
+  // load (RunManager.loadRoom calls spawnAll before this point).
   const rewardPicker = new RewardPicker(scene);
   const hitFx = new HitParticles(scene);
+  // Now that outline and hitFx exist, wire the EnemyManager lifecycle hooks.
+  // onSpawn paints a default warm outline on every body part; onDispose removes
+  // the outline and spits a small ash puff at the dissolve point so the body
+  // doesn't just vanish. Reused scratch Vector3 hoisted below; we use a local
+  // here because evScratch is declared further down — small dedicated buffer.
+  const ashScratch = new Vector3();
+  enemies.onSpawn = (e) => {
+    for (const m of e.getOutlineMeshes()) outline.addMesh(m, DEFAULT_ENEMY_OUTLINE_COLOR);
+  };
+  enemies.onDispose = (e) => {
+    for (const m of e.getOutlineMeshes()) outline.removeMesh(m);
+    // y is fixed at ground level — by the time dispose fires, the dissolve has
+    // sunk the root ~0.4m below floor, so reading e.root.position.y would put
+    // the puff underground.
+    ashScratch.set(e.root.position.x, 0.25, e.root.position.z);
+    const isBoss = e.def.name.startsWith("boss_");
+    hitFx.burst(ashScratch, isBoss ? 28 : 10, [0.62, 0.55, 0.48], isBoss ? 1.4 : 0.7);
+  };
+  // Catch up enemies spawned by run.loadRoom(0) before this wiring existed.
+  for (const e of enemies.enemies) enemies.onSpawn(e);
   const dodgeGhosts = new DodgeGhosts(scene);
   const weaponTrail = new WeaponTrail(scene);
   const relicAuras = new RelicAuras(scene, player);
@@ -187,35 +229,61 @@ async function boot() {
   // Sword aura — hot-orange particle vortex when tempo is CRITICAL. Off entirely
   // outside that zone; intensity lerps via setTargetIntensity for smooth fade.
   const swordAura = new SwordAura(scene, player.sword);
+  // Heartbeat ground pulse from player feet — only at HOT/CRITICAL. Continuous
+  // visual confirmation of "you are powered up". Off on low quality.
+  const groundPulse = new PlayerGroundPulse(scene);
+  const crashTelegraph = new CrashTelegraph(scene);
+  // Ambient atmosphere — fireflies + static moss patches. Session-level (not
+  // per-arena) since the arena footprint is a constant 40m. Fireflies toggle
+  // off in the boss room; moss decals stay on throughout.
+  // AmbientWind (drifting leaves) was used when rooms were open-sky; with the
+  // enclosed stone ceilings the leaves clipped through the roof, so the
+  // session no longer instantiates it.
+  const ARENA_SIZE = 40;
+  const fireflies = new Fireflies(scene, ARENA_SIZE);
+  const envDecals = new EnvDecals(scene, ARENA_SIZE);
+  const sessionFx = [envDecals, fireflies];
+  // Best-effort teardown on tab close — Babylon's resource handlers do most of
+  // this for us, but explicit dispose of GPU-side particle systems / meshes
+  // avoids stragglers in dev hot-reload scenarios.
+  window.addEventListener("beforeunload", () => {
+    for (const fx of sessionFx) fx.dispose();
+  });
   const damageNumbers = new DamageNumbers(scene);
   const enemyHpPips = new EnemyHealthPips(scene);
   // F3 toggles a small top-right overlay with FPS / frame time / mesh count /
   // draw calls. Off by default so players never see it.
   const devOverlay = new DevOverlay(scene, engine);
 
-  // ---------- Dynamic resolution scaling (pressure valve) ----------
-  // Tracks an EMA of frame time. When the average climbs above a threshold for
-  // long enough, we step up the engine's hardware scaling level (rendering at
-  // a lower internal resolution) to give the GPU breathing room. When it
-  // drops back, we restore. Conservative thresholds — most players will never
-  // see this engage; it's there to keep the framerate from collapsing on
-  // weaker hardware during heavy combat.
+  // ---------- Dynamic resolution scaling (pressure valve, low-tier only) ----------
+  // Active ONLY on the low quality tier. On medium/high we keep the canvas at
+  // full resolution all the time — the scaling pass blurs the GUI text (since
+  // the entire canvas is downscaled then upscaled), and the visible
+  // sharpness-flicker reads as a bug. Low-tier players are already opting into
+  // visual cuts so the brief blur is the right tradeoff there.
+  //
+  // The thresholds are also more conservative than before: only sustained
+  // sub-30fps for 3+ seconds triggers the downscale, and we recover to full
+  // resolution within 2 seconds of frame time stabilizing.
   let frameTimeEma = 16.67; // ms
   let scalingLevel = 1.0;
   let pressureSeconds = 0;
   let recoverySeconds = 0;
-  const PRESSURE_THRESHOLD_MS = 22;  // ~45 fps
-  const RECOVER_THRESHOLD_MS = 17;   // ~58 fps
-  const SCALING_LOW = 1.25;          // render at 80%
+  const PRESSURE_THRESHOLD_MS = 33;  // ~30 fps — only engage on real distress
+  const RECOVER_THRESHOLD_MS = 20;   // ~50 fps
+  const SCALING_LOW = 1.15;          // render at ~87% (much milder than 80%)
   const SCALING_HIGH = 1.0;          // full resolution
   function tickAdaptiveScaling(realDt: number): void {
+    // Re-checked each frame so cycling quality with G correctly enables/disables
+    // the pressure valve.
+    if (getQuality().tier !== "low") return;
     const ms = realDt * 1000;
     // Fast EMA — alpha 0.1 ≈ ~6 frames of memory, responsive but smoothed.
     frameTimeEma += (ms - frameTimeEma) * 0.1;
     if (scalingLevel === SCALING_HIGH && frameTimeEma > PRESSURE_THRESHOLD_MS) {
       pressureSeconds += realDt;
       recoverySeconds = 0;
-      if (pressureSeconds > 2) {
+      if (pressureSeconds > 3) {
         engine.setHardwareScalingLevel(SCALING_LOW);
         scalingLevel = SCALING_LOW;
         pressureSeconds = 0;
@@ -223,7 +291,7 @@ async function boot() {
     } else if (scalingLevel === SCALING_LOW && frameTimeEma < RECOVER_THRESHOLD_MS) {
       recoverySeconds += realDt;
       pressureSeconds = 0;
-      if (recoverySeconds > 4) {
+      if (recoverySeconds > 2) {
         engine.setHardwareScalingLevel(SCALING_HIGH);
         scalingLevel = SCALING_HIGH;
         recoverySeconds = 0;
@@ -241,42 +309,79 @@ async function boot() {
   // Reused buffer so the sword-tip sampler doesn't allocate a Vector3 per frame.
   const swordTipBuf = new Vector3();
 
-  // ---------- Global juice: hitstop + screen shake ----------
-  // Hitstop freezes gameplay update (not rendering) for a few frames on impact,
-  // selling the weight of each swing. Multiple rapid hits take the longest
-  // pending duration rather than stacking. Camera shake follows the same event.
-  let hitstopRemaining = 0;
-  function addHitstop(dur: number): void {
-    if (dur > hitstopRemaining) hitstopRemaining = dur;
+  // ---------- Deferred callback tracker ----------
+  // Every setTimeout in this file (boss-kill ember, shock ring stagger,
+  // boss-phase FOV restore, room transition swap, etc) can fire AFTER a
+  // resetRun() — if the user hits R mid-flight, those callbacks land on
+  // freshly-reset state (e.g. spawning a shock ring at the new player position
+  // milliseconds into a clean run). `defer()` wraps setTimeout, tracks the id,
+  // and `clearDeferred()` (called by resetRun) cancels all pending timers so
+  // the reset is clean.
+  const deferredTimers = new Set<ReturnType<typeof setTimeout>>();
+  function defer(fn: () => void, ms: number): void {
+    let id: ReturnType<typeof setTimeout>;
+    id = setTimeout(() => {
+      deferredTimers.delete(id);
+      fn();
+    }, ms);
+    deferredTimers.add(id);
   }
+  function clearDeferred(): void {
+    for (const id of deferredTimers) clearTimeout(id);
+    deferredTimers.clear();
+  }
+
+  // ---------- Global juice: screen shake ----------
+  // Hitstop (the brief gameplay-update freeze on impact) was removed entirely
+  // — players read it as the game stuttering rather than as impact weight.
+  // Camera shake + flashes + particles still sell every hit; gameplay runs
+  // at full speed at all times.
+
+  // Shared scratch Vector3 buffers for combat event handlers — these fire
+  // many times per frame during chained hits, so allocating fresh per-event
+  // was a real GC source. Each handler is synchronous so they can safely share.
+  const evScratch = new Vector3();
+  const evScratchGround = new Vector3();
+  const emberScratch = new Vector3();
+
+  // Combo-scaled feedback — a 6-kill chain shakes harder than a stand-alone
+  // kill, so chaining feels physically louder. Window matches the HUD's combo
+  // counter (3s); separate state since the HUD tracker is private.
+  let comboCount = 0;
+  let lastKillMs = 0;
 
   // Hit feedback
   events.on<EnemyHitPayload>("ENEMY_HIT", (p) => {
-    const pos = new Vector3(p.x, p.y, p.z);
+    evScratch.set(p.x, p.y, p.z);
     if (p.killed) {
-      hitFx.burst(pos, p.isBoss ? 60 : 32, [1.0, 0.55, 0.2], p.isBoss ? 1.6 : 1.0);
+      const nowMs = performance.now();
+      if (nowMs - lastKillMs < 3000) comboCount++;
+      else comboCount = 1;
+      lastKillMs = nowMs;
+      hitFx.burst(evScratch, p.isBoss ? 60 : 32, [1.0, 0.55, 0.2], p.isBoss ? 1.6 : 1.0);
       // Crit-style flare on the ground beneath the kill — scales bigger for boss kills.
-      hitFx.flare(pos, p.isBoss ? [1.0, 0.35, 0.1] : [1.0, 0.75, 0.25], p.isBoss ? 3.2 : 2.4, p.isBoss ? 0.35 : 0.24);
-      cam.shake(p.isBoss ? 0.18 : 0.06, p.isBoss ? 0.45 : 0.25);
-      // Hitstop tuned down from 60/100ms so chains of kills don't feel like
-      // a series of micro-freezes. Boss kill keeps a longer pause since it's
-      // a once-per-run moment.
-      addHitstop(p.isBoss ? 0.08 : 0.035);
+      hitFx.flare(evScratch, p.isBoss ? [1.0, 0.35, 0.1] : [1.0, 0.75, 0.25], p.isBoss ? 3.2 : 2.4, p.isBoss ? 0.35 : 0.24);
+      // Shake scales with combo size — capped so a 12-chain doesn't blur the
+      // screen permanently. Bosses still hit their own larger baseline.
+      const comboBoost = Math.min(0.16, comboCount * 0.025);
+      cam.shake(p.isBoss ? 0.18 : 0.06 + comboBoost, p.isBoss ? 0.45 : 0.25 + comboBoost * 0.5);
       // Blood splat on the ground under the kill. Medium/high quality only.
-      decals.spawn("blood", new Vector3(pos.x, 0, pos.z), p.isBoss ? 2.6 : 1.3);
+      evScratchGround.set(p.x, 0, p.z);
+      decals.spawn("blood", evScratchGround, p.isBoss ? 2.6 : 1.3);
       // Delayed "ember rise" — a small upward second burst at chest height
       // 200ms after death. Sells the dissolve as the spirit leaving the body.
       // Captured x/y/z so the closure doesn't retain pos.
       const ex = p.x, ey = p.y, ez = p.z;
-      setTimeout(() => {
-        hitFx.burst(new Vector3(ex, ey + 0.4, ez), p.isBoss ? 24 : 12, [1.0, 0.85, 0.55], p.isBoss ? 1.4 : 0.7);
+      const isBoss = p.isBoss;
+      defer(() => {
+        emberScratch.set(ex, ey + 0.4, ez);
+        hitFx.burst(emberScratch, isBoss ? 24 : 12, [1.0, 0.85, 0.55], isBoss ? 1.4 : 0.7);
       }, 200);
     } else {
-      hitFx.burst(pos, 14, [1.0, 0.85, 0.4], 0.7);
+      hitFx.burst(evScratch, 14, [1.0, 0.85, 0.4], 0.7);
       cam.shake(0.03, 0.18);
-      addHitstop(0.022);
     }
-    damageNumbers.spawn(pos, p.amount, p.killed ? "#ff7733" : "#ffe066", p.killed);
+    damageNumbers.spawn(evScratch, p.amount, p.killed ? "#ff7733" : "#ffe066", p.killed);
   });
 
   // Player damage flash — vignette pulses red briefly when player takes damage.
@@ -300,27 +405,28 @@ async function boot() {
     const dying = enemies.enemies.find((e) => e.id === enemyId);
     if (!dying) return;
     if (!dying.def.name.startsWith("boss_")) return;
+    // One-shot per run, but still: clone() since startKillCam holds the
+    // reference. Below burst uses the scratch buffer.
     const center = dying.root.position.clone();
     center.y = 0;
     cam.startKillCam(center, 9, 0.9, 2.5);
-    addHitstop(0.28);
     cam.shake(0.2, 0.8);
     // Soul-wisp style burst + ground flare at the boss's feet.
     hitFx.flare(center, [1.0, 0.55, 0.1], 5.0, 1.0);
-    hitFx.burst(new Vector3(center.x, 0.5, center.z), 80, [1.0, 0.7, 0.25], 1.6);
+    evScratch.set(center.x, 0.5, center.z);
+    hitFx.burst(evScratch, 80, [1.0, 0.7, 0.25], 1.6);
   });
 
   // Boss phase 2 — big kick moment. Banner + banner clear handled below via BOSS_PHASE.
   let bossPhaseFlashTimer = 0;
   events.on<{ bossId: string; phase: number; spawnPos: Vector3 }>("BOSS_PHASE", ({ spawnPos }) => {
     cam.shake(0.28, 0.7);
-    addHitstop(0.18); // deeper freeze than a normal hit
     bossPhaseFlashTimer = 1.6;
     hud.setBanner("THE BRAWLER ENRAGES");
     hud.flashBossPhase();
     // Zoom the camera in for the reveal, then return to default after ~1.2s.
     cam.setFovTarget(0.7, 4);
-    setTimeout(() => cam.setFovTarget(null, 2), 1200);
+    defer(() => cam.setFovTarget(null, 2), 1200);
     // Transient grading intensification — drop saturation hard and deepen shadows
     // for ~1.6s, then restore the room's preset. We tweak the live ColorCurves
     // directly instead of swapping presets, since the boss room is already Pit
@@ -331,7 +437,7 @@ async function boot() {
       const prevShadowsDensity = curves.shadowsDensity;
       curves.globalSaturation = -60;
       curves.shadowsDensity = 60;
-      setTimeout(() => {
+      defer(() => {
         curves.globalSaturation = prevSat;
         curves.shadowsDensity = prevShadowsDensity;
       }, 1600);
@@ -421,6 +527,27 @@ async function boot() {
     r.mesh.setEnabled(true);
   }
 
+  /**
+   * Cyan-white ice ring used for the cold-crash moment. Lingers a touch longer
+   * than a normal Crash ring so the freeze beat reads as "everything stopped".
+   */
+  function spawnFrostShockRing(maxRadius: number, durSec = 0.85): void {
+    const r = acquireShockRing();
+    if (!r) return;
+    r.mesh.position.x = player.root.position.x;
+    r.mesh.position.z = player.root.position.z;
+    r.mesh.scaling.x = r.mesh.scaling.z = 1;
+    r.mat.diffuseColor.set(0.55, 0.85, 1.0);
+    r.mat.emissiveColor.set(0.45, 0.75, 1.0);
+    r.mat.alpha = 0.9;
+    r.startAlpha = 0.9;
+    r.ttl = durSec;
+    r.initialTtl = durSec;
+    r.maxRadius = maxRadius;
+    r.active = true;
+    r.mesh.setEnabled(true);
+  }
+
   function updateShockRings(dt: number): void {
     for (const r of shockRings) {
       if (!r.active) continue;
@@ -437,72 +564,126 @@ async function boot() {
     }
   }
 
-  // ---------- Card FX: ephemeral ground meshes so Cleave/Dash read visually ----------
-  interface CardFxMesh { mesh: Mesh; mat: StandardMaterial; ttl: number; initial: number; }
-  const cardFx: CardFxMesh[] = [];
+  // ---------- Card FX: pooled ground meshes so Cleave/Dash read visually ----------
+  // Pre-allocate 3 arc discs + 3 dash bars at their canonical sizes, then
+  // re-skin/reposition on each cast. The original implementation allocated a
+  // fresh mesh + material + (for arc) TransformNode per cast and disposed on
+  // expire — that's the kind of GC churn we're systematically removing.
+  //
+  // The arc disc geometry is built at a fixed reference radius/arcDeg and we
+  // scale the parent to match the cast's range — visual angle/tessellation
+  // approximates the CombatManager preview without per-cast geometry rebuild.
+  interface CardFxSlot {
+    mesh: Mesh;
+    mat: StandardMaterial;
+    pivot?: TransformNode;
+    kind: "arc" | "dash";
+    ttl: number;
+    initial: number;
+    active: boolean;
+  }
+  const CARD_ARC_REF_RADIUS = 1; // unit disc — scale parent to actual range
+  const CARD_ARC_REF_DEG = 100;
+  const cardFxPool: CardFxSlot[] = [];
+  const CARD_FX_ARC_SLOTS = 3;
+  const CARD_FX_DASH_SLOTS = 3;
+  for (let i = 0; i < CARD_FX_ARC_SLOTS; i++) {
+    const mesh = MeshBuilder.CreateDisc(
+      `cardArc_${i}`,
+      { radius: CARD_ARC_REF_RADIUS, tessellation: 36, arc: CARD_ARC_REF_DEG / 360 },
+      scene,
+    );
+    mesh.rotation.x = Math.PI / 2;
+    mesh.rotation.y = ((CARD_ARC_REF_DEG / 2) * Math.PI) / 180 - Math.PI / 2;
+    mesh.isPickable = false;
+    mesh.doNotSyncBoundingInfo = true;
+    const parent = new TransformNode(`cardArcPivot_${i}`, scene);
+    parent.position.y = 0.08;
+    mesh.parent = parent;
+    parent.setEnabled(false);
+    const mat = new StandardMaterial(`cardArcMat_${i}`, scene);
+    mat.diffuseColor = new Color3(1, 0.7, 0.25);
+    mat.emissiveColor = new Color3(1, 0.55, 0.15);
+    mat.disableLighting = true;
+    mat.backFaceCulling = false;
+    mat.alpha = 0.7;
+    mesh.material = mat;
+    cardFxPool.push({ mesh, mat, pivot: parent, kind: "arc", ttl: 0, initial: 0, active: false });
+  }
+  for (let i = 0; i < CARD_FX_DASH_SLOTS; i++) {
+    // Reference geometry: 1m depth, 1.6m wide. Scaled per cast to actual range.
+    const mesh = MeshBuilder.CreateBox(
+      `cardDash_${i}`,
+      { width: 1.6, height: 0.02, depth: 1 },
+      scene,
+    );
+    mesh.position.y = 0.07;
+    mesh.isPickable = false;
+    mesh.doNotSyncBoundingInfo = true;
+    mesh.setEnabled(false);
+    const mat = new StandardMaterial(`cardDashMat_${i}`, scene);
+    mat.diffuseColor = new Color3(0.8, 0.55, 1.0);
+    mat.emissiveColor = new Color3(0.75, 0.4, 1.0);
+    mat.disableLighting = true;
+    mat.alpha = 0.7;
+    mesh.material = mat;
+    cardFxPool.push({ mesh, mat, kind: "dash", ttl: 0, initial: 0, active: false });
+  }
+
+  function acquireCardFxSlot(kind: "arc" | "dash"): CardFxSlot | null {
+    for (const s of cardFxPool) if (s.kind === kind && !s.active) return s;
+    // All busy — recycle the one with the least time left so a fresh cast paints.
+    let oldest: CardFxSlot | null = null;
+    for (const s of cardFxPool) {
+      if (s.kind === kind && (!oldest || s.ttl < oldest.ttl)) oldest = s;
+    }
+    return oldest;
+  }
 
   function spawnCardFx(fx: CardArcFx): void {
     if (fx.kind === "arc") {
-      const arcDeg = fx.arcDegrees ?? 100;
-      const mesh = MeshBuilder.CreateDisc(
-        `cardArc_${Date.now()}`,
-        { radius: fx.range, tessellation: 36, arc: arcDeg / 360 },
-        scene,
-      );
-      // Same YXZ composition used in CombatManager — tip into XZ, then yaw so arc centers on +Z.
-      mesh.rotation.x = Math.PI / 2;
-      mesh.rotation.y = ((arcDeg / 2) * Math.PI) / 180 - Math.PI / 2;
-      // Then rotate the whole mesh so +Z local maps onto the facing direction in world space.
-      const parent = new TransformNode(`cardArcPivot_${Date.now()}`, scene);
-      parent.position.x = fx.x;
-      parent.position.y = 0.08;
-      parent.position.z = fx.z;
-      parent.rotation.y = Math.atan2(fx.fx, fx.fz);
-      mesh.parent = parent;
-      const mat = new StandardMaterial(`cardArcMat_${Date.now()}`, scene);
-      mat.diffuseColor = new Color3(1, 0.7, 0.25);
-      mat.emissiveColor = new Color3(1, 0.55, 0.15);
-      mat.disableLighting = true;
-      mat.backFaceCulling = false;
-      mat.alpha = 0.7;
-      mesh.material = mat;
-      cardFx.push({ mesh, mat, ttl: 0.3, initial: 0.3 });
-      (mesh as Mesh & { __pivot?: TransformNode }).__pivot = parent;
+      const slot = acquireCardFxSlot("arc");
+      if (!slot || !slot.pivot) return;
+      slot.pivot.position.x = fx.x;
+      slot.pivot.position.z = fx.z;
+      slot.pivot.rotation.y = Math.atan2(fx.fx, fx.fz);
+      // Scale the parent to match the cast's range — a uniform XZ scale on
+      // the unit disc reproduces the original per-cast geometry.
+      slot.pivot.scaling.x = fx.range;
+      slot.pivot.scaling.z = fx.range;
+      slot.mat.alpha = 0.7;
+      slot.ttl = 0.3;
+      slot.initial = 0.3;
+      slot.active = true;
+      slot.pivot.setEnabled(true);
     } else {
-      // Dash swept line: a thin flat box from start → along direction for `range` meters.
-      const mesh = MeshBuilder.CreateBox(
-        `cardDash_${Date.now()}`,
-        { width: 1.6, height: 0.02, depth: Math.max(0.2, fx.range) },
-        scene,
-      );
-      mesh.position.x = fx.x + fx.fx * fx.range * 0.5;
-      mesh.position.y = 0.07;
-      mesh.position.z = fx.z + fx.fz * fx.range * 0.5;
-      mesh.rotation.y = Math.atan2(fx.fx, fx.fz);
-      const mat = new StandardMaterial(`cardDashMat_${Date.now()}`, scene);
-      mat.diffuseColor = new Color3(0.8, 0.55, 1.0);
-      mat.emissiveColor = new Color3(0.75, 0.4, 1.0);
-      mat.disableLighting = true;
-      mat.alpha = 0.7;
-      mesh.material = mat;
-      cardFx.push({ mesh, mat, ttl: 0.28, initial: 0.28 });
+      const slot = acquireCardFxSlot("dash");
+      if (!slot) return;
+      slot.mesh.position.x = fx.x + fx.fx * fx.range * 0.5;
+      slot.mesh.position.z = fx.z + fx.fz * fx.range * 0.5;
+      slot.mesh.rotation.y = Math.atan2(fx.fx, fx.fz);
+      // Scale Z to match dash range — reference depth is 1m.
+      slot.mesh.scaling.z = Math.max(0.2, fx.range);
+      slot.mat.alpha = 0.7;
+      slot.ttl = 0.28;
+      slot.initial = 0.28;
+      slot.active = true;
+      slot.mesh.setEnabled(true);
     }
   }
 
   function updateCardFx(dt: number): void {
-    for (let i = cardFx.length - 1; i >= 0; i--) {
-      const f = cardFx[i];
-      f.ttl -= dt;
-      if (f.ttl <= 0) {
-        const pivot = (f.mesh as Mesh & { __pivot?: TransformNode }).__pivot;
-        f.mesh.dispose();
-        f.mat.dispose();
-        if (pivot) pivot.dispose();
-        cardFx.splice(i, 1);
+    for (const s of cardFxPool) {
+      if (!s.active) continue;
+      s.ttl -= dt;
+      if (s.ttl <= 0) {
+        s.active = false;
+        if (s.pivot) s.pivot.setEnabled(false);
+        else s.mesh.setEnabled(false);
         continue;
       }
-      const t = f.ttl / f.initial;
-      f.mat.alpha = 0.7 * t;
+      const t = s.ttl / s.initial;
+      s.mat.alpha = 0.7 * t;
     }
   }
 
@@ -512,16 +693,17 @@ async function boot() {
   // non-melee card fires. Sells the moment of casting at chest height, not the
   // feet. Pooled HitParticles handles both.
   events.on<{ kind: "bolt" | "dash"; x: number; y: number; z: number }>("CAST_FX", (p) => {
-    const pos = new Vector3(p.x, p.y, p.z);
+    evScratch.set(p.x, p.y, p.z);
+    evScratchGround.set(p.x, 0, p.z);
     if (p.kind === "bolt") {
       // Small outward burst in cool gold (matches projectile emissive) + a tiny
       // ground flare so the cast reads from overhead too.
-      hitFx.burst(pos, 18, [1.0, 0.85, 0.35], 0.8);
-      hitFx.flare(new Vector3(p.x, 0, p.z), [1.0, 0.85, 0.35], 1.1, 0.14);
+      hitFx.burst(evScratch, 18, [1.0, 0.85, 0.35], 0.8);
+      hitFx.flare(evScratchGround, [1.0, 0.85, 0.35], 1.1, 0.14);
     } else {
       // Dash: purple ground flare + small burst at the start position.
-      hitFx.burst(pos, 14, [0.8, 0.55, 1.0], 0.9);
-      hitFx.flare(new Vector3(p.x, 0, p.z), [0.8, 0.55, 1.0], 1.4, 0.18);
+      hitFx.burst(evScratch, 14, [0.8, 0.55, 1.0], 0.9);
+      hitFx.flare(evScratchGround, [0.8, 0.55, 1.0], 1.4, 0.18);
     }
   });
 
@@ -531,22 +713,22 @@ async function boot() {
   const crashAberrationDuration = 0.4;
 
   events.on<{ radius: number; dmg: number; accidental: boolean }>("CRASH_ATTACK", ({ radius, dmg }) => {
-    // RH2's crash is huge by design (radius=100). Cap visual ring at a sane size for our arenas
-    // so it reads as "wave from the player" instead of an invisible omni-blast.
-    const visRadius = Math.min(radius, 14);
+    // Crash radius is now player-tight (~6m) so the visual ring matches the
+    // damage zone exactly — no more "screen-clear that doesn't show the AOE".
+    const visRadius = radius;
     // Three concentric shock rings, staggered by 0.05s. Creates a "wave train" read.
     spawnShockRing(visRadius);
-    setTimeout(() => spawnShockRing(visRadius * 0.75), 50);
-    setTimeout(() => spawnShockRing(visRadius * 0.5), 110);
-    // Crash is the climactic payoff — big shake, a brief hitstop, and a bright flare under the player.
+    defer(() => spawnShockRing(visRadius * 0.75), 50);
+    defer(() => spawnShockRing(visRadius * 0.5), 110);
+    // Crash is the climactic payoff — big shake + bright flare under the player.
     cam.shake(0.22, 0.5);
-    addHitstop(0.1);
-    hitFx.flare(new Vector3(player.root.position.x, 0, player.root.position.z), [1.0, 0.85, 0.25], 5.5, 0.5);
+    evScratchGround.set(player.root.position.x, 0, player.root.position.z);
+    hitFx.flare(evScratchGround, [1.0, 0.85, 0.25], 5.5, 0.5);
     // Scorch decal under the Crash — visible proof of the blast for a while.
-    decals.spawn("scorch", new Vector3(player.root.position.x, 0, player.root.position.z), 5.5);
+    decals.spawn("scorch", evScratchGround, 5.5);
     // Cracked-earth decal sits slightly smaller than the scorch so the lines
     // read through the dark scorch tint — "split open by the blast".
-    decals.spawn("crack", new Vector3(player.root.position.x, 0, player.root.position.z), 4.2);
+    decals.spawn("crack", evScratchGround, 4.2);
     // Kick the chromatic aberration ramp — driven by the render loop so it composes
     // with any low-HP aberration that might already be running.
     crashAberrationTimer = crashAberrationDuration;
@@ -564,6 +746,32 @@ async function boot() {
         if (d > 1e-4) e.knockback(dx / d, dz / d, 9);
       }
     }
+  });
+
+  // ---------- Cold Crash (tempo bottomed out) ----------
+  // Tempo dropping to zero is a "you stalled" beat — it's not a damage event,
+  // it's a punishment. Read it visually as the world flash-freezing around the
+  // player: cyan rings, ice decal, blue vignette, brief hitstop, hard shake.
+  // The mechanical reset (value→20, 0.6s recover lockout) lives in TempoSystem.
+  events.on<{ radius: number; freezeDur: number }>("COLD_CRASH", () => {
+    spawnFrostShockRing(11, 0.9);
+    defer(() => spawnFrostShockRing(7.5, 0.75), 70);
+    defer(() => spawnFrostShockRing(4.5, 0.6), 150);
+    cam.shake(0.18, 0.55);
+    // Pale icy flare under the player + a frost decal that lingers ~8s — a
+    // ground footprint of where the freeze landed. Both reads use the shared
+    // ground/elevated scratch buffers.
+    evScratchGround.set(player.root.position.x, 0, player.root.position.z);
+    hitFx.flare(evScratchGround, [0.55, 0.85, 1.0], 4.2, 0.45);
+    decals.spawn("frost", evScratchGround, 4.6);
+    // Burst of "ice mote" particles upward from the feet.
+    evScratch.set(player.root.position.x, 0.5, player.root.position.z);
+    hitFx.burst(evScratch, 36, [0.7, 0.9, 1.0], 1.3);
+    // Vignette flash — cyan, longer than the ZONE_TRANSITION drop tick (0.35s)
+    // so the freeze beat dominates the screen-edge tint while crashRecoverTimer
+    // (~0.6s) ticks down.
+    zoneTransitionFlashTimer = 0.7;
+    zoneTransitionFlashColor.set(0.45, 0.7, 1.0);
   });
 
   // ---------- Tempo zone-transition VFX ----------
@@ -584,8 +792,9 @@ async function boot() {
       const isCritical = newZone === "CRITICAL";
       spawnShockRing(isCritical ? 8 : 6);
       cam.shake(isCritical ? 0.16 : 0.10, isCritical ? 0.45 : 0.32);
+      evScratchGround.set(player.root.position.x, 0, player.root.position.z);
       hitFx.flare(
-        new Vector3(player.root.position.x, 0, player.root.position.z),
+        evScratchGround,
         isCritical ? [1.0, 0.55, 0.25] : [1.0, 0.75, 0.25],
         isCritical ? 4.4 : 3.2,
         isCritical ? 0.42 : 0.30,
@@ -713,7 +922,14 @@ async function boot() {
     if (idx >= run.rooms.length - 1) return "pit";
     return "verdant";
   }
+  function isBossRoom(idx: number): boolean {
+    return idx >= run.rooms.length - 1;
+  }
   applyGradingPreset(pipeline, presetForRoom(0));
+  applyBossLighting(sceneBundle, isBossRoom(0));
+  // Fireflies belong to the verdant biome — kill them in the boss arena where
+  // the firelight palette would fight the cool spec highlights.
+  fireflies.setEnabled(!isBossRoom(0));
 
   // Arena hazards are only active in the boss room (the last index). The flag
   // flips in handleRoomCleared's transition block and on reset.
@@ -743,65 +959,96 @@ async function boot() {
     return out;
   }
 
-  async function handleRoomCleared(): Promise<void> {
+  function handleRoomCleared(): void {
     if (gs.phase !== "playing") return;
-    gs.setPhase("reward");
-    const options = pickRewardOptions();
-    if (options.length > 0) {
-      hud.setBanner("ROOM CLEARED");
-      // Enable depth-of-field while the picker is up so the world behind blurs
-      // out — pulls the player's focus to the cards. Restored on close even if
-      // the picker is dismissed without a pick.
-      pipeline.depthOfFieldEnabled = true;
-      pipeline.depthOfField.focalLength = 50;
-      pipeline.depthOfField.fStop = 1.4;
-      pipeline.depthOfField.focusDistance = 8000; // mm — focuses ~8m out, behind player
-      pipeline.depthOfField.lensSize = 50;
-      try {
-        const picked = await rewardPicker.open(options);
-        if (picked) {
-          items.equip(picked.id);
-          // HUD listens for RELIC_EQUIPPED to show the banner + expanding ring + persistent badge.
-          events.emit("RELIC_EQUIPPED", { id: picked.id, name: picked.name, color: picked.color });
-        }
-      } finally {
-        pipeline.depthOfFieldEnabled = false;
-        hud.setBanner(null);
-      }
-    }
-
+    // Last room → straight to victory. The boss arena has no exit door, so
+    // there's nothing to walk through; clearing it ends the run.
     if (run.isLastRoom()) {
       gs.setPhase("victory");
       hud.setBanner("VICTORY — press R to play again");
       return;
     }
+    // Otherwise: open the door and let the player walk to it themselves. The
+    // reward picker fires AFTER they cross the threshold, in `runDoorTransition`.
+    gs.setPhase("door_open");
+    hud.setBanner("EXIT THROUGH THE DOOR");
+    const arena = run.arena;
+    if (arena && arena.door) {
+      arena.door.setLocked(false);
+      arena.doorPass.active = true;
+    } else {
+      // Defensive fallback — if the room has no door (shouldn't happen for a
+      // non-last room, but if a future room descriptor sets exitDoor:false
+      // mid-run we want to still be able to advance), skip straight to
+      // transition. Reuses the same path the doorway crossing fires.
+      void runDoorTransition();
+    }
+  }
 
+  /**
+   * Player has crossed the doorway threshold (or no door exists). Fade with a
+   * brief flash, swap the arena under cover, then surface the reward picker
+   * as the player "enters" the new room.
+   */
+  async function runDoorTransition(): Promise<void> {
+    if (gs.phase !== "door_open" && gs.phase !== "playing") return;
     gs.setPhase("transitioning");
-    // Wipe to black, then swap arena under cover, then wipe out. The Hud.playWipe
-    // returns once the full fade-in + hold + fade-out sequence completes.
-    const nextRoomIdx = run.currentIndex + 1;
-    const nextRoomName = run.rooms[nextRoomIdx].name;
-    const wipePromise = hud.playWipe(nextRoomName);
-    // Swap the arena once the screen is fully black (~400ms in). Run it concurrently
-    // with the wipe Promise so we can await the full sequence at the end.
+    hud.setBanner(null);
+    // Brief white flash hides the arena swap. Swap happens at the apex (~75ms in).
+    const flashPromise = hud.playFlash("#ffffff", 180, 0.92);
     setTimeout(() => {
       const nextArena = run.nextRoom();
       gs.roomIndex = run.currentIndex;
       input.setFloorReference(nextArena.floor);
       enemies.setPillars(nextArena.pillars);
-      controller.setArena({ bounds: nextArena.bounds, pillars: nextArena.pillars });
+      controller.setArena({
+        bounds: nextArena.bounds,
+        pillars: nextArena.pillars,
+        doorPass: nextArena.doorPass,
+      });
       placePlayerAtSpawn(nextArena.bounds);
       hud.setRoomIndicator(`${run.rooms[gs.roomIndex].name} (${gs.roomIndex + 1}/${run.rooms.length})`);
       applyGradingPreset(pipeline, presetForRoom(gs.roomIndex));
+      applyBossLighting(sceneBundle, isBossRoom(gs.roomIndex));
+      fireflies.setEnabled(!isBossRoom(gs.roomIndex));
       updateArenaHazardsEnabled();
       // Hand is fixed for the whole run — no re-draw between rooms.
       ensureValidSelection();
-    }, 420);
-    await wipePromise;
+    }, 90);
+    await flashPromise;
+    // Reward picker now fires "as the player enters" — narratively framed as
+    // their reward for clearing the previous room rather than a meta-screen
+    // between arenas.
+    await openRewardPicker();
     gs.setPhase("playing");
   }
 
+  async function openRewardPicker(): Promise<void> {
+    const options = pickRewardOptions();
+    if (options.length === 0) return;
+    hud.setBanner("CHOOSE A RELIC");
+    pipeline.depthOfFieldEnabled = true;
+    pipeline.depthOfField.focalLength = 50;
+    pipeline.depthOfField.fStop = 1.4;
+    pipeline.depthOfField.focusDistance = 8000;
+    pipeline.depthOfField.lensSize = 50;
+    try {
+      const picked = await rewardPicker.open(options);
+      if (picked) {
+        items.equip(picked.id);
+        events.emit("RELIC_EQUIPPED", { id: picked.id, name: picked.name, color: picked.color });
+      }
+    } finally {
+      pipeline.depthOfFieldEnabled = false;
+      hud.setBanner(null);
+    }
+  }
+
   function resetRun(): void {
+    // Cancel any in-flight deferred callbacks first — without this, an
+    // ember burst from a kill 100ms before reset would land at the new spawn
+    // position, or a queued shock-ring stagger would fire on a fresh arena.
+    clearDeferred();
     player.reset();
     tempo.reset();
     deck.reset();
@@ -818,6 +1065,8 @@ async function boot() {
     hitFx.resetFlares();
     stepDust.reset();
     swordAura.reset();
+    groundPulse.reset();
+    crashTelegraph.reset();
     // Shock rings are pre-allocated pools now — hide and reset state instead
     // of disposing (which would empty the pool for the rest of the session).
     for (const r of shockRings) {
@@ -825,15 +1074,14 @@ async function boot() {
       r.ttl = 0;
       r.mesh.setEnabled(false);
     }
-    for (const f of cardFx) {
-      const pivot = (f.mesh as Mesh & { __pivot?: TransformNode }).__pivot;
-      f.mesh.dispose();
-      f.mat.dispose();
-      if (pivot) pivot.dispose();
+    // Card FX pool — hide all and reset state, never dispose (pool persists).
+    for (const s of cardFxPool) {
+      s.active = false;
+      s.ttl = 0;
+      if (s.pivot) s.pivot.setEnabled(false);
+      else s.mesh.setEnabled(false);
     }
-    cardFx.length = 0;
     damageFlashTimer = 0;
-    hitstopRemaining = 0;
     bossPhaseFlashTimer = 0;
     pipeline.chromaticAberrationEnabled = false;
     pipeline.bloomWeight = 0.4;
@@ -844,11 +1092,17 @@ async function boot() {
     const arena = run.loadRoom(0);
     input.setFloorReference(arena.floor);
     enemies.setPillars(arena.pillars);
-    controller.setArena({ bounds: arena.bounds, pillars: arena.pillars });
+    controller.setArena({
+      bounds: arena.bounds,
+      pillars: arena.pillars,
+      doorPass: arena.doorPass,
+    });
     placePlayerAtSpawn(arena.bounds);
     hud.setBanner(null);
     hud.setRoomIndicator(`${run.rooms[0].name} (1/${run.rooms.length})`);
     applyGradingPreset(pipeline, presetForRoom(0));
+    applyBossLighting(sceneBundle, isBossRoom(0));
+    fireflies.setEnabled(!isBossRoom(0));
     updateArenaHazardsEnabled();
     refreshAttackPreview();
   }
@@ -893,7 +1147,7 @@ async function boot() {
       pressureSeconds = 0;
       recoverySeconds = 0;
       hud.setBanner(`GRAPHICS: ${q.tier.toUpperCase()}`);
-      setTimeout(() => { if (gs.phase === "playing") hud.setBanner(null); }, 1200);
+      defer(() => { if (gs.phase === "playing") hud.setBanner(null); }, 1200);
     }
   });
 
@@ -904,10 +1158,59 @@ async function boot() {
   // existing flags.
   scene.blockMaterialDirtyMechanism = true;
 
-  // Intro screen — wait for user dismissal before starting the loop
-  const intro = new IntroScreen(scene);
+  // Menu system — owns the start menu, pause menu, and shared controls panel.
+  // Gameplay phase begins as "menu" (set in GameState default) so the gameplay
+  // tick below bails out until the player clicks START.
+  const menus = new MenuSystem(scene);
   engine.runRenderLoop(() => scene.render());
-  await intro.wait();
+
+  // Pause menu plumbing. Esc toggles when the player is mid-game; on the menus
+  // themselves it routes to the controls overlay's back action. Installed
+  // BEFORE the first start menu so Esc can close the controls panel even
+  // before the game has started.
+  let pauseInFlight = false;
+  async function openPauseMenu(): Promise<void> {
+    if (pauseInFlight) return;
+    if (gs.phase !== "playing") return;
+    pauseInFlight = true;
+    gs.setPhase("paused");
+    const choice = await menus.showPauseMenu();
+    menus.hide();
+    pauseInFlight = false;
+    if (choice === "resume") {
+      gs.setPhase("playing");
+    } else if (choice === "quit") {
+      window.close();
+    } else if (choice === "mainMenu") {
+      // Wipe the run, drop back to the start screen, then loop back into play.
+      resetRun();
+      gs.setPhase("menu");
+      await runStartMenu();
+    }
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (menus.isAnyOpen) {
+      if (menus.handleEscape()) e.preventDefault();
+      return;
+    }
+    if (gs.phase === "playing") {
+      e.preventDefault();
+      void openPauseMenu();
+    }
+  });
+
+  async function runStartMenu(): Promise<void> {
+    const choice = await menus.showStartMenu();
+    if (choice === "quit") {
+      window.close();
+      return;
+    }
+    menus.hide();
+    gs.setPhase("playing");
+  }
+  await runStartMenu();
 
   // Tab-blur / stall recovery: after the tab becomes visible again, the first
   // frame's engine.getDeltaTime() reflects the wall-clock gap (seconds to minutes).
@@ -924,21 +1227,27 @@ async function boot() {
       return;
     }
 
+    // Frozen states — start menu before play, or pause menu mid-play. Skip ALL
+    // gameplay + visual ticks so the world is genuinely paused under the menu.
+    // The next render still draws the last gameplay frame underneath the dim
+    // overlay, which is exactly what we want for "snapshot of where I left off".
+    if (gs.isFrozen()) return;
+
     // Clamp dt to at most 1/30s. Protects against single long frames (GC pause,
     // alt-tab without the visibility event firing, browser throttling) from
     // teleporting the player through walls or advancing timers by seconds.
     const realDt = Math.min(engine.getDeltaTime() / 1000, 1 / 30);
+    // Capture once per frame so multiple post-fx readers (vignette, chromatic
+    // aberration, bloom lift, sword shimmer) share the same `performance.now()`
+    // and the same sin samples. Saves ~5 trig calls + 5 perf.now syscalls.
+    const nowMs = performance.now();
+    const heartbeatPulse = 0.5 + 0.5 * Math.sin(nowMs * 0.0075);
     const camForward = cam.camera.getForwardRay().direction;
     const frame = input.consume(camForward);
 
-    // Hitstop: gameplay update freezes briefly while visuals, camera, and post-fx
-    // keep running at full speed. The counter drains against realDt so the freeze
-    // is wall-clock, not stretched by itself.
-    let dt = realDt;
-    if (hitstopRemaining > 0) {
-      hitstopRemaining = Math.max(0, hitstopRemaining - realDt);
-      dt = realDt * 0.08;
-    }
+    // Gameplay dt always equals realDt — no hitstop, no slowdown. Impact reads
+    // come from camera shake + flashes + particles, all of which run regardless.
+    const dt = realDt;
 
     controller.update(dt, frame);
 
@@ -991,8 +1300,8 @@ async function boot() {
       hud.setSelectedSlot(selection.slot);
       hud.setLockedTargetName(lock.enemy ? prettyEnemyName(lock.enemy) : null);
 
-      if (frame.crashPressed && tempo.value >= 85 && !tempo.isCrashed) {
-        tempo.setValue(100);
+      if (frame.crashPressed) {
+        tempo.triggerCrash();
       }
 
       if (player.ap < player.stats.maxAp) {
@@ -1017,7 +1326,17 @@ async function boot() {
     enemyHpPips.update(enemies.enemies);
     // Environment wind + future ambient effects. Guarded by arena presence —
     // RunManager.arena is null only before the first loadRoom() call.
-    if (run.arena?.env) run.arena.env.tick(realDt);
+    if (run.arena?.env) {
+      run.arena.env.tick(realDt);
+      // Tempo-driven mote density boost — the air visibly thickens with
+      // energy at HOT/CRITICAL. Linear ramp from 1.0 at tempo 70 to 1.5 at 90+.
+      const moteBoost = tempo.value < 70
+        ? 1.0
+        : 1.0 + 0.5 * Math.min(1, (tempo.value - 70) / 20);
+      run.arena.env.setMoteBoost(moteBoost);
+    }
+    fireflies.tick(realDt);
+    tickBossLighting(sceneBundle, realDt);
 
     // Arena hazards — only active in the boss room. Tick FIRST with the current
     // player position, then consume any pending damage to apply to HP. Uses the
@@ -1046,6 +1365,28 @@ async function boot() {
     const auraTarget = tempo.value >= 90 ? Math.min(1, (tempo.value - 90) / 8) : 0;
     swordAura.setTargetIntensity(auraTarget);
     swordAura.tick(realDt);
+    groundPulse.tick(realDt, player.root.position.x, player.root.position.z, tempo.value);
+
+    // Crash telegraph — appears the moment tempo crosses the threshold and
+    // hides on crash trigger / drop below it. Density count (0-N enemies in
+    // range) drives the color shift toward red, so the ring tells the player
+    // both *where* and *how lethal* their next F press will be.
+    const crashReady = tempo.canCrash();
+    crashTelegraph.setVisible(crashReady && gs.phase === "playing");
+    if (crashReady) {
+      let inRange = 0;
+      const cR2 = CRASH_RADIUS * CRASH_RADIUS;
+      const cpx = player.root.position.x;
+      const cpz = player.root.position.z;
+      for (const e of enemies.enemies) {
+        if (!e.alive) continue;
+        const dx = e.root.position.x - cpx;
+        const dz = e.root.position.z - cpz;
+        if (dx * dx + dz * dz <= cR2) inRange++;
+      }
+      crashTelegraph.setEnemyDensity(inRange);
+      crashTelegraph.tick(realDt, cpx, cpz);
+    }
 
     // Relic auras — Runaway trail, Berserker Heart emissive ramp, Metronome dot.
     // `movingSpeed` = approximate magnitude of movement this frame (not per-second).
@@ -1085,9 +1426,8 @@ async function boot() {
     } else if (hpRatio > 0 && hpRatio < 0.33) {
       // Heartbeat pulse — ~1.2Hz, amplitude scales as HP drops further (peak at 15%).
       const urgency = Math.min(1, (0.33 - hpRatio) / 0.18);
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.0075);
       vc.r = 1.0; vc.g = 0.08; vc.b = 0.08;
-      vc.a = (0.35 + 0.35 * pulse) * urgency;
+      vc.a = (0.35 + 0.35 * heartbeatPulse) * urgency;
     } else if (zoneTransitionFlashTimer > 0) {
       // Transient flash from a tempo zone change — overrides the ambient zone
       // tint for a brief moment so the transition reads as a discrete event.
@@ -1111,8 +1451,9 @@ async function boot() {
     // Enable the post-process once we have either contribution and set the max.
     let aberration = 0;
     if (hpRatio > 0 && hpRatio < 0.15) {
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.0075);
-      aberration = 14 * pulse;
+      // Same heartbeatPulse used by the vignette above — both at ~1.2Hz so they
+      // visibly sync, and only one trig call per frame is paid.
+      aberration = 14 * heartbeatPulse;
     }
     if (crashAberrationTimer > 0) {
       crashAberrationTimer = Math.max(0, crashAberrationTimer - realDt);
@@ -1130,11 +1471,15 @@ async function boot() {
 
     // Tempo CRITICAL bloom lift — "crash ready" should feel electric, not just labeled.
     // Baseline bloomWeight is 0.4 (set in SceneSetup). Pulse 0.4 → 0.68 at ~1.6Hz while >= 85.
+    // Plus a contrast nudge so highlights pop and the world looks more decisive
+    // when the player is in the zone — composes with the existing bloom pulse.
     if (tempo.value >= 85 && !tempo.isCrashed) {
-      const lift = 0.5 + 0.5 * Math.sin(performance.now() * 0.01);
+      const lift = 0.5 + 0.5 * Math.sin(nowMs * 0.01);
       pipeline.bloomWeight = 0.4 + 0.28 * lift;
+      pipeline.imageProcessing.contrast = 1.05 + 0.10 * lift;
     } else {
       pipeline.bloomWeight = 0.4;
+      pipeline.imageProcessing.contrast = 1.05;
     }
 
     // Hot blade — ramp the sword's emissive toward orange/red as Tempo rises
@@ -1143,7 +1488,7 @@ async function boot() {
     // top gives the "about to crash" shimmer when the bar is electric.
     {
       const t = Math.max(0, Math.min(1, (tempo.value - 70) / 30));
-      const shimmer = t > 0.5 ? Math.sin(performance.now() * 0.012) * 0.12 : 0;
+      const shimmer = t > 0.5 ? Math.sin(nowMs * 0.012) * 0.12 : 0;
       player.swordMat.emissiveColor.set(
         0.25 + 0.95 * t + shimmer,
         0.22 + 0.23 * t,
@@ -1155,8 +1500,26 @@ async function boot() {
     const a = controller.arena;
     if (player.root.position.x < a.bounds.minX + r) player.root.position.x = a.bounds.minX + r;
     if (player.root.position.x > a.bounds.maxX - r) player.root.position.x = a.bounds.maxX - r;
-    if (player.root.position.z < a.bounds.minZ + r) player.root.position.z = a.bounds.minZ + r;
+    const dpSafety = a.doorPass;
+    const inDoorSafety = !!dpSafety && dpSafety.active
+      && player.root.position.x > dpSafety.xMin + r
+      && player.root.position.x < dpSafety.xMax - r;
+    if (!inDoorSafety && player.root.position.z < a.bounds.minZ + r) player.root.position.z = a.bounds.minZ + r;
     if (player.root.position.z > a.bounds.maxZ - r) player.root.position.z = a.bounds.maxZ - r;
+
+    // Door tick + threshold trigger. The arena's door (when present) animates
+    // open after unlock; once the player crosses the doorway plane on the
+    // -Z side while in the door's x-range, fire the room transition exactly
+    // once. The phase guard prevents re-entry while the swap is in flight.
+    if (run.arena && run.arena.door) run.arena.door.tick(realDt);
+    if (gs.phase === "door_open" && run.arena && run.arena.door) {
+      const door = run.arena.door;
+      const px = player.root.position.x;
+      const pz = player.root.position.z;
+      if (pz < door.zPlane - 0.4 && px > door.xMin && px < door.xMax) {
+        void runDoorTransition();
+      }
+    }
 
     cam.update(dt);
     // HUD animates in real time — hitstop shouldn't freeze bar lerps, that'd

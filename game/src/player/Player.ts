@@ -76,11 +76,43 @@ export class Player {
   /** Base emissive color of the foot ring — restored after dodge brightens it. */
   readonly footRingBaseEmissive: Color3;
   readonly aimLine: LinesMesh;
+  /** Soft additive contact glow under the player — sits on the floor and tracks the root. */
+  readonly contactGlow: Mesh;
+  /** Cape pivot — top edge sits behind shoulders; rotation.x is animated for back-lean. */
+  readonly capePivot: TransformNode;
+  readonly cape: Mesh;
+  readonly capeMat: StandardMaterial;
   stats: PlayerStats;
   private aimLinePulse = 0;
   /** Decays from 1 to 0 during a melee swing — drives the sword arm rotation. */
   swingTimer = 0;
-  swingDuration = 0.22;
+  swingDuration = 0.26;
+  /**
+   * Tracks the previous frame's swingTimer so we can detect the "swing just
+   * completed" edge (timer fell from >0 to ==0) and kick the recovery
+   * overshoot. Without this, the overshoot would re-trigger every frame the
+   * swing was already at zero.
+   */
+  private prevSwingTimer = 0;
+  /**
+   * Sword arm back-overshoot after a swing — rises to ~0.21 rad (~12°) the
+   * frame the swing completes, then exponentially decays. Adds a "kickback"
+   * follow-through so the strike feels weighty instead of stopping dead.
+   */
+  private swingOvershoot = 0;
+  /** Idle clock — separate from locoClock so the breathing doesn't pause when locoClock decays. */
+  private idleClock = 0;
+  /** Cape lateral sway clock — runs continuously, modulated by movement. */
+  private capeClock = 0;
+  /** Damped current cape lean — chases the target lean each frame so motion is smooth. */
+  private capeLeanCurrent = 0;
+  /**
+   * Decays from 1 → 0 over ~0.18s after a dodge ends. Drives a brief landing
+   * squash so the dodge has a clear stop pose instead of snapping upright.
+   */
+  private dodgeRecoveryTimer = 0;
+  private wasDodging = false;
+  private readonly DODGE_RECOVERY_DUR = 0.18;
   /** Run cycle clock for the walk bob on the torso + arm sway. */
   private locoClock = 0;
   /**
@@ -269,6 +301,89 @@ export class Player {
     this.footRingMat = ringMat;
     this.footRingBaseEmissive = ringMat.emissiveColor.clone();
 
+    // Cape — a tapered ribbon hanging from a pivot at shoulder height, leaning
+    // back when the player moves forward. Not a sim — just a damped rotation
+    // chasing a target lean, with a small lateral sway driven by capeClock.
+    // Built as a 3×3 ribbon with widening shoulders, a slight back-curve, and
+    // a V-tip at the bottom — reads as cloth instead of a flat rectangle.
+    this.capePivot = new TransformNode("playerCapePivot", scene);
+    this.capePivot.parent = this.torsoPivot;
+    // Sit just behind the shoulders so the cape attaches at the back of the
+    // torso. -Z is "behind" because torsoPivot's local +Z is the facing
+    // direction (aimPivot rotates the whole rig to match the aim yaw).
+    this.capePivot.position.set(0, 1.62, -0.28);
+    {
+      const topY = 0;
+      const midY = -0.48;
+      const botY = -0.92;
+      // Top hugs the shoulders (broader); middle pulls in slightly; bottom
+      // narrows further with a V-tip at the center for a classic cape silhouette.
+      // Each row's center point sits a few cm farther back to give the cloth a
+      // gentle outward curve so it doesn't look paper-flat from the side.
+      const topRow = [
+        new Vector3(-0.46, topY, 0),
+        new Vector3( 0.00, topY, -0.02),
+        new Vector3( 0.46, topY, 0),
+      ];
+      const midRow = [
+        new Vector3(-0.36, midY, -0.05),
+        new Vector3( 0.00, midY, -0.10),
+        new Vector3( 0.36, midY, -0.05),
+      ];
+      const botRow = [
+        new Vector3(-0.20, botY,        -0.07),
+        new Vector3( 0.00, botY - 0.10, -0.12),  // V-tip dips below the corners
+        new Vector3( 0.20, botY,        -0.07),
+      ];
+      this.cape = MeshBuilder.CreateRibbon(
+        "playerCape",
+        {
+          pathArray: [topRow, midRow, botRow],
+          sideOrientation: Mesh.DOUBLESIDE,
+          closeArray: false,
+          closePath: false,
+        },
+        scene,
+      );
+    }
+    // Origin already sits at capePivot.origin (the top-center vertex), so no
+    // additional Y offset is needed — rotating capePivot.x swings the cape
+    // from its top edge.
+    this.cape.position.set(0, 0, 0);
+    this.cape.parent = this.capePivot;
+    this.capeMat = new StandardMaterial("playerCapeMat", scene);
+    // Slightly redder + darker than the body so the cape reads as fabric, not
+    // metal. Backface culling off so the cape is visible whichever way it
+    // faces — important since the camera orbits.
+    this.capeMat.diffuseColor = new Color3(0.62, 0.32, 0.18);
+    this.capeMat.specularColor = new Color3(0.04, 0.04, 0.04);
+    this.capeMat.emissiveColor = new Color3(0.06, 0.03, 0.02);
+    this.capeMat.backFaceCulling = false;
+    applyPlayerRim(this.capeMat);
+    this.cape.material = this.capeMat;
+    shadow.addShadowCaster(this.cape);
+
+    // Soft additive ground glow under feet — reads as the hero "lighting" the
+    // floor. Sits below the cyan foot ring; small radius (0.6m) so it's a hint,
+    // not a spotlight. disableLighting + alpha keeps it subtle and cheap.
+    this.contactGlow = MeshBuilder.CreateDisc(
+      "playerContactGlow",
+      { radius: 0.85, tessellation: 24 },
+      scene,
+    );
+    this.contactGlow.rotation.x = Math.PI / 2;
+    this.contactGlow.position.set(0, 0.022, 0); // slightly above floor + below the foot ring
+    this.contactGlow.parent = this.root;
+    this.contactGlow.isPickable = false;
+    this.contactGlow.doNotSyncBoundingInfo = true;
+    const cgMat = new StandardMaterial("playerContactGlowMat", scene);
+    cgMat.diffuseColor = new Color3(1.0, 0.85, 0.4);
+    cgMat.emissiveColor = new Color3(1.0, 0.78, 0.32);
+    cgMat.disableLighting = true;
+    cgMat.backFaceCulling = false;
+    cgMat.alpha = 0.32;
+    this.contactGlow.material = cgMat;
+
     // Aim line: single-segment line from player base to reticle. Updated each frame.
     this.aimLine = MeshBuilder.CreateLines(
       "aimLine",
@@ -372,8 +487,15 @@ export class Player {
       }
     }
     // Decay locoClock continuity when idle so we settle back to upright.
-    const bob = moving ? Math.sin(this.locoClock) * 0.03 : 0;
-    this.torsoPivot.position.y = bob;
+    // The actual `torsoPivot.position.y` write happens at the end of this
+    // function so the dodge-recovery squash composes additively.
+    // Idle breathing — sub-amplitude torso lift while standing still and not in
+    // a special state. Disabled while moving (walk bob takes over) or during
+    // any swing/cast/dodge so the breathing doesn't fight other animations.
+    this.idleClock += dt;
+    const idleActive = !moving && this.swingTimer === 0 && this.castTimer === 0 && !this.isDodging;
+    const breath = idleActive ? Math.sin(this.idleClock * 1.4) * 0.012 : 0;
+    const bob = moving ? Math.sin(this.locoClock) * 0.03 : breath;
 
     // Resting arm sway — ~2Hz shoulder twist on both arms.
     if (moving) {
@@ -383,22 +505,58 @@ export class Player {
       this.offArm.rotation.x = 0;
     }
 
-    // Sword swing: ease-out rotation forward then recover. Swing goes around
-    // the shoulder's local X axis (overhead → down), scaled to ~120° at peak.
-    // Cast animations ride on top of the resting pose, so we compute a base
-    // sword-arm rotation first and let branches below add to it.
+    // Sword swing: two-phase windup → strike. The first 22% of the swing pulls
+    // the sword UP and back (positive rotation), giving the strike weight; the
+    // remaining 78% is the powerful downstrike + slight follow-through. Reads
+    // as a full coordinated motion instead of a one-frame jab.
+    //
+    // Plus a small torso-pitch and forward step (settled by torsoSwingPunch
+    // below) so the whole body puts weight behind the swing — sells the
+    // impact without changing positioning.
     let swordArmRot = 0;
+    let torsoSwingPunch = 0;
     if (this.swingTimer > 0) {
       this.swingTimer = Math.max(0, this.swingTimer - dt);
       const t = 1 - this.swingTimer / this.swingDuration;
-      // Cubic ease-out — fast start, slow settle.
-      const eased = 1 - Math.pow(1 - t, 3);
-      // Peak near t=0.4, decay back after. Easier to read as a swing than a hold.
-      const swing = Math.sin(eased * Math.PI);
-      swordArmRot = -Math.PI * 0.72 * swing;
+      const WINDUP_T = 0.22;
+      if (t < WINDUP_T) {
+        // Windup: lift the sword backward smoothly to the peak (positive rot).
+        const u = t / WINDUP_T;
+        const eased = u * u; // ease-in
+        swordArmRot = Math.PI * 0.45 * eased;
+        // Torso leans slightly back during windup — coiling the spring.
+        torsoSwingPunch = -0.08 * eased;
+      } else {
+        // Strike: from windup peak (+0.45π) to forward swing (-0.85π).
+        const u = (t - WINDUP_T) / (1 - WINDUP_T);
+        // Cubic ease-out — fast start, slow settle on the follow-through.
+        const eased = 1 - Math.pow(1 - u, 3);
+        const startRot = Math.PI * 0.45;
+        const endRot = -Math.PI * 0.85;
+        swordArmRot = startRot + (endRot - startRot) * eased;
+        // Torso pitches forward into the strike for impact weight, settling.
+        torsoSwingPunch = 0.16 * Math.sin(eased * Math.PI);
+      }
     } else {
       // Resting: arm trails behind body slightly while moving.
       swordArmRot = moving ? Math.sin(this.locoClock + Math.PI) * 0.25 : 0;
+    }
+
+    // Sword swing overshoot — kicks in the frame the swing completes (timer
+    // fell to 0). swingOvershoot adds a small back-rotation past the resting
+    // pose, then exponentially decays so the arm settles. Adds follow-through
+    // weight without altering the swingDuration timing.
+    if (this.swingTimer === 0 && this.prevSwingTimer > 0) {
+      this.swingOvershoot = 0.21;  // ~12° kickback
+    }
+    this.prevSwingTimer = this.swingTimer;
+    if (this.swingOvershoot !== 0) {
+      // dampCoeff(15, dt) lerps to ~63% gone in ~0.07s — quick, like a real arm
+      // settling after the cut. Snap to zero below threshold so we don't keep
+      // running this branch forever on subpixel residue.
+      this.swingOvershoot += (0 - this.swingOvershoot) * dampCoeff(15, dt);
+      if (Math.abs(this.swingOvershoot) < 0.005) this.swingOvershoot = 0;
+      swordArmRot += this.swingOvershoot;
     }
 
     // Cast animations (non-melee cards). Drives the off-arm, sword arm, and
@@ -435,6 +593,25 @@ export class Player {
       this.offArm.rotation.x = offArmCastRot;
     }
 
+    // Dodge recovery — when isDodging just flipped from true → false, kick a
+    // 0.18s landing tween that does a quick "settle" squash on the torso.
+    // Reads as planting the feet at the end of the roll instead of snapping
+    // upright. Tracks last-frame state so we don't keep retriggering.
+    if (this.wasDodging && !this.isDodging) {
+      this.dodgeRecoveryTimer = this.DODGE_RECOVERY_DUR;
+    }
+    this.wasDodging = this.isDodging;
+    let dodgeRecoverySquash = 0;
+    let dodgeRecoveryPitch = 0;
+    if (this.dodgeRecoveryTimer > 0) {
+      this.dodgeRecoveryTimer = Math.max(0, this.dodgeRecoveryTimer - dt);
+      const t = 1 - this.dodgeRecoveryTimer / this.DODGE_RECOVERY_DUR;
+      // Half-sine: quick squash down then back up for the landing impact.
+      const pulse = Math.sin(t * Math.PI);
+      dodgeRecoverySquash = -0.06 * pulse;     // slight body Y compression
+      dodgeRecoveryPitch = 0.12 * (1 - t);      // residual forward lean fading out
+    }
+
     // Dodge lean — tilt forward into the dodge direction. Cast pitch adds to
     // the dodge lean so a dash-cast reads as "explode forward". Implemented as
     // a simple X pitch scaled by the dodge fraction + cast pulse.
@@ -444,8 +621,36 @@ export class Player {
       const leanAmount = 0.35 + (this.castKind === "dash" ? 0.18 : 0);
       this.torsoPivot.rotation.x = leanAmount + torsoCastPitch;
     } else {
-      this.torsoPivot.rotation.x = torsoCastPitch;
+      this.torsoPivot.rotation.x = torsoCastPitch + torsoSwingPunch + dodgeRecoveryPitch;
     }
+
+    // Compose the body Y position: walk bob + dodge-recovery squash. Squash is
+    // additive on top of bob so the recovery still reads even if the player
+    // resumes running immediately.
+    this.torsoPivot.position.y = bob + dodgeRecoverySquash;
+
+    // Walk-roll — alternating Z tilt while moving so the gait reads as walking
+    // rather than gliding. ±2.5° at the same locoClock cadence so the roll syncs
+    // to the bob's footfalls. Off when idle or dodging (the dodge lean already
+    // owns the torso pose).
+    if (moving && !this.isDodging) {
+      this.torsoPivot.rotation.z = Math.cos(this.locoClock) * 0.045;
+    } else {
+      this.torsoPivot.rotation.z = 0;
+    }
+
+    // Cape — driven by movement and a separate lateral-sway clock. The TARGET
+    // lean is a back-tilt while moving forward (positive rotation.x — top
+    // toward facing, bottom trailing); 0 when idle. capeLeanCurrent damps
+    // toward the target so direction changes don't snap the cape. Lateral
+    // sway is a small Z wobble layered on top.
+    this.capeClock += dt * (moving ? 4.5 : 1.8);
+    const capeLeanTarget = moving ? 0.32 : 0.04 + breath * 4;
+    this.capeLeanCurrent += (capeLeanTarget - this.capeLeanCurrent) * dampCoeff(8, dt);
+    // Layer in a small wind-driven oscillation so the cape never sits perfectly still.
+    const capeFlap = Math.sin(this.capeClock) * (moving ? 0.045 : 0.012);
+    this.capePivot.rotation.x = this.capeLeanCurrent + capeFlap;
+    this.capePivot.rotation.z = Math.sin(this.capeClock * 0.6) * (moving ? 0.07 : 0.025);
   }
 
   /** Faces the given world point (XZ only). */
@@ -535,8 +740,16 @@ export class Player {
     this.castTimer = 0;
     this.castKind = null;
     this.locoClock = 0;
+    this.idleClock = 0;
+    this.capeClock = 0;
+    this.capeLeanCurrent = 0;
+    this.swingOvershoot = 0;
+    this.prevSwingTimer = 0;
     this.torsoPivot.rotation.x = 0;
+    this.torsoPivot.rotation.z = 0;
     this.torsoPivot.position.y = 0;
+    this.capePivot.rotation.x = 0;
+    this.capePivot.rotation.z = 0;
     this.swordArm.rotation.x = 0;
     this.offArm.rotation.x = 0;
     // Reset facing yaw target so the in-place restart pose matches the
@@ -548,7 +761,11 @@ export class Player {
   dispose() {
     this.aimLine.dispose();
     this.footRing.dispose();
+    this.contactGlow.dispose();
     this.aimMarker.dispose();
+    this.cape.dispose();
+    this.capePivot.dispose();
+    this.capeMat.dispose();
     this.sword.dispose();
     this.swordArm.dispose();
     this.offArm.dispose();

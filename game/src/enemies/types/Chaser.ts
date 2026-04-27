@@ -46,6 +46,9 @@ export class Chaser extends Enemy {
     );
     body.position = new Vector3(0, CHASER_DEF.radius, 0);
     super(scene, shadow, CHASER_DEF, spawnPos, body, idSuffix);
+    // Bouncy ball — energetic vertical bob even when stationary.
+    this.swayAmpY = 0.045;
+    this.swayFreqHz = 1.2;
 
     // Four radial spikes around the equator — tiny cones pointing outward.
     // Pure primitives; read as "spiky ball of malice" at distance. The spikes

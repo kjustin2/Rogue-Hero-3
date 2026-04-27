@@ -32,6 +32,12 @@ export interface EnvBundle {
   motes: ParticleSystem | GPUParticleSystem;
   /** Per-frame tick for subtle wind animation on grass + other living props. */
   tick(dt: number): void;
+  /**
+   * Multiplier applied on top of the baseline mote emit rate. `1.0` = baseline,
+   * `1.5` = +50% denser. Driven from the render loop based on tempo zone so
+   * the air visibly thickens with energy at HOT/CRITICAL.
+   */
+  setMoteBoost(boost: number): void;
   dispose(): void;
 }
 
@@ -71,12 +77,22 @@ function makeRng(seed: number): () => number {
  * the player area but inside the walls. `pillars` is needed so props don't overlap
  * them. Mountains sit well outside the walls.
  */
+export interface EnvOptions {
+  /** Wall height in meters; used to cap mote vertical spread. */
+  wallHeight: number;
+  /** When true, the room has a solid ceiling — skip skybox rebuild and shrink
+   *  outdoor effects (mountains, sky, godrays-driving emit zones) since they're
+   *  occluded by the roof anyway. */
+  enclosed: boolean;
+}
+
 export function buildEnvironment(
   scene: Scene,
   arenaSize: number,
   pillars: Mesh[],
   palette: EnvPalette,
   seed: number,
+  envOpts?: EnvOptions,
 ): EnvBundle {
   const root = new Mesh("envRoot", scene);
   const rng = makeRng(seed);
@@ -247,7 +263,12 @@ export function buildEnvironment(
 
   // ---------- Ambient motes ----------
   // Try GPU particles first; some WebGL contexts (older mobile) will fall back.
-  const motes = makeAmbientMotes(scene, arenaSize, palette.moteColor);
+  // Cap the vertical emit zone so motes don't drift through the ceiling when
+  // we're indoors. -1m of clearance keeps them well clear at the apex.
+  const moteCeiling = envOpts && envOpts.enclosed
+    ? Math.max(2, envOpts.wallHeight - 1)
+    : 5;
+  const motes = makeAmbientMotes(scene, arenaSize, palette.moteColor, moteCeiling);
   motes.start();
 
   // Grass wind — animate each of the 4 grass masters with a phase-offset sine
@@ -255,12 +276,32 @@ export function buildEnvironment(
   // low-frequency global gust on top so the whole field surges occasionally.
   // Cost: O(GRASS_GROUPS) = 4 transform writes per frame regardless of blade count.
   let grassClock = 0;
+  // Transient gust — fires every 4-7s on a random cadence. Layers an extra
+  // amplitude burst on top of the slow sin-modulated gust so the field
+  // occasionally surges visibly. Decays exponentially over ~1.5s.
+  let gustBoost = 0;
+  let gustClock = 0;
+  let gustNextTrigger = 4 + Math.random() * 3;
+  // Capture the motes' baseline emit rate so setMoteBoost can scale it
+  // multiplicatively without losing the original tier-driven value.
+  const moteEmitBaseline = motes.emitRate;
   function tick(dt: number): void {
     grassClock += dt;
+    gustClock += dt;
+    if (gustClock >= gustNextTrigger) {
+      gustClock = 0;
+      gustNextTrigger = 4 + Math.random() * 3;
+      gustBoost = 0.8;
+    }
+    if (gustBoost > 0) {
+      // ~1.5s settle: gustBoost halves every ~0.5s.
+      gustBoost *= Math.exp(-dt * 1.4);
+      if (gustBoost < 0.01) gustBoost = 0;
+    }
     // Slow envelope — gentle "gust" that modulates the sway amplitude across
     // all groups. Two periods (a fast and a slow) layered for organic-feeling
     // wind without a single dominant frequency.
-    const gust = 0.7 + 0.3 * Math.sin(grassClock * 0.27);
+    const gust = 0.7 + 0.3 * Math.sin(grassClock * 0.27) + gustBoost;
     for (let g = 0; g < GRASS_GROUPS; g++) {
       const phaseY = (g / GRASS_GROUPS) * Math.PI * 2;
       const phaseZ = phaseY + 0.7;
@@ -271,10 +312,15 @@ export function buildEnvironment(
     // Masters are intentionally NOT frozen — we mutate their transforms per frame.
   }
 
+  function setMoteBoost(boost: number): void {
+    motes.emitRate = moteEmitBaseline * boost;
+  }
+
   return {
     root,
     motes,
     tick,
+    setMoteBoost,
     dispose() {
       motes.stop();
       motes.dispose();
@@ -402,7 +448,12 @@ function buildMountainRing(scene: Scene, radius: number, color: Color3, rng: () 
 
 // -------------------- ambient motes --------------------
 
-function makeAmbientMotes(scene: Scene, arenaSize: number, color: Color3): ParticleSystem | GPUParticleSystem {
+function makeAmbientMotes(
+  scene: Scene,
+  arenaSize: number,
+  color: Color3,
+  emitMaxY: number,
+): ParticleSystem | GPUParticleSystem {
   const q = getQuality();
   // Cap scales with quality — 56 on low, 112 on medium, 140 on high. Emit rate
   // follows below. The GPU-particle path is still preferred when available.
@@ -434,7 +485,7 @@ function makeAmbientMotes(scene: Scene, arenaSize: number, color: Color3): Parti
   const half = arenaSize / 2;
   ps.emitter = new Vector3(0, 1.5, 0);
   ps.minEmitBox = new Vector3(-half, 0, -half);
-  ps.maxEmitBox = new Vector3(half, 5, half);
+  ps.maxEmitBox = new Vector3(half, emitMaxY, half);
   ps.color1 = new Color4(color.r, color.g, color.b, 0.75);
   ps.color2 = new Color4(color.r * 0.7, color.g * 0.7, color.b * 0.85, 0.45);
   ps.colorDead = new Color4(color.r, color.g, color.b, 0);

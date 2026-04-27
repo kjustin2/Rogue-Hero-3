@@ -51,6 +51,9 @@ export class BossBrawler extends Enemy {
     );
     body.position = new Vector3(0, 1.3, 0);
     super(scene, shadow, BRAWLER_DEF, spawnPos, body, idSuffix);
+    // Imposing slow shift — reads as a heavy creature breathing. Off during dash.
+    this.swayAmpY = 0.03;
+    this.swayFreqHz = 0.38;
 
     // Two massive fist cubes flanking the body — read as the primary threat.
     const fistColor = new Color3(0.7, 0.12, 0.06);
@@ -130,6 +133,9 @@ export class BossBrawler extends Enemy {
       if (this.telegraphBar) this.telegraphBar.isVisible = false;
       return;
     }
+    // Sway off during the dash itself; on through the rest of the FSM so the
+    // boss is never statue-still. tickCommon reads this each frame.
+    this.swayActive = this.state !== "attack";
     this.tickCommon(dt);
     if (this.contactCooldown > 0) this.contactCooldown = Math.max(0, this.contactCooldown - dt);
 

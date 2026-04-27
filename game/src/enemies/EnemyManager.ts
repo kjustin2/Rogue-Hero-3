@@ -24,6 +24,15 @@ export class EnemyManager {
   pillars: Mesh[] = [];
   private nextId = 1;
   private roomClearedEmitted = false;
+  /**
+   * Optional hooks fired around enemy lifecycle. main.ts wires these to
+   * register/unregister meshes with the HighlightLayer and to spawn the
+   * end-of-dissolve ash puff. Kept as plain callbacks (rather than EventBus
+   * events) so the order is deterministic — onSpawn runs before any frame
+   * tick, onDispose runs immediately before the body's mesh is destroyed.
+   */
+  onSpawn?: (e: Enemy) => void;
+  onDispose?: (e: Enemy) => void;
 
   constructor(
     private scene: Scene,
@@ -61,6 +70,7 @@ export class EnemyManager {
     }
     this.enemies.push(e);
     this.roomClearedEmitted = false;
+    this.onSpawn?.(e);
     return e;
   }
 
@@ -88,6 +98,7 @@ export class EnemyManager {
       if (!e.alive) {
         const done = e.tickDissolve(dt);
         if (done) {
+          this.onDispose?.(e);
           e.dispose();
           this.enemies.splice(i, 1);
         }
@@ -105,7 +116,10 @@ export class EnemyManager {
   }
 
   clear(): void {
-    for (const e of this.enemies) e.dispose();
+    for (const e of this.enemies) {
+      this.onDispose?.(e);
+      e.dispose();
+    }
     this.enemies.length = 0;
     this.roomClearedEmitted = false;
   }

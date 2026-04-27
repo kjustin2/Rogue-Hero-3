@@ -91,9 +91,14 @@ export class RelicAuras {
         0.02,
       );
     } else {
-      // Reset to the default emissive when the relic isn't equipped. This keeps
-      // behavior consistent when the player restarts the run without Berserker.
-      this.player.bodyMat.emissiveColor.set(0.05, 0.05, 0.02);
+      // No Berserker — drive emissive from tempo so the body still visibly
+      // powers up at HOT/CRITICAL even without the relic. Quadratic ramp from
+      // tempo 70 to 100 means COLD/FLOWING stay subtle, then the hero starts
+      // glowing as they enter the zone. Pairs with the existing sword
+      // emissive ramp (main.ts) so the whole rig warms together.
+      const tEm = Math.max(0, Math.min(1, (tempo.value - 70) / 30));
+      const punch = 0.05 + 0.15 * tEm * tEm;
+      this.player.bodyMat.emissiveColor.set(punch, punch * 0.85, 0.02 + punch * 0.10);
     }
   }
 

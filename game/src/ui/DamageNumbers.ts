@@ -12,6 +12,10 @@ interface PooledNumber {
   totalRise: number;
   startY: number;
   active: boolean;
+  /** Whether this is a crit/kill popup — drives the per-frame X-wobble in update. */
+  crit: boolean;
+  /** Resting X offset from the spawn jitter — wobble composes around this. */
+  baseOffsetX: number;
 }
 
 /**
@@ -53,6 +57,8 @@ export class DamageNumbers {
       totalRise: 0,
       startY: 0,
       active: false,
+      crit: false,
+      baseOffsetX: 0,
     };
   }
 
@@ -81,23 +87,33 @@ export class DamageNumbers {
       ? `${Math.round(amount)}\nKILL!`
       : Math.round(amount).toString();
     n.text.color = color;
-    n.text.fontSize = crit ? 48 : 32;
+    // Scale font with damage amount — small hits stay readable, big hits
+    // dominate the screen briefly. Capped so a 200dmg crit doesn't take up
+    // the whole field. crit baseline is bigger than non-crit baseline.
+    const baseSize = crit ? 48 : 32;
+    const dmgBoost = Math.min(crit ? 28 : 20, Math.max(0, (amount - 10) * 0.6));
+    n.text.fontSize = baseSize + dmgBoost;
     n.text.shadowOffsetX = crit ? 4 : 3;
     n.text.shadowOffsetY = crit ? 4 : 3;
     n.text.shadowBlur = crit ? 6 : 4;
     n.text.outlineWidth = crit ? 5 : 4;
     n.text.lineSpacing = crit ? "-8px" : "0px";
-    n.text.linkOffsetXInPixels = (Math.random() * 2 - 1) * 24;
+    n.baseOffsetX = (Math.random() * 2 - 1) * 24;
+    n.text.linkOffsetXInPixels = n.baseOffsetX;
     n.text.linkOffsetY = -10;
     n.text.alpha = 1;
     n.text.isVisible = true;
 
+    // Crits get a sharper, faster ride: bigger rise, slightly longer life
+    // already tuned via font size above. Scaling pop is applied in update via
+    // resizeToFit fontSize ease — handled there so it's frame-rate independent.
     const life = crit ? 1.1 : 0.9;
     n.totalRise = (crit ? 2.0 : 1.6) * life;
     n.ttl = life;
     n.initialTtl = life;
     n.startY = n.anchor.position.y;
     n.active = true;
+    n.crit = crit;
   }
 
   /**
@@ -123,6 +139,14 @@ export class DamageNumbers {
       n.anchor.position.y = n.startY + n.totalRise * easedU;
       const t = n.ttl / n.initialTtl;
       n.text.alpha = Math.min(1, t * 1.4);
+      // Crit pop — horizontal wobble that decays with the popup so the read is
+      // a sharp shake on impact, then a clean rise. Composes around the resting
+      // baseOffsetX so the random spawn jitter is preserved.
+      if (n.crit) {
+        const decay = t * t; // fade the shake in the tail
+        const wobble = Math.sin((n.initialTtl - n.ttl) * 38) * 6 * decay;
+        n.text.linkOffsetXInPixels = n.baseOffsetX + wobble;
+      }
     }
   }
 

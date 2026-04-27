@@ -29,6 +29,8 @@ export class Shooter extends Enemy {
   private kiteHysteresis = 1.5;
   /** Bow pivot — parented to root, yawed to face the player each frame. */
   private bowPivot: Mesh;
+  /** Reused fire-direction buffer so each shot doesn't allocate a Vector3. */
+  private fireDirBuf = new Vector3();
 
   constructor(
     scene: Scene,
@@ -44,6 +46,9 @@ export class Shooter extends Enemy {
     );
     body.position = new Vector3(0, 0.8, 0);
     super(scene, shadow, SHOOTER_DEF, spawnPos, body, idSuffix);
+    // Light archer — small steady breathing bob while sighting.
+    this.swayAmpY = 0.022;
+    this.swayFreqHz = 0.85;
 
     // A small head cap so the capsule reads as "torso + head" rather than one lump.
     const head = MeshBuilder.CreateSphere(
@@ -125,8 +130,8 @@ export class Shooter extends Enemy {
     if (this.fireTimer <= 0 && distSq < 22 * 22) {
       this.fireTimer = 1.8;
       const origin = this.root.position;
-      const dir = new Vector3(dx, 0, dz);
-      this.projectiles.fire(origin, dir, 11, 7, 2.5);
+      this.fireDirBuf.set(dx, 0, dz);
+      this.projectiles.fire(origin, this.fireDirBuf, 11, 7, 2.5);
     }
   }
 }

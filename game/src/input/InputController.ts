@@ -37,6 +37,23 @@ export class InputController {
 
   private aimPoint: Vector3 | null = null;
   private floorRef: Mesh | null = null;
+  // Reused per-frame buffers — `consume()` was previously allocating 2-3
+  // Vector3s every frame for move + aim. The FrameInput object itself is
+  // also reused (callers don't hang on to it past the consume call).
+  private moveBuf = new Vector3();
+  private aimOutBuf = new Vector3();
+  private cardQueueOut: number[] = [];
+  private frameOut: FrameInput = {
+    move: this.moveBuf,
+    dodgePressed: false,
+    attackPressed: false,
+    attackHeld: false,
+    cycleSelectedPressed: false,
+    selectSlotPressed: this.cardQueueOut,
+    crashPressed: false,
+    cycleTargetPressed: false,
+    aimPoint: null,
+  };
 
   constructor(private scene: Scene) {
     scene.onKeyboardObservable.add((kb) => {
@@ -100,31 +117,38 @@ export class InputController {
     }
   }
 
-  /** Drain queued one-shot inputs and read held state. Camera is needed to map WASD to camera-relative move. */
+  /**
+   * Drain queued one-shot inputs and read held state. Camera is needed to map
+   * WASD to camera-relative move. Returns a REUSED FrameInput object — callers
+   * must not hold onto it past the next consume() call. Read-only fields like
+   * aimPoint and move are also reused buffers; clone if you need persistence.
+   */
   consume(cameraForward: Vector3): FrameInput {
-    // Build camera-relative basis on the XZ plane
-    const fwd = new Vector3(cameraForward.x, 0, cameraForward.z);
-    const fwdLen = Math.hypot(fwd.x, fwd.z);
+    // Build camera-relative basis on the XZ plane (no allocation — scratch
+    // locals only). Fall back to +Z when the camera looks straight down.
+    let fwdX = cameraForward.x;
+    let fwdZ = cameraForward.z;
+    const fwdLen = Math.hypot(fwdX, fwdZ);
     if (fwdLen > 1e-4) {
-      fwd.x /= fwdLen;
-      fwd.z /= fwdLen;
+      fwdX /= fwdLen;
+      fwdZ /= fwdLen;
     } else {
-      fwd.x = 0;
-      fwd.z = 1;
+      fwdX = 0;
+      fwdZ = 1;
     }
     // right = fwd rotated -90deg around Y: (z, -x)
-    const rightX = fwd.z;
-    const rightZ = -fwd.x;
+    const rightX = fwdZ;
+    const rightZ = -fwdX;
 
     let mx = 0;
     let mz = 0;
     if (this.keys.has("w") || this.keys.has("arrowup")) {
-      mx += fwd.x;
-      mz += fwd.z;
+      mx += fwdX;
+      mz += fwdZ;
     }
     if (this.keys.has("s") || this.keys.has("arrowdown")) {
-      mx -= fwd.x;
-      mz -= fwd.z;
+      mx -= fwdX;
+      mz -= fwdZ;
     }
     if (this.keys.has("d") || this.keys.has("arrowright")) {
       mx += rightX;
@@ -140,17 +164,28 @@ export class InputController {
       mz /= ml;
     }
 
-    const out: FrameInput = {
-      move: new Vector3(mx, 0, mz),
-      dodgePressed: this.dodgeQueued,
-      attackPressed: this.attackQueuedDown,
-      attackHeld: this.attackHeld,
-      cycleSelectedPressed: this.cycleQueued,
-      selectSlotPressed: this.cardQueue.slice(),
-      crashPressed: this.crashQueued,
-      cycleTargetPressed: this.cycleTargetQueued,
-      aimPoint: this.aimPoint ? this.aimPoint.clone() : null,
-    };
+    this.moveBuf.set(mx, 0, mz);
+
+    // Mirror the queued card slots into the reused output array.
+    this.cardQueueOut.length = 0;
+    for (const c of this.cardQueue) this.cardQueueOut.push(c);
+
+    // Reuse aimOutBuf when aimPoint exists; the FrameInput.aimPoint slot is
+    // reset to null when aim is invalid.
+    let aimOut: Vector3 | null = null;
+    if (this.aimPoint) {
+      this.aimOutBuf.copyFrom(this.aimPoint);
+      aimOut = this.aimOutBuf;
+    }
+
+    const out = this.frameOut;
+    out.dodgePressed = this.dodgeQueued;
+    out.attackPressed = this.attackQueuedDown;
+    out.attackHeld = this.attackHeld;
+    out.cycleSelectedPressed = this.cycleQueued;
+    out.crashPressed = this.crashQueued;
+    out.cycleTargetPressed = this.cycleTargetQueued;
+    out.aimPoint = aimOut;
 
     this.dodgeQueued = false;
     this.attackQueuedDown = false;

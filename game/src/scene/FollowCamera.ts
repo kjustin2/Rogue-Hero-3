@@ -82,7 +82,11 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
   cam.lowerRadiusLimit = 4;
   cam.upperRadiusLimit = 16;
   cam.lowerBetaLimit = 0.2;
-  cam.upperBetaLimit = Math.PI * 0.48; // never look up past horizon
+  // Never let the rig pitch high enough to graze the new stone ceiling — at
+  // radius 8 with target y≈1.2, beta=π*0.46 (~83°) keeps the camera under
+  // ~9.7m even in the largest room (10–12m ceiling). Wall/ceiling collisions
+  // catch any leftover edge cases.
+  cam.upperBetaLimit = Math.PI * 0.46;
   cam.wheelDeltaPercentage = 0.02;
   cam.angularSensibilityX = 900;
   cam.angularSensibilityY = 900;
