@@ -42,6 +42,11 @@ export class BossBrawler extends Enemy {
   private readonly dashTelegraphLength = 6.0;
   private fistL!: Mesh;
   private fistR!: Mesh;
+  /** Intro animation — body rises from a kneeling crouch over `introDuration`. */
+  introTimer = 3.0;
+  introDuration = 3.0;
+  /** Display name shown by the banner during intro. Subclasses override. */
+  bossDisplayName = "BRAWLER OF THE PIT";
 
   constructor(scene: Scene, shadow: ShadowGenerator, spawnPos: Vector3, idSuffix: string) {
     const body = MeshBuilder.CreateCylinder(
@@ -133,6 +138,18 @@ export class BossBrawler extends Enemy {
       if (this.telegraphBar) this.telegraphBar.isVisible = false;
       return;
     }
+    // Intro animation — body lerps scale.y from 0.4 → 1.0 over introDuration.
+    // While the timer is positive, the boss is invulnerable to AI logic but
+    // still ticks for hit-flash / shadow setup. The main.ts layer drives the
+    // camera orbit + banner via BOSS_INTRO_START emitted in EnemyManager.spawn.
+    if (this.introTimer > 0) {
+      this.introTimer = Math.max(0, this.introTimer - dt);
+      const t = 1 - this.introTimer / this.introDuration;
+      this.root.scaling.y = 0.4 + 0.6 * t;
+      // No XZ movement, no AI — just stand and rise.
+      this.tickCommon(dt);
+      return;
+    }
     // Sway off during the dash itself; on through the rest of the FSM so the
     // boss is never statue-still. tickCommon reads this each frame.
     this.swayActive = this.state !== "attack";
@@ -198,7 +215,6 @@ export class BossBrawler extends Enemy {
       const touch = this.def.radius + player.stats.radius;
       if (distSq <= (touch + 0.6) * (touch + 0.6) && this.contactCooldown === 0 && !player.isDodging) {
         const dmg = 18;
-        player.hp = Math.max(0, player.hp - dmg);
         events.emit("DAMAGE_TAKEN", { amount: dmg, source: this.id });
         this.contactCooldown = 0.6;
       }
@@ -239,7 +255,6 @@ export class BossBrawler extends Enemy {
       this.root.position.x += (dx / dist) * this.def.speed * dt;
       this.root.position.z += (dz / dist) * this.def.speed * dt;
     } else if (this.contactCooldown === 0 && !player.isDodging) {
-      player.hp = Math.max(0, player.hp - this.def.contactDamage);
       events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
       this.contactCooldown = 0.9;
     }

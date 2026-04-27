@@ -1,9 +1,12 @@
 export type GamePhase =
   | "menu"
+  | "hero_select"
   | "playing"
   | "paused"
+  | "boss_intro"
   | "door_open"
   | "reward"
+  | "hand_pick"
   | "transitioning"
   | "victory"
   | "dead";
@@ -24,6 +27,6 @@ export class GameState {
 
   /** Should the entire gameplay observable bail out (no movement, no AI, no FX ticks)? */
   isFrozen(): boolean {
-    return this.phase === "menu" || this.phase === "paused";
+    return this.phase === "menu" || this.phase === "paused" || this.phase === "hero_select";
   }
 }

@@ -15,8 +15,10 @@ export interface FrameInput {
   attackHeld: boolean;
   /** True the frame RMB was pressed — cycles the selected hand slot */
   cycleSelectedPressed: boolean;
-  /** 1-based card slots pressed this frame (1..4) — selects that slot (does NOT play) */
+  /** 1-based card slots pressed this frame (1..3) — selects that slot (does NOT play) */
   selectSlotPressed: number[];
+  /** True the frame the jump key (Space) was pressed */
+  jumpPressed: boolean;
   /** True the frame the manual crash key (F) was pressed */
   crashPressed: boolean;
   /** True the frame the cycle-target key (Q or Tab) was pressed */
@@ -28,6 +30,7 @@ export interface FrameInput {
 export class InputController {
   private keys = new Set<string>();
   private dodgeQueued = false;
+  private jumpQueued = false;
   private attackQueuedDown = false;
   private attackHeld = false;
   private cycleQueued = false;
@@ -52,6 +55,7 @@ export class InputController {
     selectSlotPressed: this.cardQueueOut,
     crashPressed: false,
     cycleTargetPressed: false,
+    jumpPressed: false,
     aimPoint: null,
   };
 
@@ -61,14 +65,15 @@ export class InputController {
       if (kb.type === KeyboardEventTypes.KEYDOWN) {
         if (!this.keys.has(key)) {
           // edge-triggered actions
-          if (key === " " || key === "shift") this.dodgeQueued = true;
+          if (key === " ") this.jumpQueued = true;
+          if (key === "shift") this.dodgeQueued = true;
           if (key === "f") this.crashQueued = true;
           if (key === "q" || key === "tab") {
             this.cycleTargetQueued = true;
             // Tab would otherwise move browser focus off the canvas.
             if (key === "tab") kb.event.preventDefault();
           }
-          if (key === "1" || key === "2" || key === "3" || key === "4") {
+          if (key === "1" || key === "2" || key === "3") {
             this.cardQueue.push(parseInt(key, 10));
           }
         }
@@ -185,9 +190,11 @@ export class InputController {
     out.cycleSelectedPressed = this.cycleQueued;
     out.crashPressed = this.crashQueued;
     out.cycleTargetPressed = this.cycleTargetQueued;
+    out.jumpPressed = this.jumpQueued;
     out.aimPoint = aimOut;
 
     this.dodgeQueued = false;
+    this.jumpQueued = false;
     this.attackQueuedDown = false;
     this.cycleQueued = false;
     this.crashQueued = false;

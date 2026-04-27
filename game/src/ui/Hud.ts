@@ -45,12 +45,18 @@ const TYPE_COLOR: Record<CardType, string> = {
   melee: "#ffaa44",
   projectile: "#44aaff",
   dash: "#cc66ff",
+  aoe: "#66e0ff",
+  aerial: "#ff7733",
+  utility: "#a8ffd2",
 };
 
 const TYPE_LABEL: Record<CardType, string> = {
   melee: "MELEE",
   projectile: "BOLT",
   dash: "DASH",
+  aoe: "AOE",
+  aerial: "AERIAL",
+  utility: "UTIL",
 };
 
 export class Hud {
@@ -221,15 +227,16 @@ export class Hud {
     this.banner.isVisible = false;
     this.ui.addControl(this.banner);
 
-    // ---- Hand: 4 slots along the bottom ----
+    // ---- Hand: 3 slots along the bottom ----
     // Taller slots + wider so every chunk of text has a guaranteed y-band
     // that can't collide with its neighbors.
-    const slotW = 230;
+    const slotW = 240;
     const slotH = 148;
-    const spacing = 16;
-    const totalW = slotW * 4 + spacing * 3;
+    const spacing = 18;
+    const HAND_SLOTS = 3;
+    const totalW = slotW * HAND_SLOTS + spacing * (HAND_SLOTS - 1);
     const startX = -totalW / 2 + slotW / 2;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < HAND_SLOTS; i++) {
       const slot = this.makeHandSlot(i, startX + i * (slotW + spacing), slotW, slotH);
       this.hand.push(slot);
     }
@@ -238,7 +245,7 @@ export class Hud {
     // from the bottom, so anything at -150 would bake into them). Placed at
     // -190 with its own explicit height so the text has a guaranteed band.
     this.controlHint = this.makeText(
-      "LMB: use   RMB: next card   1–4: pick slot   Q/Tab: switch target",
+      "LMB: use   RMB: next card   1–3: pick slot   Space: jump   Shift: dodge   Q/Tab: target",
       0,
       -192,
       "#bbbbbb",
@@ -1199,7 +1206,7 @@ export class Hud {
     // so the player always knows which card LMB will cast.
     this.selectedPulse += 0.12;
     const selectedBreath = 0.55 + 0.45 * Math.abs(Math.sin(this.selectedPulse));
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < this.hand.length; i++) {
       const slot = this.hand[i];
       const isSelected = i === this.selectedSlot;
       const card = this.deck.peek(i);

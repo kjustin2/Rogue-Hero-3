@@ -1,38 +1,43 @@
 import { RngFn, mulberry32 } from "../engine/Rng";
 import { CardDef, CardDefinitions } from "./CardDefinitions";
 
+/**
+ * Owns the player's persistent card collection (the deck) and the active
+ * 3-card battle hand. Cards are NOT consumed when played — AP is the cost the
+ * player pays per cast. The collection grows when the player picks new cards
+ * after boss rooms; the hand is rebuilt from the collection between rooms via
+ * the HandPicker UI.
+ */
 export class DeckManager {
-  draw: string[] = [];   // top of pile = end of array (pop)
-  /**
-   * Fixed 4-slot hand — cards are NOT consumed on play. Whatever lands in each
-   * slot when the run starts stays there for the entire run. AP is the cost the
-   * player pays per cast, not the card itself.
-   *
-   * This replaces the earlier "discard-on-play → refill when empty" flow which
-   * caused the four visible cards to rotate every few attacks and confused
-   * muscle memory. The starting deck still has >4 cards so the 4 shown are
-   * drawn at boot, but no replacement ever happens mid-run.
-   */
+  /** Permanent pool of card ids the player owns. Boss rewards append here. */
+  collection: string[] = [];
+  /** Active hand — slots 0/1/2 mapped to keys 1/2/3. */
   hand: (string | null)[] = [];
-  handSize = 4;
+  handSize = 3;
   rng: RngFn;
   private startingDeck: string[];
 
   constructor(startingDeck: string[], seed = Date.now() & 0xffffffff) {
     this.startingDeck = startingDeck.slice();
     this.rng = mulberry32(seed);
-    this.draw = this.startingDeck.slice();
-    this.shuffle(this.draw);
+    this.collection = this.startingDeck.slice();
+    this.shuffle(this.collection);
     this.hand = new Array(this.handSize).fill(null);
-    this.refillHand();
+    this.autoFillHand();
   }
 
   /** Reset to fresh starting deck — for in-place run restart. */
   reset(): void {
     for (let i = 0; i < this.handSize; i++) this.hand[i] = null;
-    this.draw = this.startingDeck.slice();
-    this.shuffle(this.draw);
-    this.refillHand();
+    this.collection = this.startingDeck.slice();
+    this.shuffle(this.collection);
+    this.autoFillHand();
+  }
+
+  /** Replace the starting-deck reference and reset to it (used by hero swap). */
+  setStartingDeck(ids: string[]): void {
+    this.startingDeck = ids.slice();
+    this.reset();
   }
 
   shuffle(arr: string[]): void {
@@ -51,8 +56,7 @@ export class DeckManager {
 
   /**
    * "Playing" the card. It is NOT removed from the slot — the player keeps it
-   * for the rest of the run. Returns the played card so the caller can resolve
-   * its effects. AP gating lives in CardCaster, not here.
+   * for the rest of the run. AP gating lives in CardCaster, not here.
    */
   play(slot: number): CardDef | null {
     const id = this.hand[slot];
@@ -60,7 +64,6 @@ export class DeckManager {
     return CardDefinitions[id] ?? null;
   }
 
-  /** True if every hand slot is empty (only happens if starting deck was < 4 cards). */
   handEmpty(): boolean {
     for (let i = 0; i < this.handSize; i++) {
       if (this.hand[i] != null) return false;
@@ -68,17 +71,34 @@ export class DeckManager {
     return true;
   }
 
+  /** Append a new card id to the persistent collection (boss reward path). */
+  addToCollection(cardId: string): void {
+    if (!CardDefinitions[cardId]) return;
+    this.collection.push(cardId);
+  }
+
   /**
-   * Fill empty slots from the draw pile. Called once at boot / reset to seed
-   * the fixed hand. Kept as a method (not inlined) so future card pickups
-   * (beyond the MVP's static hand) can re-use it without the no-op check.
+   * Set the hand explicitly from the hand-picker UI. Accepts up to handSize
+   * card ids; remaining slots are nulled. Ids must exist in the collection
+   * (this method does not validate ownership — caller's responsibility).
    */
-  refillHand(): void {
+  setHand(ids: (string | null)[]): void {
     for (let i = 0; i < this.handSize; i++) {
-      if (this.hand[i] != null) continue;
-      if (this.draw.length === 0) break;
-      const next = this.draw.pop();
-      if (next) this.hand[i] = next;
+      const id = ids[i] ?? null;
+      this.hand[i] = id && CardDefinitions[id] ? id : null;
     }
+  }
+
+  /**
+   * Pick the first handSize cards from the (shuffled) collection. Used at
+   * boot so the player has a default hand before they ever see the picker.
+   */
+  autoFillHand(): void {
+    let written = 0;
+    for (const id of this.collection) {
+      if (written >= this.handSize) break;
+      this.hand[written++] = id;
+    }
+    while (written < this.handSize) this.hand[written++] = null;
   }
 }

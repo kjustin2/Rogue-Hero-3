@@ -142,6 +142,18 @@ export class Player {
   dodgeDir = new Vector3(0, 0, 1);
   facing = new Vector3(0, 0, 1);
 
+  /** Vertical-axis velocity. Modified by jump input + gravity in PlayerController. */
+  verticalVelocity = 0;
+  /** Aerial cards lock the player to a downward slam during their flight. */
+  aerialSlamming = false;
+  /** Pending aerial-card payload — resolved on PLAYER_LANDED in main.ts. */
+  pendingAerialCardId: string | null = null;
+  /** Cyan absorb-shield from utility cards (Aegis). Consumed before HP. */
+  absorbHp = 0;
+  absorbHpTimer = 0;
+  /** Tag enemies pay attention to when freezing — reused by relic timers. */
+  // (frozen state itself lives on Enemy.)
+
   constructor(scene: Scene, shadow: ShadowGenerator, stats: PlayerStats = DEFAULT_PLAYER_STATS) {
     this.stats = { ...stats };
     this.hp = stats.maxHp;
@@ -411,6 +423,17 @@ export class Player {
   triggerCast(kind: "bolt" | "dash"): void {
     this.castKind = kind;
     this.castTimer = this.castDuration;
+  }
+
+  /** True when the player is off the ground (jumped, slamming, knocked up). */
+  isAirborne(): boolean {
+    return this.root.position.y > 0.01;
+  }
+
+  /** Grant an absorb-shield (Aegis utility card, Bulwark relic, etc.). */
+  grantShield(amount: number, duration: number): void {
+    this.absorbHp = Math.max(this.absorbHp, amount);
+    this.absorbHpTimer = Math.max(this.absorbHpTimer, duration);
   }
 
   /**

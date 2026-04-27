@@ -185,7 +185,6 @@ export class Caster extends Enemy {
     const dz = player.root.position.z - this.telegraphCenter.z;
     const r = this.telegraphRadius + player.stats.radius;
     if (dx * dx + dz * dz <= r * r && !player.isDodging) {
-      player.hp = Math.max(0, player.hp - 14);
       events.emit("DAMAGE_TAKEN", { amount: 14, source: this.id });
     }
     if (this.telegraphMesh) this.telegraphMesh.isVisible = false;

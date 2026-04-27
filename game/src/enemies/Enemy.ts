@@ -91,6 +91,14 @@ export abstract class Enemy {
   dissolving = false;
   dissolveTimer = 0;
   dissolveTotal = 0;
+  /**
+   * Freeze status — applied by Frost Nova / freeze relics. While > 0, the
+   * subclass should multiply its move speed by FREEZE_SLOW_MUL. Counted down
+   * in tickCommon so subclasses don't have to care.
+   */
+  freezeTimer = 0;
+  /** Multiplier applied to speed while frozen (0.5 = 50% slow). */
+  static readonly FREEZE_SLOW_MUL = 0.5;
 
   constructor(
     scene: Scene,
@@ -235,8 +243,22 @@ export abstract class Enemy {
   }
 
   /** Common per-frame work — call at top of update loop. */
+  /**
+   * Apply a freeze for the given duration (seconds). Stacks with the larger
+   * remaining time — refreshing a freeze never shortens it.
+   */
+  applyFreeze(durationSec: number): void {
+    if (durationSec > this.freezeTimer) this.freezeTimer = durationSec;
+  }
+
+  /** Returns the speed multiplier the enemy should currently use. */
+  speedScale(): number {
+    return this.freezeTimer > 0 ? Enemy.FREEZE_SLOW_MUL : 1.0;
+  }
+
   tickCommon(dt: number): void {
     this.partClock += dt;
+    if (this.freezeTimer > 0) this.freezeTimer = Math.max(0, this.freezeTimer - dt);
     // Capture the resting Y once so the sway is purely additive — subclass logic
     // continues to write root.position.y for movement/stagger and the sway
     // composes around it without drifting.

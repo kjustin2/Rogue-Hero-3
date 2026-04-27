@@ -64,6 +64,13 @@ export interface ArenaOptions {
   /** When true (default), cut a doorway opening into the south (-Z) wall and
    *  attach a Door mesh that can be unlocked on room clear. */
   exitDoor?: boolean;
+  /**
+   * Layout pattern for the pillars. "scatter" (default) keeps the existing
+   * RNG placement; "ring" wraps them around the player's spawn-side; "rows"
+   * lines them down the centerline; "throne_back" hugs them against the
+   * north wall to frame an elevated boss platform.
+   */
+  pillarFormation?: "scatter" | "ring" | "rows" | "throne_back";
 }
 
 /** Default env palette — verdant forest floor with warm horizon. Reused for all three rooms
@@ -205,12 +212,48 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     pillarMat.diffuseColor = opts.palettePillar ?? new Color3(0.35, 0.32, 0.28);
     pillarMat.specularColor = new Color3(0.08, 0.08, 0.08);
 
-    // Simple seeded placement using opts.rngSeed if given, else Math.random
     const rng = opts.rngSeed != null ? makeMulberry(opts.rngSeed) : Math.random;
     const safeRadius = half - 4;
-    for (let i = 0; i < pillarCount; i++) {
-      const px = (rng() * 2 - 1) * safeRadius;
-      const pz = (rng() * 2 - 1) * safeRadius;
+    const formation = opts.pillarFormation ?? "scatter";
+    const positions: { x: number; z: number }[] = [];
+    if (formation === "scatter") {
+      for (let i = 0; i < pillarCount; i++) {
+        positions.push({
+          x: (rng() * 2 - 1) * safeRadius,
+          z: (rng() * 2 - 1) * safeRadius,
+        });
+      }
+    } else if (formation === "ring") {
+      // Even ring centered on the arena, radius safeRadius * 0.7.
+      const r = safeRadius * 0.7;
+      for (let i = 0; i < pillarCount; i++) {
+        const a = (i / pillarCount) * Math.PI * 2;
+        positions.push({ x: Math.cos(a) * r, z: Math.sin(a) * r });
+      }
+    } else if (formation === "rows") {
+      // Two parallel rows running North-South, splitting the arena into a hall.
+      const rowsX = [-safeRadius * 0.45, safeRadius * 0.45];
+      const perRow = Math.ceil(pillarCount / 2);
+      const span = safeRadius * 1.4;
+      for (let i = 0; i < pillarCount; i++) {
+        const x = rowsX[i % 2];
+        const t = (Math.floor(i / 2)) / Math.max(1, perRow - 1);
+        positions.push({ x, z: -span / 2 + t * span });
+      }
+    } else if (formation === "throne_back") {
+      // Curved row hugging the north (-Z) wall — frames an elevated platform.
+      const arc = Math.PI * 0.55;
+      const start = -arc / 2;
+      const r = safeRadius * 0.85;
+      for (let i = 0; i < pillarCount; i++) {
+        const t = pillarCount === 1 ? 0.5 : i / (pillarCount - 1);
+        const a = start + t * arc + Math.PI; // shift to point toward -Z
+        positions.push({ x: Math.cos(a) * r, z: Math.sin(a) * r * 0.6 - safeRadius * 0.3 });
+      }
+    }
+
+    for (let i = 0; i < positions.length; i++) {
+      const { x: px, z: pz } = positions[i];
       const pillar = MeshBuilder.CreateCylinder(`pillar_${i}`, { diameter: 1.6, height: wallHeight }, scene);
       pillar.position = new Vector3(px, wallHeight / 2, pz);
       pillar.material = pillarMat;
@@ -420,6 +463,32 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
         shaftMat.alpha += (target - shaftMat.alpha) * Math.min(1, dt * 4);
       },
     };
+
+    // Solid black slab behind the door. Without this the camera can drift
+    // close enough to the doorway that it sees past the thin (0.18m) plank
+    // and into the void outside the south wall. The slab fills that gap so
+    // the unlocked doorway reads as a dark recess, not skybox.
+    const backSlab = MeshBuilder.CreateBox(
+      "doorBackSlab",
+      {
+        width: opening + frameThickness * 2 + 0.4,
+        height: DOOR_OPENING_HEIGHT + 1.0,
+        depth: 0.3,
+      },
+      scene,
+    );
+    backSlab.position = new Vector3(0, (DOOR_OPENING_HEIGHT + 1.0) / 2, southZ - 0.6);
+    const slabMat = new StandardMaterial("doorBackSlabMat", scene);
+    slabMat.diffuseColor = new Color3(0.02, 0.02, 0.02);
+    slabMat.specularColor = new Color3(0, 0, 0);
+    slabMat.emissiveColor = new Color3(0, 0, 0);
+    backSlab.material = slabMat;
+    backSlab.parent = root;
+    backSlab.applyFog = true;
+    backSlab.isPickable = false;
+    backSlab.freezeWorldMatrix();
+    backSlab.doNotSyncBoundingInfo = true;
+    slabMat.freeze();
   }
 
   // Wall sconces — emissive billboards near the top of each side wall to give

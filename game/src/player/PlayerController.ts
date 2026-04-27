@@ -3,6 +3,10 @@ import { Player } from "./Player";
 import { FrameInput } from "../input/InputController";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TempoSystem } from "../tempo/TempoSystem";
+import { events } from "../engine/EventBus";
+
+const GRAVITY = -28;
+const JUMP_VEL = 9;
 
 export interface ArenaCollision {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -49,11 +53,41 @@ export class PlayerController {
         p.dodgeCooldownTimer = p.stats.dodgeCooldown;
       }
     }
+    // Aegis / utility shield timer — drop the absorb when the duration runs out.
+    if (p.absorbHpTimer > 0) {
+      p.absorbHpTimer = Math.max(0, p.absorbHpTimer - dt);
+      if (p.absorbHpTimer === 0) p.absorbHp = 0;
+    }
 
+    // ---- Jump + gravity integration (BEFORE XZ movement) ----
+    // Space starts a jump only when grounded and not dodging. Aerial cards
+    // intentionally lock vertical velocity (set negative by CardCaster) and
+    // override the regular gravity ramp until they land.
+    if (input.jumpPressed && !p.isAirborne() && !p.isDodging && !p.aerialSlamming) {
+      p.verticalVelocity = JUMP_VEL;
+    }
+    if (p.isAirborne() || p.verticalVelocity !== 0) {
+      p.root.position.y += p.verticalVelocity * dt;
+      p.verticalVelocity += GRAVITY * dt;
+      if (p.root.position.y <= 0) {
+        const wasSlam = p.aerialSlamming;
+        p.root.position.y = 0;
+        p.verticalVelocity = 0;
+        p.aerialSlamming = false;
+        events.emit("PLAYER_LANDED", { aerial: wasSlam });
+      }
+    }
+
+    // Mid-air dodges are intentionally disabled — dodge is a grounded move,
+    // and the aerial-slam card occupies the in-air "commit" verb instead.
+    if (input.dodgePressed && p.isAirborne()) {
+      // Just skip the dodge intent; do NOT consume the input flag — let the
+      // player queue another dodge the moment they land.
+    }
     // Begin dodge — direction is the move input (normalized) when present,
     // otherwise the current facing. Using the scratch dirBuf so dodge presses
     // don't allocate.
-    if (input.dodgePressed && !p.isDodging && p.dodgeCooldownTimer <= 0) {
+    if (input.dodgePressed && !p.isDodging && !p.isAirborne() && p.dodgeCooldownTimer <= 0) {
       if (input.move.lengthSquared() > 1e-3) {
         this.dirBuf.copyFrom(input.move);
         const len = Math.hypot(this.dirBuf.x, this.dirBuf.z);

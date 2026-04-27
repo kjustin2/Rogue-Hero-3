@@ -14,6 +14,7 @@ import { HighlightLayer } from "@babylonjs/core/Layers/highlightLayer";
 import { createSceneBundle, applyGradingPreset, applyBossLighting, tickBossLighting, GradingPreset } from "./scene/SceneSetup";
 import { getQuality, cycleQuality } from "./engine/Quality";
 import { ArenaHazards } from "./scene/ArenaHazards";
+import { HazardTiles } from "./scene/HazardTiles";
 import { createFollowCamera } from "./scene/FollowCamera";
 import { InputController } from "./input/InputController";
 import { Player } from "./player/Player";
@@ -23,7 +24,6 @@ import { CombatManager } from "./combat/CombatManager";
 import { Hud } from "./ui/Hud";
 import { TempoSystem } from "./tempo/TempoSystem";
 import { DeckManager } from "./deck/DeckManager";
-import { STARTING_DECK } from "./deck/CardDefinitions";
 import { ProjectileSystem } from "./combat/handlers/projectile";
 import { HostileProjectileSystem } from "./combat/handlers/hostileProjectile";
 import { CardCaster, CardArcFx } from "./combat/CardCaster";
@@ -32,9 +32,15 @@ import { events } from "./engine/EventBus";
 import { ItemManager } from "./items/ItemManager";
 import { ItemDefinitions, ItemDef, ALL_ITEM_IDS } from "./items/ItemDefinitions";
 import { RewardPicker } from "./ui/RewardPicker";
+import { CardRewardPicker } from "./ui/CardRewardPicker";
+import { HandPicker } from "./ui/HandPicker";
+import { CardDef, CardDefinitions, ALL_CARD_IDS } from "./deck/CardDefinitions";
 import { RunManager, VERTICAL_SLICE_ROOMS } from "./run/RunManager";
 import { GameState } from "./state/GameState";
 import { BLADE } from "./characters/Blade";
+import { HeroDef } from "./characters/Hero";
+import { HERO_BY_ID } from "./characters/HeroRegistry";
+import { unlockHero } from "./run/HeroUnlocks";
 import { mulberry32 } from "./engine/Rng";
 import { HitParticles } from "./fx/HitParticles";
 import { DodgeGhosts } from "./fx/DodgeGhost";
@@ -122,14 +128,25 @@ async function boot() {
 
   const combat = new CombatManager(scene, player);
   const items = new ItemManager(tempo);
+  items.player = player;
   tempo.itemHooks = {
     shouldDecay: (v) => items.shouldDecay(v),
     crashResetOverride: () => items.crashResetOverride(),
   };
 
-  const deck = new DeckManager(STARTING_DECK, 0xc0ffee);
+  const deck = new DeckManager(BLADE.startingDeck, 0xc0ffee);
   const projectiles = new ProjectileSystem(scene, enemies);
   const caster = new CardCaster(player, enemies, tempo, projectiles);
+  caster.setItemHooks({
+    cardCostOverride: (card) => items.cardCostOverride(card),
+    damageMultiplier: (card) => items.damageMultiplier(card),
+    onCardCast: (card, hits) => items.onCardCast(card, hits),
+    onEnemyHit: (enemy, dmg, card) => items.onEnemyHit(enemy, dmg, card),
+    onKill: (enemy, card) => items.onKill(enemy, card),
+  });
+  // Frozen-enemy accessor for Frost Chord — the item lives in items/, but the
+  // enemies live in enemies/, so we bridge here at the wiring layer.
+  items.setFrozenAccessor(() => enemies.enemies.some((e) => e.alive && e.freezeTimer > 0));
   const hud = new Hud(scene, player, enemies, tempo, deck);
   // HUD button for cycling lock — routed through the same cycleLock() as the keybind,
   // plus the camera-orient swing so mouse and keyboard behave identically.
@@ -199,6 +216,8 @@ async function boot() {
   // after wiring that registers enemies that already spawned during room 0
   // load (RunManager.loadRoom calls spawnAll before this point).
   const rewardPicker = new RewardPicker(scene);
+  const cardRewardPicker = new CardRewardPicker(scene);
+  const handPicker = new HandPicker(scene);
   const hitFx = new HitParticles(scene);
   // Now that outline and hitFx exist, wire the EnemyManager lifecycle hooks.
   // onSpawn paints a default warm outline on every body part; onDispose removes
@@ -306,6 +325,21 @@ async function boot() {
   // Arena hazards — only the boss room turns them on. Half-size is injected per
   // room load so the spawn radius matches the current arena.
   const arenaHazards = new ArenaHazards(scene, 27);
+
+  // Static hazard tiles (lava / spikes) — placed per-room via RoomDescriptor.hazards.
+  // Disposed and rebuilt on every arena swap.
+  let hazardTiles: HazardTiles | null = null;
+  function rebuildHazardTiles(): void {
+    if (hazardTiles) {
+      hazardTiles.dispose();
+      hazardTiles = null;
+    }
+    const desc = run.rooms[run.currentIndex];
+    if (desc?.hazards && desc.hazards.length > 0) {
+      hazardTiles = new HazardTiles(scene, desc.hazards);
+    }
+  }
+  rebuildHazardTiles();
   // Reused buffer so the sword-tip sampler doesn't allocate a Vector3 per frame.
   const swordTipBuf = new Vector3();
 
@@ -385,14 +419,29 @@ async function boot() {
   });
 
   // Player damage flash — vignette pulses red briefly when player takes damage.
+  // Also the SINGLE place HP is deducted: callers (enemies, hazards) emit the
+  // intent here and we apply absorb-shield + ironclad-style relic mitigation
+  // before the actual subtract. Direct `player.hp -= X` writes elsewhere have
+  // been removed in favor of routing every hit through this listener.
   let damageFlashTimer = 0;
   events.on<{ amount: number; source: string }>("DAMAGE_TAKEN", (p) => {
     damageFlashTimer = 0.35;
     cam.shake(0.12, 0.32);
-    // Red-tinted floating number at the player's chest — makes it obvious how
-    // hard each hit lands during mob scrums.
-    if (p && typeof p.amount === "number" && p.amount > 0) {
-      damageNumbers.spawnPlayerHit(player.root.position, p.amount);
+    let amount = p && typeof p.amount === "number" ? p.amount : 0;
+    if (amount > 0) {
+      // Relic mitigation hook — Ironclad shaves a slice when low-HP, etc.
+      amount = Math.max(0, items.onPlayerDamaged(amount));
+      // Absorb shield consumes damage before HP.
+      if (player.absorbHp > 0) {
+        const eaten = Math.min(player.absorbHp, amount);
+        player.absorbHp -= eaten;
+        amount -= eaten;
+        if (player.absorbHp <= 0) player.absorbHpTimer = 0;
+      }
+      if (amount > 0) {
+        player.hp = Math.max(0, player.hp - amount);
+        damageNumbers.spawnPlayerHit(player.root.position, amount);
+      }
     }
   });
 
@@ -814,22 +863,23 @@ async function boot() {
 
   // ---------- Selected-card state ----------
   // LMB plays the card at selectedSlot; RMB cycles selectedSlot to the next populated slot.
-  // 1–4 keys select a slot directly without playing (handy for experienced players).
+  // 1–3 keys select a slot directly without playing (handy for experienced players).
   const selection = { slot: 0 };
 
   function ensureValidSelection(): void {
-    // Prefer the current slot if it's populated; otherwise scan forward for the next non-empty one.
+    const N = deck.handSize;
     if (deck.peek(selection.slot)) return;
-    for (let offset = 1; offset <= 4; offset++) {
-      const s = (selection.slot + offset) % 4;
+    for (let offset = 1; offset <= N; offset++) {
+      const s = (selection.slot + offset) % N;
       if (deck.peek(s)) { selection.slot = s; return; }
     }
     // Hand is empty — leave slot as-is (the HUD will render it empty).
   }
 
   function cycleSelection(): void {
-    for (let offset = 1; offset <= 4; offset++) {
-      const s = (selection.slot + offset) % 4;
+    const N = deck.handSize;
+    for (let offset = 1; offset <= N; offset++) {
+      const s = (selection.slot + offset) % N;
       if (deck.peek(s)) { selection.slot = s; return; }
     }
   }
@@ -917,13 +967,19 @@ async function boot() {
   gs.roomIndex = 0;
   hud.setRoomIndicator(`${run.rooms[0].name} (1/${run.rooms.length})`);
 
-  // Color grading preset per room index — verdant biome for 0/1, pit for the boss arena.
+  // Color grading per room. Boss rooms always swap to "pit" for the heavier
+  // crush + chromatic; non-boss rooms inherit their act's preset (Verdant for
+  // Act I, the existing "verdant" tone works for Spire too — its env palette
+  // already cools the light, and a dedicated "spire" grading would risk
+  // introducing more color drift than it'd add). Once a Spire/Magma preset
+  // is added to ColorGrading.ts they slot in here.
   function presetForRoom(idx: number): GradingPreset {
-    if (idx >= run.rooms.length - 1) return "pit";
+    const desc = run.rooms[idx];
+    if (desc?.isBoss) return "pit";
     return "verdant";
   }
   function isBossRoom(idx: number): boolean {
-    return idx >= run.rooms.length - 1;
+    return run.rooms[idx]?.isBoss === true;
   }
   applyGradingPreset(pipeline, presetForRoom(0));
   applyBossLighting(sceneBundle, isBossRoom(0));
@@ -934,7 +990,10 @@ async function boot() {
   // Arena hazards are only active in the boss room (the last index). The flag
   // flips in handleRoomCleared's transition block and on reset.
   function updateArenaHazardsEnabled(): void {
-    arenaHazards.enabled = gs.roomIndex === run.rooms.length - 1;
+    // Dynamic boss-spawn hazards are enabled for any room flagged as a boss
+    // arena — three of those now (one per act). Static lava/spike tiles are
+    // a separate system (HazardTiles) wired off RoomDescriptor.hazards.
+    arenaHazards.enabled = isBossRoom(gs.roomIndex);
     if (!arenaHazards.enabled) arenaHazards.reset();
   }
   updateArenaHazardsEnabled();
@@ -966,6 +1025,16 @@ async function boot() {
     if (run.isLastRoom()) {
       gs.setPhase("victory");
       hud.setBanner("VICTORY — press R to play again");
+      // Reaching the final room with this hero unlocks the next slot in the
+      // roster. Concrete unlock conditions (Act II → Stalker, Act III → Bulwark)
+      // will get more granular once acts split apart, but pinning the unlock
+      // here at least lets the locked cards open up for repeat runs.
+      if (activeHero.id === "blade" || activeHero.id === "sparkmage") {
+        unlockHero("stalker");
+      }
+      if (activeHero.id === "stalker") {
+        unlockHero("bulwark");
+      }
       return;
     }
     // Otherwise: open the door and let the player walk to it themselves. The
@@ -1012,14 +1081,21 @@ async function boot() {
       applyBossLighting(sceneBundle, isBossRoom(gs.roomIndex));
       fireflies.setEnabled(!isBossRoom(gs.roomIndex));
       updateArenaHazardsEnabled();
-      // Hand is fixed for the whole run — no re-draw between rooms.
+      rebuildHazardTiles();
       ensureValidSelection();
     }, 90);
     await flashPromise;
-    // Reward picker now fires "as the player enters" — narratively framed as
-    // their reward for clearing the previous room rather than a meta-screen
-    // between arenas.
-    await openRewardPicker();
+    // Reward stage — boss rooms award a new card; non-boss rooms award a relic.
+    // Whichever fires, the hand picker follows immediately so the player can
+    // bring the new card (or just rebalance) into the next fight.
+    const enteredRoom = run.rooms[run.currentIndex];
+    if (enteredRoom?.isBoss) {
+      await openCardRewardPicker();
+    } else {
+      await openRewardPicker();
+    }
+    gs.setPhase("hand_pick");
+    await openHandPicker();
     gs.setPhase("playing");
   }
 
@@ -1044,6 +1120,63 @@ async function boot() {
     }
   }
 
+  /** Pick 3 unique cards the player doesn't already own (or 3 random if their
+   *  collection already covers the pool). Boss-reward picker entry point. */
+  function pickCardRewards(count: number): CardDef[] {
+    const owned = new Set(deck.collection);
+    const fresh = ALL_CARD_IDS.filter((id) => !owned.has(id));
+    const pool = fresh.length >= count ? fresh : ALL_CARD_IDS.slice();
+    // Fisher-Yates shuffle on a copy so we don't mutate ALL_CARD_IDS.
+    const arr = pool.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr.slice(0, count).map((id) => CardDefinitions[id]);
+  }
+
+  async function openCardRewardPicker(): Promise<void> {
+    const options = pickCardRewards(3);
+    if (options.length === 0) return;
+    hud.setBanner("CHOOSE A NEW CARD");
+    pipeline.depthOfFieldEnabled = true;
+    pipeline.depthOfField.focalLength = 50;
+    pipeline.depthOfField.fStop = 1.4;
+    pipeline.depthOfField.focusDistance = 8000;
+    pipeline.depthOfField.lensSize = 50;
+    try {
+      const picked = await cardRewardPicker.open(options);
+      if (picked) {
+        deck.addToCollection(picked.id);
+      }
+    } finally {
+      pipeline.depthOfFieldEnabled = false;
+      hud.setBanner(null);
+    }
+  }
+
+  async function openHandPicker(): Promise<void> {
+    const collection = deck.collection.map((id) => CardDefinitions[id]).filter(Boolean) as CardDef[];
+    if (collection.length === 0) return;
+    hud.setBanner("BUILD YOUR HAND");
+    pipeline.depthOfFieldEnabled = true;
+    pipeline.depthOfField.focalLength = 50;
+    pipeline.depthOfField.fStop = 1.4;
+    pipeline.depthOfField.focusDistance = 8000;
+    pipeline.depthOfField.lensSize = 50;
+    try {
+      const picks = await handPicker.open(collection, deck.hand.slice());
+      // Pad to handSize so DeckManager.setHand fills slots cleanly.
+      while (picks.length < deck.handSize) picks.push("");
+      deck.setHand(picks.map((p) => (p === "" ? null : p)));
+      ensureValidSelection();
+      refreshAttackPreview();
+    } finally {
+      pipeline.depthOfFieldEnabled = false;
+      hud.setBanner(null);
+    }
+  }
+
   function resetRun(): void {
     // Cancel any in-flight deferred callbacks first — without this, an
     // ember burst from a kill 100ms before reset would land at the new spawn
@@ -1051,6 +1184,10 @@ async function boot() {
     clearDeferred();
     player.reset();
     tempo.reset();
+    // Re-apply the active hero's tints, stats, passives, and starting deck.
+    // applyHero handles the deck reset itself (via deck.setStartingDeck), so
+    // the explicit deck.reset() below would just thrash the already-fresh state.
+    applyHero(activeHero);
     deck.reset();
     items.reset();
     projectiles.reset();
@@ -1104,6 +1241,7 @@ async function boot() {
     applyBossLighting(sceneBundle, isBossRoom(0));
     fireflies.setEnabled(!isBossRoom(0));
     updateArenaHazardsEnabled();
+    rebuildHazardTiles();
     refreshAttackPreview();
   }
 
@@ -1111,11 +1249,70 @@ async function boot() {
     void handleRoomCleared();
   });
 
+  // Aerial-card landings — resolve a deferred radial AoE around the player so
+  // the impact reads visually with the ground hit, not at cast time. The card
+  // id was stashed by CardCaster.castAerial when the player committed to the
+  // slam.
+  events.on<{ aerial: boolean }>("PLAYER_LANDED", ({ aerial }) => {
+    if (!aerial) return;
+    const cardId = player.pendingAerialCardId;
+    player.pendingAerialCardId = null;
+    if (!cardId) return;
+    const card = CardDefinitions[cardId];
+    if (!card) return;
+    const radius = card.aoeRadius ?? card.range;
+    const dmg = Math.round(card.damage * tempo.damageMultiplier());
+    const px = player.root.position.x;
+    const pz = player.root.position.z;
+    let hits = 0;
+    for (const e of enemies.enemies) {
+      if (!e.alive) continue;
+      const dx = e.root.position.x - px;
+      const dz = e.root.position.z - pz;
+      const reach = radius + e.def.radius;
+      if (dx * dx + dz * dz > reach * reach) continue;
+      e.takeDamage(dmg);
+      const d = Math.hypot(dx, dz) || 1;
+      e.knockback(dx / d, dz / d, 6);
+      hits++;
+    }
+    if (hits > 0) events.emit("COMBO_HIT", { hitNum: 1, count: hits });
+    // Surface a slam-shaped CARD_FX so main.ts's pooled card-fx layer can draw
+    // the ground shockwave at the impact point.
+    events.emit("CARD_FX", {
+      kind: "slam", range: radius,
+      x: px, z: pz, fx: player.facing.x, fz: player.facing.z, y: 0,
+    });
+    // Crash equivalence at high tempo — meteor slam is the high-skill alt to
+    // hitting F. If the meter is ready, pop a normal Crash here so it
+    // composes with shock-ring FX without duplicating logic.
+    if (tempo.canCrash()) tempo.triggerCrash();
+  });
+
   // Boss Phase 2: spawn two chasers next to the boss
   events.on<{ bossId: string; phase: number; spawnPos: Vector3 }>("BOSS_PHASE", ({ spawnPos }) => {
     const off = 4.0;
     enemies.spawn("chaser", new Vector3(spawnPos.x - off, 0, spawnPos.z));
     enemies.spawn("chaser", new Vector3(spawnPos.x + off, 0, spawnPos.z));
+  });
+
+  // Boss intro — locks input for `duration` seconds, orbits the camera around
+  // the boss spawn position, shows a banner with the boss display name, then
+  // returns to "playing". Hard timeout safety guards against a missed end.
+  events.on<{ bossId: string; duration: number; name: string; pos: Vector3 }>("BOSS_INTRO_START", ({ duration, name, pos }) => {
+    if (gs.phase !== "playing") return;
+    gs.setPhase("boss_intro");
+    hud.setBanner(name);
+    cam.startKillCam(pos.clone(), 11, 0.7, duration);
+    // Hard fallback in case the boss is killed during its own intro tween
+    // (rare but possible if a relic hit lands during scale-up).
+    const safetyMs = Math.min(5000, duration * 1000 + 600);
+    setTimeout(() => {
+      if (gs.phase === "boss_intro") {
+        hud.setBanner(null);
+        gs.setPhase("playing");
+      }
+    }, safetyMs);
   });
 
   // Inspector toggle + restart on R + quality cycle on G
@@ -1201,12 +1398,50 @@ async function boot() {
     }
   });
 
+  // Tracks the hero chosen for the current run so resetRun can re-apply on
+  // restart without bouncing the player back through the picker.
+  let activeHero: HeroDef = BLADE;
+
+  function applyHero(def: HeroDef): void {
+    activeHero = def;
+    // Stats
+    player.stats.maxHp = def.hp;
+    player.stats.moveSpeed = def.moveSpeed;
+    player.hp = def.hp;
+    // Tempo passives
+    tempo.setClassPassives(def.passives);
+    // Visual tints
+    player.bodyMat.diffuseColor.copyFrom(def.bodyTint);
+    player.capeMat.diffuseColor.copyFrom(def.capeTint);
+    player.swordMat.diffuseColor.copyFrom(def.swordTint);
+    // Sparkmage's staff reads as glowy magic — gentle emissive lift so the
+    // weapon silhouette sells the archetype without a mesh swap.
+    if (def.weaponShape === "staff") {
+      player.swordMat.emissiveColor.set(
+        def.swordTint.r * 0.45,
+        def.swordTint.g * 0.45,
+        def.swordTint.b * 0.5,
+      );
+    } else {
+      player.swordMat.emissiveColor.set(0.25, 0.22, 0.1);
+    }
+    // Deck
+    deck.setStartingDeck(def.startingDeck);
+    selection.slot = 0;
+    ensureValidSelection();
+    refreshAttackPreview();
+  }
+
   async function runStartMenu(): Promise<void> {
     const choice = await menus.showStartMenu();
     if (choice === "quit") {
       window.close();
       return;
     }
+    // Hero select
+    const heroId = await menus.showHeroSelect();
+    const def = HERO_BY_ID[heroId] ?? BLADE;
+    applyHero(def);
     menus.hide();
     gs.setPhase("playing");
   }
@@ -1271,10 +1506,10 @@ async function boot() {
       cam.setFocus(lock.enemy ? lock.enemy.root : null);
       applyLockOutline(lock.enemy);
 
-      // 1–4: direct-select a slot (does NOT play — that's LMB now).
+      // 1–3: direct-select a slot (does NOT play — that's LMB now).
       for (const slot1 of frame.selectSlotPressed) {
         const idx = slot1 - 1;
-        if (idx >= 0 && idx < 4 && deck.peek(idx)) selection.slot = idx;
+        if (idx >= 0 && idx < deck.handSize && deck.peek(idx)) selection.slot = idx;
       }
 
       // RMB: cycle to the next populated slot.
@@ -1338,16 +1573,18 @@ async function boot() {
     fireflies.tick(realDt);
     tickBossLighting(sceneBundle, realDt);
 
-    // Arena hazards — only active in the boss room. Tick FIRST with the current
-    // player position, then consume any pending damage to apply to HP. Uses the
-    // gameplay dt (so hitstop freezes the telegraphs along with everything else).
+    // Arena hazards — only active in the boss room. Both arenaHazards and
+    // hazardTiles emit DAMAGE_TAKEN with the amount; the unified listener at
+    // the top of this file applies HP, absorb, and relic mitigation. We just
+    // tick the systems here.
     if (gs.isInteractive()) {
       arenaHazards.tick(dt, player.root.position, player.stats.radius, player.isDodging);
-      const hazardDmg = arenaHazards.consumeDamage();
-      if (hazardDmg > 0) {
-        player.hp = Math.max(0, player.hp - hazardDmg);
-        // DAMAGE_TAKEN was already emitted inside the hazard for the visual
-        // flash; we just update the HP number here.
+      arenaHazards.consumeDamage();
+      if (hazardTiles) {
+        hazardTiles.tick(
+          dt, player.root.position, player.stats.radius,
+          player.isAirborne(), player.isDodging,
+        );
       }
     }
 

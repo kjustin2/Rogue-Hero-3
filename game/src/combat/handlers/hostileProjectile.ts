@@ -89,7 +89,6 @@ export class HostileProjectileSystem {
       const r = playerR + 0.2;
       if (dx * dx + dz * dz <= r * r) {
         if (!this.player.isDodging) {
-          this.player.hp = Math.max(0, this.player.hp - p.damage);
           events.emit("DAMAGE_TAKEN", { amount: p.damage, source: "projectile" });
         }
         consumed = true;

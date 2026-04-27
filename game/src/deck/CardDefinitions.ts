@@ -1,27 +1,48 @@
 /**
- * Curated card subset for the vertical slice MVP.
- * Ported in spirit from rogue-hero-2/src/DeckManager.js — fields:
- *   id, name, cost (AP), tempoShift, damage, range, type, rarity, desc.
+ * Card pool. The set is intentionally small (10) so each card has a strong
+ * identity and a refined animation; players draft 3 of these into their
+ * battle hand each room from a per-hero collection.
+ *
+ * Per-card fields:
+ *   id, name, cost (AP), tempoShift (added on cast), damage, range,
+ *   type, rarity, desc, glyph.
+ *
+ * Type-specific extensions live in the optional fields:
+ *   aoeRadius      — radial cards ("aoe", "aerial") use this for hit + FX
+ *   chainCount     — chain-style projectiles ("chain_lightning")
+ *   effect         — utility branch dispatch ("freeze", "shield")
+ *   requiresAirborne — aerial cards: castable only while player.y > 0
  */
 
-export type CardType = "melee" | "projectile" | "dash";
+export type CardType = "melee" | "projectile" | "dash" | "aoe" | "aerial" | "utility";
 
 export interface CardDef {
   id: string;
   name: string;
-  cost: number;        // AP
-  tempoShift: number;  // applied via TempoSystem.add() on cast
+  cost: number;
+  tempoShift: number;
   damage: number;
-  range: number;       // meters; per-type meaning (radius/length/dash distance)
+  range: number;
   type: CardType;
   rarity: "common" | "uncommon" | "rare";
   desc: string;
-  /** Single glyph drawn prominently on the card slot — gives each card a
-   *  distinct silhouette read at a glance, independent of name length. */
   glyph: string;
+  /** Radial cards — radius of the hit + FX disc. */
+  aoeRadius?: number;
+  /** Chain projectiles — total targets including the primary. */
+  chainCount?: number;
+  /** Utility-branch dispatch. */
+  effect?: "freeze" | "shield";
+  /** Aerial cards: cast fails (CARD_FAIL "not_airborne") if player is grounded. */
+  requiresAirborne?: boolean;
+  /** Melee cards: explicit arc width override (defaults to 140°). */
+  arcDegrees?: number;
+  /** Dash cards: when true, the dash applies no damage but full i-frames. */
+  iframeOnly?: boolean;
 }
 
 export const CardDefinitions: Record<string, CardDef> = {
+  // --- Melee ---
   cleave: {
     id: "cleave",
     name: "Cleave",
@@ -33,7 +54,35 @@ export const CardDefinitions: Record<string, CardDef> = {
     rarity: "common",
     desc: "Wide arc swing in front of you. +6 Tempo.",
     glyph: "⚔",
+    arcDegrees: 140,
   },
+  crashing_blow: {
+    id: "crashing_blow",
+    name: "Crashing Blow",
+    cost: 2,
+    tempoShift: 10,
+    damage: 32,
+    range: 2.6,
+    type: "melee",
+    rarity: "uncommon",
+    desc: "A heavy two-handed slam in a narrow arc. Big damage + knockback. +10 Tempo.",
+    glyph: "🔨",
+    arcDegrees: 60,
+  },
+  whirlwind: {
+    id: "whirlwind",
+    name: "Whirlwind",
+    cost: 2,
+    tempoShift: 8,
+    damage: 14,
+    range: 3.5,
+    type: "melee",
+    rarity: "uncommon",
+    desc: "Spin attack hits everything around you. +8 Tempo.",
+    glyph: "🌀",
+    arcDegrees: 360,
+  },
+  // --- Projectile ---
   bolt: {
     id: "bolt",
     name: "Bolt",
@@ -46,6 +95,35 @@ export const CardDefinitions: Record<string, CardDef> = {
     desc: "Fire a fast bolt at the cursor. First enemy hit takes damage. +4 Tempo.",
     glyph: "➶",
   },
+  chain_lightning: {
+    id: "chain_lightning",
+    name: "Chain Lightning",
+    cost: 2,
+    tempoShift: 7,
+    damage: 12,
+    range: 14,
+    type: "projectile",
+    rarity: "rare",
+    desc: "Bolt arcs to up to 3 enemies, jumping 6m between each. +7 Tempo.",
+    glyph: "⚡",
+    chainCount: 3,
+  },
+  // --- AoE (radial-from-player) ---
+  frost_nova: {
+    id: "frost_nova",
+    name: "Frost Nova",
+    cost: 2,
+    tempoShift: 5,
+    damage: 10,
+    range: 5.5,
+    type: "aoe",
+    rarity: "uncommon",
+    desc: "Burst of ice freezes nearby enemies for 1.2s. +5 Tempo.",
+    glyph: "❄",
+    aoeRadius: 5.5,
+    effect: "freeze",
+  },
+  // --- Mobility / Dash ---
   dashstrike: {
     id: "dashstrike",
     name: "Dash Strike",
@@ -58,10 +136,59 @@ export const CardDefinitions: Record<string, CardDef> = {
     desc: "Dash forward 5m, damaging enemies you pass through. +8 Tempo.",
     glyph: "↯",
   },
+  phase_step: {
+    id: "phase_step",
+    name: "Phase Step",
+    cost: 1,
+    tempoShift: 5,
+    damage: 1,
+    range: 6,
+    type: "dash",
+    rarity: "uncommon",
+    desc: "Dash 6m through everything with full i-frames. Almost no damage. +5 Tempo.",
+    glyph: "💨",
+    iframeOnly: true,
+  },
+  // --- Aerial ---
+  meteor_slam: {
+    id: "meteor_slam",
+    name: "Meteor Slam",
+    cost: 2,
+    tempoShift: 12,
+    damage: 36,
+    range: 4,
+    type: "aerial",
+    rarity: "rare",
+    desc: "Mid-air only. Slam down with a 4m shockwave. +12 Tempo.",
+    glyph: "☄",
+    aoeRadius: 4,
+    requiresAirborne: true,
+  },
+  // --- Utility ---
+  aegis: {
+    id: "aegis",
+    name: "Aegis",
+    cost: 2,
+    tempoShift: 0,
+    damage: 1,
+    range: 1,
+    type: "utility",
+    rarity: "uncommon",
+    desc: "Conjure a 25-HP shield around you for 4 seconds.",
+    glyph: "🛡",
+    effect: "shield",
+  },
 };
 
+export const ALL_CARD_IDS: string[] = Object.keys(CardDefinitions);
+
+/**
+ * Default starting deck — used when no hero is set (legacy callers + tests).
+ * Per-hero starting decks live on each HeroDef and override this when a run
+ * begins from the hero-select screen.
+ */
 export const STARTING_DECK: string[] = [
-  "cleave", "cleave", "cleave",
-  "bolt", "bolt", "bolt",
-  "dashstrike", "dashstrike",
+  "cleave", "cleave", "crashing_blow",
+  "bolt", "dashstrike",
+  "whirlwind", "aegis", "phase_step",
 ];

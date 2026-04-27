@@ -14,7 +14,11 @@ import { TempoSystem } from "../src/tempo/TempoSystem";
 import { GameState, GamePhase } from "../src/state/GameState";
 import { BLADE } from "../src/characters/Blade";
 
-const VALID_ENEMY_KINDS = new Set(["chaser", "shooter", "caster", "elite", "boss_brawler"]);
+const VALID_ENEMY_KINDS = new Set([
+  "chaser", "shooter", "caster", "elite",
+  "leaper", "swarmer", "lancer", "wisp",
+  "boss_brawler", "boss_spire_caster", "boss_colossus",
+]);
 
 let failures = 0;
 function check(cond: unknown, label: string): void {
@@ -31,7 +35,9 @@ function section(title: string): void {
 
 // ---------------------------------------------------------- Rooms
 section("Room layout");
-check(VERTICAL_SLICE_ROOMS.length === 3, "exactly 3 rooms in the vertical slice");
+check(VERTICAL_SLICE_ROOMS.length === 9, "9 rooms total across 3 acts");
+const bossRooms = VERTICAL_SLICE_ROOMS.filter((r) => r.isBoss);
+check(bossRooms.length === 3, "3 boss rooms total (one per act)");
 for (const [i, room] of VERTICAL_SLICE_ROOMS.entries()) {
   check(typeof room.name === "string" && room.name.length > 0, `room[${i}] has a name`);
   check(room.arena.size != null && room.arena.size >= 20 && room.arena.size <= 80, `room[${i}] size is within sane bounds`);
@@ -46,12 +52,13 @@ for (const [i, room] of VERTICAL_SLICE_ROOMS.entries()) {
     check(Math.abs(spawn.pos.z) < half - margin, `room[${i}].spawns[${j}].pos.z inside arena (${spawn.pos.z.toFixed(1)}, half=${half})`);
   }
 }
-// The last room is the boss arena.
-const lastRoom = VERTICAL_SLICE_ROOMS[VERTICAL_SLICE_ROOMS.length - 1];
-check(
-  lastRoom.spawns.some((s) => s.kind === "boss_brawler"),
-  "final room contains a boss",
-);
+// Each boss room contains exactly one boss-prefixed enemy.
+for (const room of bossRooms) {
+  check(
+    room.spawns.some((s) => s.kind.startsWith("boss_")),
+    `boss room "${room.name}" contains a boss spawn`,
+  );
+}
 
 // ---------------------------------------------------------- Cards
 section("Cards");
@@ -64,7 +71,7 @@ for (const [id, def] of Object.entries(CardDefinitions)) {
   check(def.cost > 0 && def.cost <= 4, `card "${id}" cost is within AP max`);
   check(def.damage > 0, `card "${id}" has non-zero damage`);
   check(def.range > 0, `card "${id}" has positive range`);
-  check(["melee", "projectile", "dash"].includes(def.type), `card "${id}" type is a known handler`);
+  check(["melee", "projectile", "dash", "aoe", "aerial", "utility"].includes(def.type), `card "${id}" type is a known handler`);
 }
 
 // ---------------------------------------------------------- Items

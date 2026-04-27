@@ -145,7 +145,6 @@ export class Chaser extends Enemy {
         if (this.telegraph) this.telegraph.isVisible = false;
         // Strike: if the player is still within contact range, deal damage.
         if (distSq <= (touchDist + this.ATTACK_RADIUS) * (touchDist + this.ATTACK_RADIUS) && !player.isDodging) {
-          player.hp = Math.max(0, player.hp - this.def.contactDamage);
           events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
         }
         this.contactCooldown = 0.75;

@@ -182,7 +182,6 @@ export class Elite extends Enemy {
       // Contact damage
       const touchDist = this.def.radius + player.stats.radius;
       if (distSq <= touchDist * touchDist && this.contactCooldown === 0 && !player.isDodging) {
-        player.hp = Math.max(0, player.hp - this.def.contactDamage);
         events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
         this.contactCooldown = 0.7;
       }
@@ -203,7 +202,6 @@ export class Elite extends Enemy {
     }
     const touchDist = this.def.radius + player.stats.radius;
     if (distSq <= touchDist * touchDist && this.contactCooldown === 0 && !player.isDodging) {
-      player.hp = Math.max(0, player.hp - this.def.contactDamage);
       events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
       this.contactCooldown = 0.7;
     }

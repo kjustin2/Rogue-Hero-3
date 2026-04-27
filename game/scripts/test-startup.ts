@@ -134,11 +134,18 @@ for (const id of Object.keys(CardDefinitions)) {
   const card = CardDefinitions[id];
   const aimPoint = new Vector3(1, 0, 1);
   try {
+    // Aerial cards require the player to be airborne — lift them for the cast.
+    const wasGroundY = player.root.position.y;
+    if (card.requiresAirborne) player.root.position.y = 1.0;
     const before = player.ap;
     const ok = caster.cast(card, aimPoint);
     check(ok, `caster.cast("${id}") succeeded`);
     check(player.ap <= before, `AP decreased (or held) after casting "${id}"`);
-    // Give AP back so each cast starts fresh.
+    // Reset Y + AP for the next card.
+    player.root.position.y = wasGroundY;
+    player.verticalVelocity = 0;
+    player.aerialSlamming = false;
+    player.pendingAerialCardId = null;
     player.ap = player.stats.maxAp;
   } catch (err) {
     failures++;

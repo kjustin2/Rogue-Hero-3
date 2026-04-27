@@ -109,6 +109,11 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
 
   // Soft lerp target vs hard lock
   const desiredTarget = new Vector3(0, 1.2, 0);
+  // Smoothed Y track of the player. Jumping lifts trackedNode.position.y to
+  // ~1.5m for ~0.65s; tracking that directly gives the camera a stomach-drop
+  // bob. Lerping at ~3 units/sec keeps the player visible while damping the
+  // worst of the vertical wobble.
+  let smoothedTrackY = 0;
   let trackedNode: TransformNode | null = null;
   let focusNode: TransformNode | null = null;
 
@@ -142,6 +147,7 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
     camera: cam,
     setTarget(t: TransformNode) {
       trackedNode = t;
+      smoothedTrackY = t.position.y;
       desiredTarget.copyFrom(t.position);
       desiredTarget.y += 1.2;
       cam.setTarget(desiredTarget.clone());
@@ -204,8 +210,12 @@ export function createFollowCamera(scene: Scene, canvas: HTMLCanvasElement): Fol
       }
 
       if (!trackedNode) return;
+      // Lerp the smoothed Y track at a slow rate (~3/sec) so jumps don't yank
+      // the camera. X/Z still track the player closely via the normal `t.x +=`
+      // damping below — only the vertical follow is buttered.
+      smoothedTrackY += (trackedNode.position.y - smoothedTrackY) * Math.min(1, dt * 3);
       desiredTarget.copyFrom(trackedNode.position);
-      desiredTarget.y += 1.2;
+      desiredTarget.y = smoothedTrackY + 1.2;
       if (focusNode) {
         // Shift the pivot a capped distance toward the focus node so the locked
         // enemy stays visible without losing the player from the frame.

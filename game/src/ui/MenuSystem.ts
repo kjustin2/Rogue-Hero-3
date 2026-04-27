@@ -3,6 +3,8 @@ import { AdvancedDynamicTexture } from "@babylonjs/gui/2D/advancedDynamicTexture
 import { Rectangle } from "@babylonjs/gui/2D/controls/rectangle";
 import { TextBlock } from "@babylonjs/gui/2D/controls/textBlock";
 import { Control } from "@babylonjs/gui/2D/controls/control";
+import { HEROES } from "../characters/HeroRegistry";
+import { getUnlockedHeroes } from "../run/HeroUnlocks";
 
 export type StartChoice = "start" | "quit";
 export type PauseChoice = "resume" | "mainMenu" | "quit";
@@ -40,10 +42,12 @@ export class MenuSystem {
   private startPanel: Rectangle;
   private pausePanel: Rectangle;
   private controlsPanel: Rectangle;
+  private heroPanel: Rectangle | null = null;
 
   /** Resolves the active showStartMenu / showPauseMenu Promise. Cleared after fire. */
   private startResolve: ((c: StartChoice) => void) | null = null;
   private pauseResolve: ((c: PauseChoice) => void) | null = null;
+  private heroResolve: ((heroId: string) => void) | null = null;
 
   /** True while the controls panel is the active modal. ESC closes it back to its parent menu. */
   private controlsParent: "start" | "pause" | null = null;
@@ -120,7 +124,34 @@ export class MenuSystem {
     this.startPanel.isVisible = false;
     this.pausePanel.isVisible = false;
     this.controlsPanel.isVisible = false;
+    if (this.heroPanel) this.heroPanel.isVisible = false;
     this.controlsParent = null;
+  }
+
+  /**
+   * Hero-select screen — shown after the START button. Resolves with the
+   * picked hero id once the player clicks an unlocked card. Locked cards
+   * shake and stay closed.
+   */
+  showHeroSelect(): Promise<string> {
+    if (!this.heroPanel) {
+      this.heroPanel = this.buildHeroPanel();
+      this.dim.addControl(this.heroPanel);
+    } else {
+      // Rebuild card states each open so newly-unlocked heroes show without
+      // a page reload — cheap (4 cards), and avoids stale closures.
+      this.heroPanel.dispose();
+      this.heroPanel = this.buildHeroPanel();
+      this.dim.addControl(this.heroPanel);
+    }
+    this.dim.isVisible = true;
+    this.startPanel.isVisible = false;
+    this.pausePanel.isVisible = false;
+    this.controlsPanel.isVisible = false;
+    this.heroPanel.isVisible = true;
+    return new Promise<string>((res) => {
+      this.heroResolve = res;
+    });
   }
 
   /**
@@ -259,8 +290,9 @@ export class MenuSystem {
       "Mouse                 Aim",
       "Left Mouse            Use selected card",
       "Right Mouse           Cycle selected card",
-      "1 / 2 / 3 / 4         Select card slot",
-      "Space / Shift         Dodge (i-frames)",
+      "1 / 2 / 3             Select card slot",
+      "Space                 Jump (mid-air cards become usable)",
+      "Shift                 Dodge (i-frames)",
       "F                     Crash (Tempo ≥ 85)",
       "Q / Tab               Switch target",
       "Hold RMB              Orbit camera",
@@ -422,6 +454,181 @@ export class MenuSystem {
     this.pauseResolve = null;
     if (fn) fn(c);
   }
+
+  private resolveHero(id: string): void {
+    const fn = this.heroResolve;
+    this.heroResolve = null;
+    if (fn) fn(id);
+  }
+
+  private buildHeroPanel(): Rectangle {
+    const HERO_PANEL_W = 1080;
+    const HERO_PANEL_H = 600;
+    const panel = this.makePanel("heroPanel", HERO_PANEL_W, HERO_PANEL_H);
+
+    const title = this.makeText("CHOOSE YOUR HERO", "#ffcc44", 48, "bold");
+    title.heightInPixels = TITLE_H;
+    title.widthInPixels = HERO_PANEL_W - PANEL_PAD * 2;
+    title.topInPixels = 28;
+    title.outlineColor = "#000";
+    title.outlineWidth = 6;
+    title.shadowOffsetX = 3;
+    title.shadowOffsetY = 3;
+    title.shadowColor = "#000";
+    title.shadowBlur = 0;
+    title.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    title.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    panel.addControl(title);
+
+    const subtitle = this.makeText("Click an unlocked hero to begin the run.", "#aaaaaa", 16);
+    subtitle.heightInPixels = SUBTITLE_H;
+    subtitle.widthInPixels = HERO_PANEL_W - PANEL_PAD * 2;
+    subtitle.topInPixels = 28 + TITLE_H + 4;
+    subtitle.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    subtitle.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    panel.addControl(subtitle);
+
+    // 4 hero cards in a row.
+    const cardW = 220;
+    const cardH = 360;
+    const cardGap = 28;
+    const totalCardsW = cardW * HEROES.length + cardGap * (HEROES.length - 1);
+    const cardsTop = 28 + TITLE_H + 4 + SUBTITLE_H + 24;
+    const startLeft = -totalCardsW / 2 + cardW / 2;
+    const unlocked = getUnlockedHeroes();
+
+    HEROES.forEach((hero, i) => {
+      const isUnlocked = unlocked.has(hero.id);
+      const card = new Rectangle(`heroCard_${hero.id}`);
+      card.widthInPixels = cardW;
+      card.heightInPixels = cardH;
+      card.cornerRadius = 14;
+      card.thickness = 3;
+      card.background = isUnlocked ? "#101626f0" : "#08080cf0";
+      const tintHex = colorToHex(hero.bodyTint);
+      card.color = isUnlocked ? tintHex : "#444";
+      card.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      card.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+      card.leftInPixels = startLeft + i * (cardW + cardGap);
+      card.topInPixels = cardsTop;
+      card.isPointerBlocker = true;
+      card.hoverCursor = isUnlocked ? "pointer" : "not-allowed";
+      panel.addControl(card);
+
+      // Color swatch — flat rectangle representing the hero tint.
+      const swatch = new Rectangle(`heroSwatch_${hero.id}`);
+      swatch.widthInPixels = cardW - 40;
+      swatch.heightInPixels = 80;
+      swatch.background = tintHex;
+      swatch.color = "#000";
+      swatch.thickness = 2;
+      swatch.cornerRadius = 8;
+      swatch.alpha = isUnlocked ? 0.85 : 0.25;
+      swatch.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      swatch.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+      swatch.topInPixels = 18;
+      card.addControl(swatch);
+
+      const heroName = this.makeText(hero.name, isUnlocked ? "#ffcc44" : "#666", 28, "bold");
+      heroName.heightInPixels = 36;
+      heroName.widthInPixels = cardW - 16;
+      heroName.topInPixels = 110;
+      heroName.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      heroName.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+      card.addControl(heroName);
+
+      const tag = this.makeText(hero.tagline, isUnlocked ? "#cccccc" : "#555", 14);
+      tag.heightInPixels = 40;
+      tag.widthInPixels = cardW - 28;
+      tag.topInPixels = 152;
+      tag.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      tag.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+      tag.textWrapping = true;
+      card.addControl(tag);
+
+      const stats = this.makeText(
+        `HP ${hero.hp}    SPD ${hero.moveSpeed.toFixed(1)}`,
+        isUnlocked ? "#88ccff" : "#444",
+        14,
+      );
+      stats.heightInPixels = 18;
+      stats.widthInPixels = cardW - 16;
+      stats.topInPixels = 200;
+      stats.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      stats.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+      card.addControl(stats);
+
+      // Starting deck preview — first 4 unique card ids.
+      const uniq = Array.from(new Set(hero.startingDeck)).slice(0, 4).join(" · ");
+      const deckPreview = this.makeText(uniq, isUnlocked ? "#dddddd" : "#444", 12);
+      deckPreview.heightInPixels = 50;
+      deckPreview.widthInPixels = cardW - 16;
+      deckPreview.topInPixels = 226;
+      deckPreview.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      deckPreview.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+      deckPreview.textWrapping = true;
+      card.addControl(deckPreview);
+
+      // Lock overlay for locked heroes.
+      if (!isUnlocked) {
+        const lockTxt = this.makeText("LOCKED", "#ff7766", 22, "bold");
+        lockTxt.heightInPixels = 30;
+        lockTxt.widthInPixels = cardW - 16;
+        lockTxt.topInPixels = 290;
+        lockTxt.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+        lockTxt.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+        card.addControl(lockTxt);
+        const cond = this.makeText(hero.lockedDesc ?? "Locked", "#aaa", 13);
+        cond.heightInPixels = 18;
+        cond.widthInPixels = cardW - 16;
+        cond.topInPixels = 322;
+        cond.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+        cond.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+        card.addControl(cond);
+      } else {
+        const click = this.makeText("CLICK TO PICK", "#88ffaa", 14, "bold");
+        click.heightInPixels = 18;
+        click.widthInPixels = cardW - 16;
+        click.topInPixels = 322;
+        click.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+        click.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+        card.addControl(click);
+      }
+
+      // Hover/click feedback. Unlocked: scale pop + tint border. Locked: shake.
+      card.onPointerEnterObservable.add(() => {
+        if (isUnlocked) { card.scaleX = 1.04; card.scaleY = 1.04; }
+      });
+      card.onPointerOutObservable.add(() => {
+        card.scaleX = 1; card.scaleY = 1;
+      });
+      card.onPointerClickObservable.add(() => {
+        if (!isUnlocked) {
+          // Shake animation — alternate left/right for ~280ms.
+          const start = card.leftInPixels;
+          let t = 0;
+          const tick = () => {
+            t += 1;
+            card.leftInPixels = start + Math.sin(t * 0.9) * 7 * Math.max(0, 1 - t / 14);
+            if (t < 14) requestAnimationFrame(tick);
+            else card.leftInPixels = start;
+          };
+          tick();
+          return;
+        }
+        this.resolveHero(hero.id);
+      });
+    });
+
+    return panel;
+  }
+}
+
+function colorToHex(c: { r: number; g: number; b: number }): string {
+  const r = Math.max(0, Math.min(255, Math.round(c.r * 255)));
+  const g = Math.max(0, Math.min(255, Math.round(c.g * 255)));
+  const b = Math.max(0, Math.min(255, Math.round(c.b * 255)));
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
 }
 
 /** Lighten a hex color (#rrggbb or #rrggbbaa) by a small amount for hover feedback. */
