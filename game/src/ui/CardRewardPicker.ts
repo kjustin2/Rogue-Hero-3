@@ -30,12 +30,14 @@ const TYPE_COLOR: Record<string, string> = {
 export class CardRewardPicker {
   ui: AdvancedDynamicTexture;
   private container: Rectangle;
+  private titleText!: TextBlock;
   private cards: Rectangle[] = [];
   private animations: CardAnim[] = [];
   private animObserver: { remove(): void } | null = null;
   private isOpen = false;
   private resolve: ((picked: CardDef | null) => void) | null = null;
   private scene: Scene;
+  private currentOptions: CardDef[] = [];
   private static readonly ENTER_DUR_MS = 320;
   private static readonly ENTER_STAGGER_MS = 90;
 
@@ -53,26 +55,35 @@ export class CardRewardPicker {
     this.container.isPointerBlocker = true;
     this.ui.addControl(this.container);
 
-    const title = new TextBlock("cardRewardTitle");
-    title.text = "Add a New Card to your Deck";
-    title.color = "#ffe066";
-    title.fontSize = 44;
-    title.fontFamily = "monospace";
-    title.fontWeight = "bold";
-    title.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
-    title.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
-    title.topInPixels = 80;
-    title.shadowColor = "#000";
-    title.shadowOffsetX = 3;
-    title.shadowOffsetY = 3;
-    title.outlineColor = "#000";
-    title.outlineWidth = 4;
-    this.container.addControl(title);
+    this.titleText = new TextBlock("cardRewardTitle");
+    this.titleText.text = "Add a New Card to your Deck";
+    this.titleText.color = "#ffe066";
+    this.titleText.fontSize = 44;
+    this.titleText.fontFamily = "monospace";
+    this.titleText.fontWeight = "bold";
+    this.titleText.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    this.titleText.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    this.titleText.topInPixels = 80;
+    this.titleText.shadowColor = "#000";
+    this.titleText.shadowOffsetX = 3;
+    this.titleText.shadowOffsetY = 3;
+    this.titleText.outlineColor = "#000";
+    this.titleText.outlineWidth = 4;
+    this.container.addControl(this.titleText);
+  }
+
+  /** Update the picker's heading. main.ts uses this to switch to the
+   *  "swap" copy once the player's deck has hit MAX_COLLECTION_SIZE. */
+  setTitle(text: string, color = "#ffe066"): void {
+    if (!this.titleText) return;
+    this.titleText.text = text;
+    this.titleText.color = color;
   }
 
   open(options: CardDef[]): Promise<CardDef | null> {
     if (this.isOpen) return Promise.resolve(null);
     this.isOpen = true;
+    this.currentOptions = options;
     for (const c of this.cards) c.dispose();
     this.cards.length = 0;
     this.animations.length = 0;
@@ -250,4 +261,10 @@ export class CardRewardPicker {
   }
 
   isVisible(): boolean { return this.isOpen; }
+
+  /** Test-only: drive the picker as if the i-th card had been clicked. */
+  pickIndexForTest(i: number): void {
+    if (!this.isOpen) return;
+    this.close(this.currentOptions[i] ?? null);
+  }
 }

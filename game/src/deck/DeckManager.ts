@@ -8,6 +8,12 @@ import { CardDef, CardDefinitions } from "./CardDefinitions";
  * after boss rooms; the hand is rebuilt from the collection between rooms via
  * the HandPicker UI.
  */
+/** Hard cap on the persistent collection. New picks past this limit replace
+ *  the oldest card (FIFO). Tuned to keep deckbuilding decisions punchy:
+ *  start with 3, earn 1 per boss reward, hit the cap on the third boss and
+ *  trade. */
+export const MAX_COLLECTION_SIZE = 5;
+
 export class DeckManager {
   /** Permanent pool of card ids the player owns. Boss rewards append here. */
   collection: string[] = [];
@@ -71,10 +77,26 @@ export class DeckManager {
     return true;
   }
 
-  /** Append a new card id to the persistent collection (boss reward path). */
-  addToCollection(cardId: string): void {
-    if (!CardDefinitions[cardId]) return;
+  /** True when the collection has reached MAX_COLLECTION_SIZE. UI uses this
+   *  to relabel the next card-reward picker as a "swap" instead of an "add". */
+  isFull(): boolean {
+    return this.collection.length >= MAX_COLLECTION_SIZE;
+  }
+
+  /**
+   * Append a new card id to the persistent collection (boss reward path).
+   * If the collection is already at MAX_COLLECTION_SIZE, the oldest card is
+   * removed first so we never exceed the cap. Returns the displaced card id
+   * (or null if no swap was needed) so the UI can show "X swapped for Y".
+   */
+  addToCollection(cardId: string): string | null {
+    if (!CardDefinitions[cardId]) return null;
+    let displaced: string | null = null;
+    if (this.collection.length >= MAX_COLLECTION_SIZE) {
+      displaced = this.collection.shift() ?? null;
+    }
     this.collection.push(cardId);
+    return displaced;
   }
 
   /**

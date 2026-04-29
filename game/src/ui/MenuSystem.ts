@@ -27,8 +27,14 @@ const BTN_W = PANEL_W - PANEL_PAD * 2;
 const BTN_H = 56;
 const BTN_GAP = 14;
 
-const CONTROLS_PANEL_W = 640;
-const CONTROLS_PANEL_H = 520;
+const CONTROLS_PANEL_W = 720;
+const CONTROLS_PANEL_H = 640;
+/** Bottom-anchored band reserved for the BACK button + the "Esc closes" hint
+ *  beneath it. Sized so neither overlaps the controls list above. */
+const CONTROLS_BTN_H = 48;
+const CONTROLS_HINT_H = 16;
+const CONTROLS_HINT_GAP = 10;
+const CONTROLS_BOTTOM_BAND = CONTROLS_BTN_H + CONTROLS_HINT_H + CONTROLS_HINT_GAP + 16;
 
 /**
  * Start menu + pause menu + shared controls overlay. One AdvancedDynamicTexture
@@ -314,7 +320,9 @@ export class MenuSystem {
     list.outlineColor = "#000";
     list.outlineWidth = 2;
     list.widthInPixels = CONTROLS_PANEL_W - PANEL_PAD * 2;
-    list.heightInPixels = CONTROLS_PANEL_H - 48 - 28 - 80; // title + bottom button band
+    // Reserve title band (28 top + 48 title + 16 gap) at the top and the
+    // bottom button + hint band so the list never collides with either.
+    list.heightInPixels = CONTROLS_PANEL_H - (28 + 48 + 16) - CONTROLS_BOTTOM_BAND - PANEL_PAD;
     list.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
     list.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
     list.topInPixels = 28 + 48 + 16;
@@ -323,10 +331,12 @@ export class MenuSystem {
     list.paddingLeftInPixels = 24;
     panel.addControl(list);
 
-    // Back button — anchored to the panel's bottom so the body region between
-    // it and the title can host any number of lines without colliding.
+    // Bottom band: hint sits ABOVE the back button so they never overlap each
+    // other or the list. Both anchored to the panel bottom.
+    //   y from bottom:  PANEL_PAD .. PANEL_PAD+BTN_H        → BACK button
+    //                   PANEL_PAD+BTN_H+GAP .. +HINT_H      → "Esc closes" hint
     const backBtn = this.makeButton("BACK", "#88ccff", "#0c1620");
-    backBtn.bg.heightInPixels = 48;
+    backBtn.bg.heightInPixels = CONTROLS_BTN_H;
     backBtn.bg.widthInPixels = 220;
     backBtn.label.fontSize = 22;
     backBtn.bg.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
@@ -335,10 +345,10 @@ export class MenuSystem {
     backBtn.bg.onPointerClickObservable.add(() => this.closeControls());
     panel.addControl(backBtn.bg);
 
-    const hint = this.makeText("Esc closes this panel", "#666666", 12);
-    hint.heightInPixels = 16;
+    const hint = this.makeText("Esc closes this panel", "#888888", 13);
+    hint.heightInPixels = CONTROLS_HINT_H;
     hint.widthInPixels = CONTROLS_PANEL_W - PANEL_PAD * 2;
-    hint.topInPixels = -PANEL_PAD - 48 - 6;
+    hint.topInPixels = -(PANEL_PAD + CONTROLS_BTN_H + CONTROLS_HINT_GAP);
     hint.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
     hint.verticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
     panel.addControl(hint);

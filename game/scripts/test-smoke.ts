@@ -62,14 +62,18 @@ for (const room of bossRooms) {
 
 // ---------------------------------------------------------- Cards
 section("Cards");
-check(STARTING_DECK.length >= 4, "starting deck has enough cards to fill the hand");
+check(STARTING_DECK.length >= 3, "starting deck has at least 3 cards (hand size)");
 for (const id of STARTING_DECK) {
   check(id in CardDefinitions, `starting deck card "${id}" exists in CardDefinitions`);
 }
 for (const [id, def] of Object.entries(CardDefinitions)) {
   check(def.id === id, `CardDefinitions["${id}"].id matches key`);
   check(def.cost > 0 && def.cost <= 4, `card "${id}" cost is within AP max`);
-  check(def.damage > 0, `card "${id}" has non-zero damage`);
+  // Utility / pure-mobility cards (Aegis, Phase Step) intentionally have
+  // damage = 0; only damaging cards must be > 0.
+  const isDamaging = def.type !== "utility" && !def.iframeOnly;
+  if (isDamaging) check(def.damage > 0, `damaging card "${id}" has non-zero damage`);
+  check(def.damage >= 0, `card "${id}" has non-negative damage`);
   check(def.range > 0, `card "${id}" has positive range`);
   check(["melee", "projectile", "dash", "aoe", "aerial", "utility"].includes(def.type), `card "${id}" type is a known handler`);
 }

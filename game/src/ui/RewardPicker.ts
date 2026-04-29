@@ -23,6 +23,7 @@ export class RewardPicker {
   private isOpen = false;
   private resolve: ((picked: ItemDef | null) => void) | null = null;
   private scene: Scene;
+  private currentOptions: ItemDef[] = [];
   /** Total enter-tween duration per card, ms. */
   private static readonly ENTER_DUR_MS = 320;
   /** Stagger between consecutive cards' enter, ms. */
@@ -68,6 +69,7 @@ export class RewardPicker {
   open(options: ItemDef[]): Promise<ItemDef | null> {
     if (this.isOpen) return Promise.resolve(null);
     this.isOpen = true;
+    this.currentOptions = options;
 
     // Clear old cards
     for (const c of this.cards) c.dispose();
@@ -320,5 +322,11 @@ export class RewardPicker {
 
   isVisible(): boolean {
     return this.isOpen;
+  }
+
+  /** Test-only: drive the picker as if the i-th card had been clicked. */
+  pickIndexForTest(i: number): void {
+    if (!this.isOpen) return;
+    this.close(this.currentOptions[i] ?? null);
   }
 }

@@ -61,6 +61,10 @@ import { DevOverlay } from "./ui/DevOverlay";
 import { Enemy } from "./enemies/Enemy";
 
 const AP_REGEN_PER_SEC = 0.5;
+/** How far past the doorway plane the player has to step before the room
+ * transition fires. Small enough that brushing the threshold counts; large
+ * enough that side-stepping along the door's x-range doesn't trigger early. */
+const DOOR_PASS_Z_TOLERANCE = 0.4;
 
 interface EnemyHitPayload {
   enemyId: string;
@@ -487,6 +491,10 @@ async function boot() {
       curves.globalSaturation = -60;
       curves.shadowsDensity = 60;
       defer(() => {
+        // Bail if the pipeline's colorCurves got replaced (e.g. quality swap)
+        // between scheduling and firing — restoring to a stale reference would
+        // either be a no-op or write to a discarded instance.
+        if (pipeline.imageProcessing?.colorCurves !== curves) return;
         curves.globalSaturation = prevSat;
         curves.shadowsDensity = prevShadowsDensity;
       }, 1600);
@@ -626,39 +634,49 @@ async function boot() {
     mesh: Mesh;
     mat: StandardMaterial;
     pivot?: TransformNode;
-    kind: "arc" | "dash";
+    /** "arc-narrow" (~60°), "arc-wide" (~140°), "arc-omni" (360°), "dash". */
+    kind: "arc-narrow" | "arc-wide" | "arc-omni" | "dash";
     ttl: number;
     initial: number;
     active: boolean;
   }
   const CARD_ARC_REF_RADIUS = 1; // unit disc — scale parent to actual range
-  const CARD_ARC_REF_DEG = 100;
   const cardFxPool: CardFxSlot[] = [];
-  const CARD_FX_ARC_SLOTS = 3;
-  const CARD_FX_DASH_SLOTS = 3;
-  for (let i = 0; i < CARD_FX_ARC_SLOTS; i++) {
-    const mesh = MeshBuilder.CreateDisc(
-      `cardArc_${i}`,
-      { radius: CARD_ARC_REF_RADIUS, tessellation: 36, arc: CARD_ARC_REF_DEG / 360 },
-      scene,
-    );
-    mesh.rotation.x = Math.PI / 2;
-    mesh.rotation.y = ((CARD_ARC_REF_DEG / 2) * Math.PI) / 180 - Math.PI / 2;
-    mesh.isPickable = false;
-    mesh.doNotSyncBoundingInfo = true;
-    const parent = new TransformNode(`cardArcPivot_${i}`, scene);
-    parent.position.y = 0.08;
-    mesh.parent = parent;
-    parent.setEnabled(false);
-    const mat = new StandardMaterial(`cardArcMat_${i}`, scene);
-    mat.diffuseColor = new Color3(1, 0.7, 0.25);
-    mat.emissiveColor = new Color3(1, 0.55, 0.15);
-    mat.disableLighting = true;
-    mat.backFaceCulling = false;
-    mat.alpha = 0.7;
-    mesh.material = mat;
-    cardFxPool.push({ mesh, mat, pivot: parent, kind: "arc", ttl: 0, initial: 0, active: false });
+  // Per-arc-width buckets — pre-built so spawning a melee FX is allocation-free.
+  // Each card's arcDegrees routes to the bucket whose geometry matches, so a
+  // 60° Crashing Blow no longer paints the same wedge as a 140° Cleave.
+  const ARC_PRESETS: { kind: CardFxSlot["kind"]; deg: number; slots: number }[] = [
+    { kind: "arc-narrow", deg: 60, slots: 2 },
+    { kind: "arc-wide",   deg: 140, slots: 3 },
+    { kind: "arc-omni",   deg: 360, slots: 2 },
+  ];
+  for (const preset of ARC_PRESETS) {
+    for (let i = 0; i < preset.slots; i++) {
+      const mesh = MeshBuilder.CreateDisc(
+        `cardArc_${preset.kind}_${i}`,
+        { radius: CARD_ARC_REF_RADIUS, tessellation: 36, arc: preset.deg / 360 },
+        scene,
+      );
+      mesh.rotation.x = Math.PI / 2;
+      // Center the wedge on +Z so the parent's rotation.y aligns it with player facing.
+      mesh.rotation.y = ((preset.deg / 2) * Math.PI) / 180 - Math.PI / 2;
+      mesh.isPickable = false;
+      mesh.doNotSyncBoundingInfo = true;
+      const parent = new TransformNode(`cardArcPivot_${preset.kind}_${i}`, scene);
+      parent.position.y = 0.08;
+      mesh.parent = parent;
+      parent.setEnabled(false);
+      const mat = new StandardMaterial(`cardArcMat_${preset.kind}_${i}`, scene);
+      mat.diffuseColor = new Color3(1, 0.7, 0.25);
+      mat.emissiveColor = new Color3(1, 0.55, 0.15);
+      mat.disableLighting = true;
+      mat.backFaceCulling = false;
+      mat.alpha = 0.7;
+      mesh.material = mat;
+      cardFxPool.push({ mesh, mat, pivot: parent, kind: preset.kind, ttl: 0, initial: 0, active: false });
+    }
   }
+  const CARD_FX_DASH_SLOTS = 3;
   for (let i = 0; i < CARD_FX_DASH_SLOTS; i++) {
     // Reference geometry: 1m depth, 1.6m wide. Scaled per cast to actual range.
     const mesh = MeshBuilder.CreateBox(
@@ -679,7 +697,7 @@ async function boot() {
     cardFxPool.push({ mesh, mat, kind: "dash", ttl: 0, initial: 0, active: false });
   }
 
-  function acquireCardFxSlot(kind: "arc" | "dash"): CardFxSlot | null {
+  function acquireCardFxSlot(kind: CardFxSlot["kind"]): CardFxSlot | null {
     for (const s of cardFxPool) if (s.kind === kind && !s.active) return s;
     // All busy — recycle the one with the least time left so a fresh cast paints.
     let oldest: CardFxSlot | null = null;
@@ -689,13 +707,21 @@ async function boot() {
     return oldest;
   }
 
+  /** Map a melee card's arcDegrees to the closest pre-built arc bucket. */
+  function arcBucket(deg: number): CardFxSlot["kind"] {
+    if (deg >= 270) return "arc-omni";
+    if (deg <= 90) return "arc-narrow";
+    return "arc-wide";
+  }
+
   function spawnCardFx(fx: CardArcFx): void {
     if (fx.kind === "arc") {
-      const slot = acquireCardFxSlot("arc");
+      const slot = acquireCardFxSlot(arcBucket(fx.arcDegrees ?? 140));
       if (!slot || !slot.pivot) return;
       slot.pivot.position.x = fx.x;
       slot.pivot.position.z = fx.z;
-      slot.pivot.rotation.y = Math.atan2(fx.fx, fx.fz);
+      // Omni discs ignore facing — they're symmetric, so don't rotate.
+      slot.pivot.rotation.y = slot.kind === "arc-omni" ? 0 : Math.atan2(fx.fx, fx.fz);
       // Scale the parent to match the cast's range — a uniform XZ scale on
       // the unit disc reproduces the original per-cast geometry.
       slot.pivot.scaling.x = fx.range;
@@ -737,6 +763,46 @@ async function boot() {
   }
 
   events.on<CardArcFx>("CARD_FX", (p) => spawnCardFx(p));
+
+  // ---------- Aegis shield aura ----------
+  // Persistent visible ring around the player while their absorb-shield is up.
+  // Pulses + spins so the player can tell at a glance whether Aegis is still
+  // active. Sized to clearly enclose the player capsule but not overlap the
+  // crash telegraph ring.
+  const shieldAura = MeshBuilder.CreateTorus(
+    "aegisAura",
+    { diameter: 2.4, thickness: 0.10, tessellation: 48 },
+    scene,
+  );
+  shieldAura.isPickable = false;
+  shieldAura.doNotSyncBoundingInfo = true;
+  shieldAura.position.y = 0.6;
+  shieldAura.setEnabled(false);
+  const shieldAuraMat = new StandardMaterial("aegisAuraMat", scene);
+  shieldAuraMat.diffuseColor = new Color3(0.35, 0.85, 1.0);
+  shieldAuraMat.emissiveColor = new Color3(0.30, 0.80, 1.0);
+  shieldAuraMat.disableLighting = true;
+  shieldAuraMat.alpha = 0.85;
+  shieldAura.material = shieldAuraMat;
+  let shieldAuraSpin = 0;
+  function tickShieldAura(dt: number): void {
+    const active = player.absorbHp > 0 && player.absorbHpTimer > 0;
+    if (!active) {
+      if (shieldAura.isEnabled()) shieldAura.setEnabled(false);
+      return;
+    }
+    if (!shieldAura.isEnabled()) shieldAura.setEnabled(true);
+    shieldAura.position.x = player.root.position.x;
+    shieldAura.position.z = player.root.position.z;
+    shieldAuraSpin += dt * 1.4;
+    shieldAura.rotation.y = shieldAuraSpin;
+    // Soft 1.5Hz pulse on alpha so the shield reads as "alive" even if HP isn't
+    // being chipped away. Fades down sharply in the final 0.6s of the timer
+    // as a "shield about to drop" cue.
+    const pulse = 0.75 + 0.20 * Math.sin(shieldAuraSpin * 4.2);
+    const fade = player.absorbHpTimer < 0.6 ? player.absorbHpTimer / 0.6 : 1;
+    shieldAuraMat.alpha = pulse * fade;
+  }
 
   // Cast FX — small hand-level flare + particle burst at the spawn point when a
   // non-melee card fires. Sells the moment of casting at chest height, not the
@@ -1138,7 +1204,16 @@ async function boot() {
   async function openCardRewardPicker(): Promise<void> {
     const options = pickCardRewards(3);
     if (options.length === 0) return;
-    hud.setBanner("CHOOSE A NEW CARD");
+    // Relabel when the deck is at MAX_COLLECTION_SIZE so the player understands
+    // their pick will displace an existing card (the oldest one, FIFO).
+    const swapping = deck.isFull();
+    if (swapping) {
+      hud.setBanner("DECK FULL — SWAP A CARD");
+      cardRewardPicker.setTitle("Swap In a New Card  (your oldest will be replaced)", "#ff9966");
+    } else {
+      hud.setBanner("CHOOSE A NEW CARD");
+      cardRewardPicker.setTitle("Add a New Card to your Deck");
+    }
     pipeline.depthOfFieldEnabled = true;
     pipeline.depthOfField.focalLength = 50;
     pipeline.depthOfField.fStop = 1.4;
@@ -1147,11 +1222,16 @@ async function boot() {
     try {
       const picked = await cardRewardPicker.open(options);
       if (picked) {
-        deck.addToCollection(picked.id);
+        const displacedId = deck.addToCollection(picked.id);
+        if (displacedId) {
+          const displaced = CardDefinitions[displacedId];
+          if (displaced) hud.setBanner(`${displaced.name.toUpperCase()} → ${picked.name.toUpperCase()}`);
+        }
       }
     } finally {
       pipeline.depthOfFieldEnabled = false;
-      hud.setBanner(null);
+      // Leave the swap banner visible briefly so the player reads it before
+      // the hand-picker opens. The hand-picker will overwrite the banner.
     }
   }
 
@@ -1554,6 +1634,7 @@ async function boot() {
     damageNumbers.update(realDt);
     updateShockRings(realDt);
     updateCardFx(realDt);
+    tickShieldAura(realDt);
     updateLockRing(realDt);
     hitFx.updateFlares(realDt);
     dodgeGhosts.update(realDt);
@@ -1753,7 +1834,7 @@ async function boot() {
       const door = run.arena.door;
       const px = player.root.position.x;
       const pz = player.root.position.z;
-      if (pz < door.zPlane - 0.4 && px > door.xMin && px < door.xMax) {
+      if (pz < door.zPlane - DOOR_PASS_Z_TOLERANCE && px > door.xMin && px < door.xMax) {
         void runDoorTransition();
       }
     }

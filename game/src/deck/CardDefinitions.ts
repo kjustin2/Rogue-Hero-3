@@ -52,7 +52,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     range: 3.2,
     type: "melee",
     rarity: "common",
-    desc: "Wide arc swing in front of you. +6 Tempo.",
+    desc: "Swing a 140° arc in front of you. Reach 3.2m. +6 Tempo.",
     glyph: "⚔",
     arcDegrees: 140,
   },
@@ -65,7 +65,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     range: 2.6,
     type: "melee",
     rarity: "uncommon",
-    desc: "A heavy two-handed slam in a narrow arc. Big damage + knockback. +10 Tempo.",
+    desc: "Narrow 60° overhead slam. Big damage + heavy knockback. +10 Tempo.",
     glyph: "🔨",
     arcDegrees: 60,
   },
@@ -78,7 +78,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     range: 3.5,
     type: "melee",
     rarity: "uncommon",
-    desc: "Spin attack hits everything around you. +8 Tempo.",
+    desc: "Spin in place — hits every enemy within 3.5m, all directions. +8 Tempo.",
     glyph: "🌀",
     arcDegrees: 360,
   },
@@ -141,11 +141,11 @@ export const CardDefinitions: Record<string, CardDef> = {
     name: "Phase Step",
     cost: 1,
     tempoShift: 5,
-    damage: 1,
+    damage: 0,
     range: 6,
     type: "dash",
     rarity: "uncommon",
-    desc: "Dash 6m through everything with full i-frames. Almost no damage. +5 Tempo.",
+    desc: "Blink 6m in your move direction with full i-frames. No damage. +5 Tempo.",
     glyph: "💨",
     iframeOnly: true,
   },
@@ -170,11 +170,11 @@ export const CardDefinitions: Record<string, CardDef> = {
     name: "Aegis",
     cost: 2,
     tempoShift: 0,
-    damage: 1,
+    damage: 0,
     range: 1,
     type: "utility",
     rarity: "uncommon",
-    desc: "Conjure a 25-HP shield around you for 4 seconds.",
+    desc: "Surround yourself with a 25-HP shield for 4s. A blue ring shows it's active.",
     glyph: "🛡",
     effect: "shield",
   },
@@ -185,10 +185,7 @@ export const ALL_CARD_IDS: string[] = Object.keys(CardDefinitions);
 /**
  * Default starting deck — used when no hero is set (legacy callers + tests).
  * Per-hero starting decks live on each HeroDef and override this when a run
- * begins from the hero-select screen.
+ * begins from the hero-select screen. Keep at 3 unique cards to match the
+ * "start small, earn more" deck philosophy.
  */
-export const STARTING_DECK: string[] = [
-  "cleave", "cleave", "crashing_blow",
-  "bolt", "dashstrike",
-  "whirlwind", "aegis", "phase_step",
-];
+export const STARTING_DECK: string[] = ["cleave", "dashstrike", "aegis"];

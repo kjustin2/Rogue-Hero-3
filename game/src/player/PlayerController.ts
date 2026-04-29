@@ -6,7 +6,9 @@ import { TempoSystem } from "../tempo/TempoSystem";
 import { events } from "../engine/EventBus";
 
 const GRAVITY = -28;
-const JUMP_VEL = 9;
+// Bumped from 9 → 13 so the jump arc is high enough to feel satisfying and
+// to give aerial cards (Meteor Slam) a real airtime window to be usable.
+const JUMP_VEL = 13;
 
 export interface ArenaCollision {
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -116,6 +118,13 @@ export class PlayerController {
     } else {
       mv = input.move;
       speed = p.stats.moveSpeed * tempoMul;
+    }
+
+    // Cache last non-zero move dir so Phase Step (which reads it) blinks
+    // along the player's travel direction rather than toward the cursor.
+    if (input.move.lengthSquared() > 1e-3) {
+      const ml = Math.hypot(input.move.x, input.move.z) || 1;
+      p.lastMoveDir.set(input.move.x / ml, 0, input.move.z / ml);
     }
 
     const dx = mv.x * speed * dt;

@@ -15,11 +15,11 @@ export const BLADE: HeroDef = {
   passives: {
     crashResetValue: 50,
   },
-  startingDeck: [
-    "cleave", "cleave", "crashing_blow",
-    "bolt", "dashstrike", "whirlwind",
-    "aegis", "phase_step",
-  ],
+  // 3 distinct cards — a wide-arc melee, an opening dash, and a defensive
+  // shield. Together they teach close combat, gap-closing, and survival.
+  // New cards are earned per boss; deck capped at 5 so the third boss reward
+  // requires swapping out an older card.
+  startingDeck: ["cleave", "dashstrike", "aegis"],
   bodyTint: new Color3(0.78, 0.74, 0.70),
   capeTint: new Color3(0.78, 0.18, 0.18),
   swordTint: new Color3(0.85, 0.88, 0.92),

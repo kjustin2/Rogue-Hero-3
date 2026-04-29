@@ -60,6 +60,10 @@ const TYPE_LABEL: Record<CardType, string> = {
 };
 
 export class Hud {
+  private static readonly BADGE_HEIGHT = 32;
+  private static readonly BADGE_SPACING = 36;
+  private static readonly BADGE_TOP_OFFSET = 56;
+
   ui: AdvancedDynamicTexture;
   private hpBar: Bar;
   private apBar: Bar;
@@ -514,7 +518,7 @@ export class Hud {
     const badgeIdx = this.relicBadges.length;
     const bg = new Rectangle(`relicBadge_${badgeIdx}`);
     bg.widthInPixels = 210;
-    bg.heightInPixels = 32;
+    bg.heightInPixels = Hud.BADGE_HEIGHT;
     bg.background = "#0b0b12d8";
     bg.color = color;
     bg.thickness = 2;
@@ -522,7 +526,7 @@ export class Hud {
     bg.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
     bg.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
     bg.leftInPixels = -24;
-    bg.topInPixels = 56 + badgeIdx * 36;
+    bg.topInPixels = Hud.BADGE_TOP_OFFSET + badgeIdx * Hud.BADGE_SPACING;
     bg.isPointerBlocker = true;
     bg.hoverCursor = "pointer";
     this.ui.addControl(bg);
@@ -568,17 +572,21 @@ export class Hud {
     const badge = this.relicBadges.find((b) => b.itemId === id);
     if (!badge) return;
     if (!this.relicTooltip) this.buildRelicTooltip();
-    const tip = this.relicTooltip!;
-    const sameItem = tip.isVisible && this.relicTooltipName?.text === badge.name;
+    const tip = this.relicTooltip;
+    const nameTb = this.relicTooltipName;
+    const rarityTb = this.relicTooltipRarity;
+    const descTb = this.relicTooltipDesc;
+    if (!tip || !nameTb || !rarityTb || !descTb) return;
+    const sameItem = tip.isVisible && nameTb.text === badge.name;
     if (sameItem) {
       this.hideRelicTooltip();
       return;
     }
-    this.relicTooltipName!.text = badge.name;
-    this.relicTooltipName!.color = badge.color;
-    this.relicTooltipRarity!.text = `${badge.rarity.toUpperCase()} RELIC`;
-    this.relicTooltipRarity!.color = badge.color;
-    this.relicTooltipDesc!.text = badge.desc;
+    nameTb.text = badge.name;
+    nameTb.color = badge.color;
+    rarityTb.text = `${badge.rarity.toUpperCase()} RELIC`;
+    rarityTb.color = badge.color;
+    descTb.text = badge.desc;
     tip.color = badge.color;
     // Position next to the badge stack — fixed left of the right edge so the
     // popover sits inside the play area, not off the screen.

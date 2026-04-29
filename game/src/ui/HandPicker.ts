@@ -317,4 +317,14 @@ export class HandPicker {
   }
 
   isVisible(): boolean { return this.isOpen; }
+
+  /**
+   * Test-only: pick the first `n` cards from the collection (where n = HAND_SIZE)
+   * and confirm the selection, resolving the open() promise.
+   */
+  pickFirstNForTest(): void {
+    if (!this.isOpen) return;
+    const slotIds = this.cardRefs.slice(0, HAND_SIZE).map((r) => r.id);
+    this.close(slotIds);
+  }
 }

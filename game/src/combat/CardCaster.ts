@@ -274,7 +274,17 @@ export class CardCaster {
   }
 
   private castDash(card: CardDef, dmg: number): Enemy[] {
-    const dir = new Vector3(this.player.facing.x, 0, this.player.facing.z);
+    // Phase Step blinks in the player's TRAVEL direction (last WASD input)
+    // so it reads as a deliberate dodge maneuver. Damage-dashes (Dash Strike)
+    // still use facing so the player can leap toward the enemy they're aiming
+    // at. If the player is standing still, both fall back to facing.
+    const src = card.iframeOnly && this.player.lastMoveDir.lengthSquared() > 1e-3
+      ? this.player.lastMoveDir
+      : this.player.facing;
+    const dir = new Vector3(src.x, 0, src.z);
+    const dirLen = Math.hypot(dir.x, dir.z) || 1;
+    dir.x /= dirLen;
+    dir.z /= dirLen;
     const dist = card.range;
     const startX = this.player.root.position.x;
     const startZ = this.player.root.position.z;
@@ -315,6 +325,11 @@ export class CardCaster {
     this.player.root.position.x = endX;
     this.player.root.position.z = endZ;
     this.player.isDodging = true;
+    // Zero the dodge direction so the i-frame window doesn't drift the player
+    // sideways using a stale dodgeDir from a prior regular dodge — the dash
+    // is the only motion this card produces. Without this, Phase Step would
+    // teleport AND then slide for 0.45s in whatever direction was last dodged.
+    this.player.dodgeDir.set(0, 0, 0);
     // Phase Step grants longer i-frames to compensate for the lost damage.
     this.player.dodgeTimer = card.iframeOnly ? 0.45 : 0.12;
     this.player.triggerCast("dash");

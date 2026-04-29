@@ -141,6 +141,10 @@ export class Player {
   dodgeCooldownTimer = 0;
   dodgeDir = new Vector3(0, 0, 1);
   facing = new Vector3(0, 0, 1);
+  /** Last non-zero WASD movement direction (unit vector). Used by Phase Step
+   *  so it blinks in the direction the player is actually traveling, not
+   *  toward the cursor. */
+  lastMoveDir = new Vector3(0, 0, 1);
 
   /** Vertical-axis velocity. Modified by jump input + gravity in PlayerController. */
   verticalVelocity = 0;

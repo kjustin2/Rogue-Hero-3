@@ -40,6 +40,8 @@ export class InputController {
 
   private aimPoint: Vector3 | null = null;
   private floorRef: Mesh | null = null;
+  private contextMenuTarget: HTMLCanvasElement | null = null;
+  private onContextMenu = (e: Event): void => { e.preventDefault(); };
   // Reused per-frame buffers — `consume()` was previously allocating 2-3
   // Vector3s every frame for move + aim. The FrameInput object itself is
   // also reused (callers don't hang on to it past the consume call).
@@ -100,7 +102,18 @@ export class InputController {
 
     // Kill the browser's RMB context menu on the game canvas so RMB can be used for gameplay.
     const canvas = scene.getEngine().getRenderingCanvas();
-    if (canvas) canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    if (canvas) {
+      canvas.addEventListener("contextmenu", this.onContextMenu);
+      this.contextMenuTarget = canvas;
+    }
+  }
+
+  /** Tear down event listeners. Safe to call from app shutdown / HMR. */
+  dispose(): void {
+    if (this.contextMenuTarget) {
+      this.contextMenuTarget.removeEventListener("contextmenu", this.onContextMenu);
+      this.contextMenuTarget = null;
+    }
   }
 
   setFloorReference(floor: Mesh) {
