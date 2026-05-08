@@ -17,6 +17,7 @@ import { BLADE } from "../src/characters/Blade";
 const VALID_ENEMY_KINDS = new Set([
   "chaser", "shooter", "caster", "elite",
   "leaper", "swarmer", "lancer", "wisp",
+  "bomber", "tether", "mirror",
   "boss_brawler", "boss_spire_caster", "boss_colossus",
 ]);
 

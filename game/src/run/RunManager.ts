@@ -98,7 +98,7 @@ export const ACT_ROOMS: RoomDescriptor[] = [
       envPalette: VERDANT_ENV_PALETTE, rngSeed: 4242, ceiling: true, exitDoor: true,
     },
     spawns: [
-      { kind: "chaser", pos: new Vector3(10, 0, 8) },
+      { kind: "bomber", pos: new Vector3(10, 0, 8) },
       { kind: "chaser", pos: new Vector3(-9, 0, 7) },
       { kind: "shooter", pos: new Vector3(12, 0, -10) },
       { kind: "caster", pos: new Vector3(-12, 0, -8) },
@@ -145,9 +145,9 @@ export const ACT_ROOMS: RoomDescriptor[] = [
     },
     spawns: [
       { kind: "lancer", pos: new Vector3(8, 0, -8) },
-      { kind: "lancer", pos: new Vector3(-8, 0, -8) },
+      { kind: "mirror", pos: new Vector3(-8, 0, -8) },
       { kind: "wisp", pos: new Vector3(0, 0, -12) },
-      { kind: "caster", pos: new Vector3(0, 0, 4) },
+      { kind: "tether", pos: new Vector3(0, 0, 4) },
       { kind: "shooter", pos: new Vector3(12, 0, 6) },
     ],
   },
@@ -202,8 +202,8 @@ export const ACT_ROOMS: RoomDescriptor[] = [
     spawns: [
       { kind: "leaper", pos: new Vector3(-6, 0, -12) },
       { kind: "lancer", pos: new Vector3(0, 0, -16) },
-      { kind: "swarmer", pos: new Vector3(8, 0, -2) },
-      { kind: "swarmer", pos: new Vector3(-8, 0, -2) },
+      { kind: "bomber", pos: new Vector3(8, 0, -2) },
+      { kind: "mirror", pos: new Vector3(-8, 0, -2) },
       { kind: "wisp", pos: new Vector3(0, 0, 12) },
     ],
   },

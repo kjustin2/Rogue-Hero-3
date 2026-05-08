@@ -14,13 +14,18 @@ import { Leaper } from "./types/Leaper";
 import { Swarmer } from "./types/Swarmer";
 import { Lancer } from "./types/Lancer";
 import { Wisp } from "./types/Wisp";
+import { Bomber } from "./types/Bomber";
+import { Tether } from "./types/Tether";
+import { Mirror } from "./types/Mirror";
 import { Player } from "../player/Player";
 import { HostileProjectileSystem } from "../combat/handlers/hostileProjectile";
 import { events } from "../engine/EventBus";
+import { Telegraph } from "../fx/Telegraph";
 
 export type EnemyKind =
   | "chaser" | "shooter" | "caster" | "elite"
   | "leaper" | "swarmer" | "lancer" | "wisp"
+  | "bomber" | "tether" | "mirror"
   | "boss_brawler" | "boss_spire_caster" | "boss_colossus";
 
 export interface SpawnRequest {
@@ -47,6 +52,7 @@ export class EnemyManager {
     private scene: Scene,
     private shadow: ShadowGenerator,
     private hostileProjectiles: HostileProjectileSystem,
+    private telegraph: Telegraph,
   ) {}
 
   setPillars(pillars: Mesh[]): void {
@@ -81,14 +87,23 @@ export class EnemyManager {
       case "wisp":
         e = new Wisp(this.scene, this.shadow, pos, id, this.hostileProjectiles);
         break;
+      case "bomber":
+        e = new Bomber(this.scene, this.shadow, pos, id, this.telegraph);
+        break;
+      case "tether":
+        e = new Tether(this.scene, this.shadow, pos, id, this.hostileProjectiles);
+        break;
+      case "mirror":
+        e = new Mirror(this.scene, this.shadow, pos, id);
+        break;
       case "boss_brawler":
-        e = new BossBrawler(this.scene, this.shadow, pos, id);
+        e = new BossBrawler(this.scene, this.shadow, pos, id, this.telegraph);
         break;
       case "boss_spire_caster":
-        e = new BossSpireCaster(this.scene, this.shadow, pos, id);
+        e = new BossSpireCaster(this.scene, this.shadow, pos, id, this.telegraph);
         break;
       case "boss_colossus":
-        e = new BossColossus(this.scene, this.shadow, pos, id);
+        e = new BossColossus(this.scene, this.shadow, pos, id, this.telegraph);
         break;
       default: {
         const exhaustive: never = kind;
@@ -161,5 +176,9 @@ export class EnemyManager {
     }
     this.enemies.length = 0;
     this.roomClearedEmitted = false;
+    // Telegraphs are owned by enemies (boss attacks, caster wind-ups). When the
+    // enemy population resets — room transition or run reset — telegraph slots
+    // are stale and must release back to the pool.
+    this.telegraph.clearAll();
   }
 }

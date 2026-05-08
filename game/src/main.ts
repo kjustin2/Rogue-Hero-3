@@ -20,6 +20,7 @@ import { InputController } from "./input/InputController";
 import { Player } from "./player/Player";
 import { PlayerController } from "./player/PlayerController";
 import { EnemyManager } from "./enemies/EnemyManager";
+import type { BossPhasePayload } from "./enemies/types/BossBase";
 import { CombatManager } from "./combat/CombatManager";
 import { Hud } from "./ui/Hud";
 import { TempoSystem } from "./tempo/TempoSystem";
@@ -27,6 +28,7 @@ import { DeckManager } from "./deck/DeckManager";
 import { ProjectileSystem } from "./combat/handlers/projectile";
 import { HostileProjectileSystem } from "./combat/handlers/hostileProjectile";
 import { CardCaster, CardArcFx } from "./combat/CardCaster";
+import { UltimateSystem } from "./combat/UltimateSystem";
 import { validateBabylonRuntime } from "./engine/BabylonRuntimeCheck";
 import { events } from "./engine/EventBus";
 import { ItemManager } from "./items/ItemManager";
@@ -36,6 +38,7 @@ import { CardRewardPicker } from "./ui/CardRewardPicker";
 import { HandPicker } from "./ui/HandPicker";
 import { CardDef, CardDefinitions, ALL_CARD_IDS } from "./deck/CardDefinitions";
 import { RunManager, VERTICAL_SLICE_ROOMS } from "./run/RunManager";
+import { BiomeHazardManager, Biome } from "./run/BiomeHazardManager";
 import { GameState } from "./state/GameState";
 import { BLADE } from "./characters/Blade";
 import { HeroDef } from "./characters/Hero";
@@ -51,6 +54,7 @@ import { StepDust } from "./fx/StepDust";
 import { SwordAura } from "./fx/SwordAura";
 import { PlayerGroundPulse } from "./fx/PlayerGroundPulse";
 import { CrashTelegraph } from "./fx/CrashTelegraph";
+import { Telegraph } from "./fx/Telegraph";
 import { CRASH_RADIUS } from "./tempo/TempoSystem";
 import { Fireflies } from "./fx/Fireflies";
 import { EnvDecals } from "./fx/EnvDecals";
@@ -100,7 +104,12 @@ async function boot() {
   const input = new InputController(scene);
 
   const hostileProjectiles = new HostileProjectileSystem(scene, player);
-  const enemies = new EnemyManager(scene, shadow, hostileProjectiles);
+  // Shared telegraph library for boss + enemy attacks. Pre-allocates pooled
+  // shapes (lines, rings, discs, cones); per-frame `update` advances active
+  // slots, `clearAll` is wired to ZONE_TRANSITION so leftover telegraphs
+  // don't persist into the next room.
+  const telegraph = new Telegraph(scene);
+  const enemies = new EnemyManager(scene, shadow, hostileProjectiles, telegraph);
 
   // Run sequence
   const run = new RunManager(scene, shadow, enemies, VERTICAL_SLICE_ROOMS);
@@ -112,6 +121,18 @@ async function boot() {
   // so we need it constructed before the controller.
   const tempo = new TempoSystem();
   tempo.setClassPassives(BLADE.passives);
+
+  // Ultimate meter — charges from combat events. Cast via R key (only in
+  // playing phase; R is also rebound to "restart" while dead/victory). The
+  // cast itself resolves below in the input handler with a radial AoE +
+  // shock-ring burst + camera shake.
+  const ultimate = new UltimateSystem();
+
+  // Per-biome ambient hazards — falling debris (Act 1) / lightning strikes
+  // (Act 2) / magma geysers (Act 3). Active in normal rooms; muted in boss
+  // rooms (the boss carries the pressure budget). Re-keyed on room load via
+  // setBiome / setActive below.
+  const biomeHazards = new BiomeHazardManager(telegraph);
 
   const controller = new PlayerController(player, {
     bounds: arena0.bounds,
@@ -471,6 +492,27 @@ async function boot() {
   events.on("HEAVY_HIT", () => {
     cam.shake(0.18, 0.45);
   });
+
+  // Hostile AoE — emitted when an enemy explodes outside its own update tick
+  // (e.g. Bomber killed mid-fuse). Resolves the radial damage check against
+  // the live player and routes through the standard DAMAGE_TAKEN flow so the
+  // vignette + numbers + relic mitigation all behave the same as any other hit.
+  events.on<{ x: number; z: number; radius: number; damage: number; source: string }>(
+    "HOSTILE_AOE",
+    ({ x, z, radius, damage, source }) => {
+      const dx = player.root.position.x - x;
+      const dz = player.root.position.z - z;
+      const r = radius + player.stats.radius;
+      if (dx * dx + dz * dz <= r * r) {
+        if (!player.isDodging) {
+          events.emit("DAMAGE_TAKEN", { amount: damage, source });
+        } else if (player.tryConsumePerfectDodge()) {
+          events.emit("PERFECT_DODGE", {});
+        }
+      }
+      events.emit("HEAVY_HIT", { x, z });
+    },
+  );
   // Heavy whiff — small kick, signals the windup landed nothing.
   events.on("HEAVY_MISS", () => {
     cam.shake(0.05, 0.18);
@@ -501,6 +543,26 @@ async function boot() {
     damageNumbers.relabelLast(`x${n}`);
   });
 
+  // Boss defeated — banner + audio swell. The kill-cam orbit (below) handles
+  // the camera; this listener owns the on-screen "X DEFEATED" treatment.
+  // Banner clears itself when ROOM_CLEARED fires shortly after (or after a
+  // hard timeout in case ROOM_CLEARED is delayed).
+  let bossDefeatedBannerTimer = 0;
+  events.on<{ bossId: string; name: string; pos: Vector3 }>("BOSS_DEFEATED", ({ name }) => {
+    hud.setBanner(`${name} — DEFEATED`);
+    bossDefeatedBannerTimer = 2.6;
+  });
+
+  // Kill-streak named banners — Hud.registerKill emits KILL_STREAK on threshold
+  // crossings (3 / 5 / 8 / 12). Each fires once per crossing; subsequent kills
+  // in the same streak don't re-trigger until they cross the next threshold.
+  let killStreakBannerTimer = 0;
+  events.on<{ count: number; label: string }>("KILL_STREAK", ({ count, label }) => {
+    hud.setBanner(`${label} — ×${count}`);
+    killStreakBannerTimer = 1.4;
+    cam.shake(0.08, 0.25);
+  });
+
   // Boss kill-cam — when the boss dies, orbit its last position for 2.5s with
   // a deeper hitstop + chromatic burst. The dissolve already takes 1.5s, so the
   // kill-cam covers the fade cleanly. ROOM_CLEARED fires after — the existing
@@ -522,12 +584,17 @@ async function boot() {
     hitFx.burst(evScratch, 80, [1.0, 0.7, 0.25], 1.6);
   });
 
-  // Boss phase 2 — big kick moment. Banner + banner clear handled below via BOSS_PHASE.
+  // Transient banner timers — each tier of feedback owns a cooldown the main
+  // gameplay loop counts down. The banner clears only when ALL are zero, so
+  // a longer-lived banner isn't pre-empted by a shorter-lived one expiring.
   let bossPhaseFlashTimer = 0;
-  events.on<{ bossId: string; phase: number; spawnPos: Vector3 }>("BOSS_PHASE", ({ spawnPos }) => {
-    cam.shake(0.28, 0.7);
+  let heroicBannerTimer = 0;
+  let heroicArmed = true;
+  events.on<BossPhasePayload>("BOSS_PHASE", ({ spawnPos, enrageLine, phase }) => {
+    const intensity = phase >= 3 ? 1.25 : 1.0;
+    cam.shake(0.28 * intensity, 0.7);
     bossPhaseFlashTimer = 1.6;
-    hud.setBanner("THE BRAWLER ENRAGES");
+    hud.setBanner(enrageLine || "BOSS ENRAGES");
     hud.flashBossPhase();
     // Zoom the camera in for the reveal, then return to default after ~1.2s.
     cam.setFovTarget(0.7, 4);
@@ -655,6 +722,50 @@ async function boot() {
     r.maxRadius = maxRadius;
     r.active = true;
     r.mesh.setEnabled(true);
+  }
+
+  /**
+   * Player ultimate cast — radial AoE around the player. Damages every alive
+   * enemy within ULTIMATE_RADIUS, spawns three staggered shock rings (gold
+   * tint), heavy camera shake, and a chromatic-aberration burst. Bound to
+   * the R key (only in `playing` phase). The meter is consumed via
+   * `ultimate.consume()`; if the meter wasn't full the call is a no-op.
+   */
+  const ULTIMATE_RADIUS = 12;
+  const ULTIMATE_DAMAGE = 60;
+  function tryCastUltimate(): void {
+    if (!ultimate.consume()) return;
+    const px = player.root.position.x;
+    const pz = player.root.position.z;
+    // Damage all alive enemies inside the radius. Knockback radiates outward
+    // so the visual + impact compose; bosses get fractional knockback inside
+    // Enemy.knockback so they don't slide across the arena.
+    const r2 = ULTIMATE_RADIUS * ULTIMATE_RADIUS;
+    let hits = 0;
+    for (const e of enemies.enemies) {
+      if (!e.alive) continue;
+      const dx = e.root.position.x - px;
+      const dz = e.root.position.z - pz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > r2) continue;
+      e.takeDamage(ULTIMATE_DAMAGE);
+      const len = Math.max(1e-4, Math.sqrt(d2));
+      e.knockback(dx / len, dz / len, 8);
+      hits++;
+    }
+    // Visual + audio swell — three staggered rings, large flare, screen shake.
+    spawnShockRing(ULTIMATE_RADIUS);
+    defer(() => spawnShockRing(ULTIMATE_RADIUS * 0.75), 80);
+    defer(() => spawnShockRing(ULTIMATE_RADIUS * 0.55), 170);
+    cam.shake(0.32, 0.85);
+    cam.setFovTarget(0.78, 4);
+    defer(() => cam.setFovTarget(null, 2), 700);
+    hitFx.flare(player.root.position, [1.0, 0.85, 0.25], 6.0, 0.7);
+    evScratch.set(px, 0.5, pz);
+    hitFx.burst(evScratch, 64, [1.0, 0.85, 0.35], 1.4);
+    // Reuse HEAVY_HIT for the audio stinger; SfxManager already handles it.
+    events.emit("HEAVY_HIT", { x: px, z: pz });
+    events.emit("ULTIMATE_CAST", { hits });
   }
 
   function updateShockRings(dt: number): void {
@@ -1116,6 +1227,23 @@ async function boot() {
   }
   updateArenaHazardsEnabled();
 
+  // Biome ambient hazards — keyed off the room's act bracket (0-2 verdant,
+  // 3-5 spire, 6-8 magma). Boss rooms mute the ambient layer because the
+  // boss is already saturating the pressure budget.
+  function biomeForRoom(idx: number): Biome {
+    if (idx <= 2) return "verdant";
+    if (idx <= 5) return "spire";
+    return "magma";
+  }
+  function updateBiomeHazards(): void {
+    const idx = gs.roomIndex;
+    biomeHazards.setBiome(biomeForRoom(idx));
+    biomeHazards.setActive(!isBossRoom(idx));
+    const desc = run.rooms[idx];
+    biomeHazards.setArenaHalf((desc?.arena.size ?? 40) / 2);
+  }
+  updateBiomeHazards();
+
   const rewardRng = mulberry32(0xfeed);
 
   function pickRewardOptions(): ItemDef[] {
@@ -1199,6 +1327,7 @@ async function boot() {
       applyBossLighting(sceneBundle, isBossRoom(gs.roomIndex));
       fireflies.setEnabled(!isBossRoom(gs.roomIndex));
       updateArenaHazardsEnabled();
+      updateBiomeHazards();
       rebuildHazardTiles();
       ensureValidSelection();
     }, 90);
@@ -1316,6 +1445,7 @@ async function boot() {
     clearDeferred();
     player.reset();
     tempo.reset();
+    ultimate.reset();
     // Re-apply the active hero's tints, stats, passives, and starting deck.
     // applyHero handles the deck reset itself (via deck.setStartingDeck), so
     // the explicit deck.reset() below would just thrash the already-fresh state.
@@ -1374,6 +1504,7 @@ async function boot() {
     applyBossLighting(sceneBundle, isBossRoom(0));
     fireflies.setEnabled(!isBossRoom(0));
     updateArenaHazardsEnabled();
+    updateBiomeHazards();
     rebuildHazardTiles();
     refreshAttackPreview();
   }
@@ -1427,11 +1558,19 @@ async function boot() {
     if (tempo.canCrash()) tempo.triggerCrash();
   });
 
-  // Boss Phase 2: spawn two chasers next to the boss
-  events.on<{ bossId: string; phase: number; spawnPos: Vector3 }>("BOSS_PHASE", ({ spawnPos }) => {
-    const off = 4.0;
-    enemies.spawn("chaser", new Vector3(spawnPos.x - off, 0, spawnPos.z));
-    enemies.spawn("chaser", new Vector3(spawnPos.x + off, 0, spawnPos.z));
+  // Boss phase minion wave — composition is per-boss, per-phase. Spawns are
+  // arranged in a small ring around the boss so the wave reads as
+  // "summoned in," not "fell from above." Empty composition = no spawn (e.g.
+  // a Spire phase that opens shield orbs instead of summoning minions).
+  events.on<BossPhasePayload>("BOSS_PHASE", ({ spawnPos, spawnComposition }) => {
+    if (!spawnComposition || spawnComposition.length === 0) return;
+    const ringRadius = 4.0;
+    for (let i = 0; i < spawnComposition.length; i++) {
+      const angle = (i / spawnComposition.length) * Math.PI * 2;
+      const x = spawnPos.x + Math.cos(angle) * ringRadius;
+      const z = spawnPos.z + Math.sin(angle) * ringRadius;
+      enemies.spawn(spawnComposition[i], new Vector3(x, 0, z));
+    }
   });
 
   // Boss intro — locks input for `duration` seconds, orbits the camera around
@@ -1466,6 +1605,8 @@ async function boot() {
     }
     if (e.key.toLowerCase() === "r" && (gs.phase === "dead" || gs.phase === "victory")) {
       resetRun();
+    } else if (e.key.toLowerCase() === "r" && gs.phase === "playing") {
+      tryCastUltimate();
     }
     if (e.key.toLowerCase() === "g") {
       // Cycle low → medium → high. SSAO + god rays toggle immediately; shadow +
@@ -1660,11 +1801,16 @@ async function boot() {
         const idx = selection.slot;
         const card = deck.peek(idx);
         if (card) {
-          const cast = caster.cast(card, frame.aimPoint);
+          const cast = caster.cast(card, frame.aimPoint, frame.chargedHeld);
           if (cast) {
             if (card.type === "melee") combat.triggerFlash();
             deck.play(idx);
             events.emit("CARD_PLAYED_SLOT", { slot: idx });
+            if (frame.chargedHeld && card.type !== "utility") {
+              // Visual + camera amp on charged casts so the bonus damage reads.
+              cam.shake(0.15, 0.35);
+              hitFx.flare(player.root.position, [1.0, 0.85, 0.35], 4.0, 0.4);
+            }
           }
         }
       }
@@ -1763,6 +1909,11 @@ async function boot() {
       crashTelegraph.setEnemyDensity(inRange);
       crashTelegraph.tick(realDt, cpx, cpz);
     }
+    telegraph.update(realDt);
+    // Biome ambient hazards — only ticked while the player is in a normal
+    // playing room. Pause during pickers / menus / boss-intro so debris won't
+    // fall during a relic-pick screen.
+    if (gs.phase === "playing") biomeHazards.update(realDt, player);
 
     // Relic auras — Runaway trail, Berserker Heart emissive ramp, Metronome dot.
     // `movingSpeed` = approximate magnitude of movement this frame (not per-second).
@@ -1784,11 +1935,41 @@ async function boot() {
       dodgeGhosts.resetStamp();
     }
 
-    // Boss phase banner — clears itself on a short timer so it doesn't linger
-    // into next-room transitions. bossPhaseFlashTimer is set when BOSS_PHASE fires.
-    if (bossPhaseFlashTimer > 0) {
-      bossPhaseFlashTimer = Math.max(0, bossPhaseFlashTimer - realDt);
-      if (bossPhaseFlashTimer === 0) hud.setBanner(null);
+    // Transient banner timers — phase, kill-streak, boss-defeated, low-HP.
+    // Each owns a cooldown so the banner clears on its own without bleeding
+    // into next-room transitions. Clear only when ALL timers are zero so a
+    // longer-lived banner (boss defeat) isn't pre-empted by a shorter-lived
+    // one expiring (kill streak) — the banner currently displayed is whatever
+    // was set last; clearing prematurely would blank a still-relevant banner.
+    if (bossPhaseFlashTimer > 0) bossPhaseFlashTimer = Math.max(0, bossPhaseFlashTimer - realDt);
+    if (bossDefeatedBannerTimer > 0) bossDefeatedBannerTimer = Math.max(0, bossDefeatedBannerTimer - realDt);
+    if (killStreakBannerTimer > 0) killStreakBannerTimer = Math.max(0, killStreakBannerTimer - realDt);
+    if (heroicBannerTimer > 0) heroicBannerTimer = Math.max(0, heroicBannerTimer - realDt);
+    if (
+      bossPhaseFlashTimer === 0 &&
+      bossDefeatedBannerTimer === 0 &&
+      killStreakBannerTimer === 0 &&
+      heroicBannerTimer === 0
+    ) {
+      // Only blank if the current banner is one we own. The relic-pickup +
+      // intro banner paths set banner directly; we shouldn't stomp on those
+      // when our timers expire on a different banner.
+      // The cheapest check is: only clear if the current banner is non-null
+      // AND the game is in normal "playing" phase (no menu / picker / intro).
+      if (gs.phase === "playing") hud.setBanner(null);
+    }
+
+    // Low-HP heroic banner — single fire on the *crossing* below 25% HP, with
+    // a re-arm only after the player heals back above 35% so a player tanking
+    // around 24-26% HP doesn't strobe the banner.
+    const hpRatioForHeroic = player.hp / player.stats.maxHp;
+    if (!heroicArmed && hpRatioForHeroic > 0.35) heroicArmed = true;
+    if (heroicArmed && hpRatioForHeroic > 0 && hpRatioForHeroic < 0.25) {
+      heroicArmed = false;
+      hud.setBanner("LAST STAND");
+      heroicBannerTimer = 1.6;
+      cam.shake(0.10, 0.32);
+      events.emit("HEROIC_STAND", { hp: player.hp });
     }
 
     // Vignette priority: perfect-dodge flash > damage flash > low-HP heartbeat >
@@ -1905,6 +2086,7 @@ async function boot() {
     cam.update(dt);
     // HUD animates in real time — hitstop shouldn't freeze bar lerps, that'd
     // read as a UI bug. Pass realDt.
+    hud.setUltimateState(ultimate.fillFraction(), ultimate.canCast());
     hud.update(realDt);
     devOverlay.update(realDt);
     tickAdaptiveScaling(realDt);

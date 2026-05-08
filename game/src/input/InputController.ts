@@ -13,6 +13,8 @@ export interface FrameInput {
   attackPressed: boolean;
   /** True while LMB is held (for future channel cards) */
   attackHeld: boolean;
+  /** True when CTRL is held — modifier for charged casts (CardCaster reads this) */
+  chargedHeld: boolean;
   /** True the frame RMB was pressed — cycles the selected hand slot */
   cycleSelectedPressed: boolean;
   /** 1-based card slots pressed this frame (1..3) — selects that slot (does NOT play) */
@@ -53,6 +55,7 @@ export class InputController {
     dodgePressed: false,
     attackPressed: false,
     attackHeld: false,
+    chargedHeld: false,
     cycleSelectedPressed: false,
     selectSlotPressed: this.cardQueueOut,
     crashPressed: false,
@@ -200,6 +203,11 @@ export class InputController {
     out.dodgePressed = this.dodgeQueued;
     out.attackPressed = this.attackQueuedDown;
     out.attackHeld = this.attackHeld;
+    // CTRL modifier for charged casts. KeyboardEvent reports "control" on
+    // either-side CTRL down; we keep the held bit live in `keys` and read it
+    // here so the cast handler can consume the flag in the same frame as the
+    // attack press.
+    out.chargedHeld = this.keys.has("control");
     out.cycleSelectedPressed = this.cycleQueued;
     out.crashPressed = this.crashQueued;
     out.cycleTargetPressed = this.cycleTargetQueued;

@@ -5,8 +5,10 @@ import { Color3 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator";
-import { Enemy, EnemyDef } from "../Enemy";
+import { EnemyDef } from "../Enemy";
 import { Player } from "../../player/Player";
+import { BossBase } from "./BossBase";
+import { Telegraph } from "../../fx/Telegraph";
 import { events } from "../../engine/EventBus";
 
 export const BRAWLER_DEF: EnemyDef = {
@@ -20,42 +22,65 @@ export const BRAWLER_DEF: EnemyDef = {
 };
 
 /**
- * Boss Brawler — port of rogue-hero-2 Enemy.js BossBrawler.
+ * Boss Brawler — close-range bruiser. Owns the dash FSM:
+ *   chase → telegraph (0.5s windup, growing red bar) → attack (0.32s charge)
+ *   → recover (0.6s) → chase
  *
- * FSM:
- *   chase  → walks at player, melee on touch
- *   dash_telegraph → 0.5s windup with growing red ring
- *   dash → fast charge along locked direction for 0.3s, big damage on contact
- *   recover → 0.6s rest
- *
- * Phase 2: at 50% HP, emits BOSS_PHASE for the spawner to drop two chasers.
+ * Phase machinery (intro tween, threshold checks, BOSS_PHASE emission) lives
+ * in `BossBase`. This class only owns the per-phase attack tick and the
+ * brawler-specific visuals (fists, horns, chest plate).
  */
-export class BossBrawler extends Enemy {
+export class BossBrawler extends BossBase {
   private dashTimer = 3.5;
   private dashTelegraphTimer = 0;
   private dashActiveTimer = 0;
   private dashDir = new Vector3(0, 0, 1);
-  private contactCooldown = 0;
-  private hasSplit = false;
   private telegraphBar: Mesh | null = null;
   private telegraphMat: StandardMaterial | null = null;
   private readonly dashTelegraphLength = 6.0;
   private fistL!: Mesh;
   private fistR!: Mesh;
-  /** Intro animation — body rises from a kneeling crouch over `introDuration`. */
-  introTimer = 3.0;
-  introDuration = 3.0;
-  /** Display name shown by the banner during intro. Subclasses override. */
-  bossDisplayName = "BRAWLER OF THE PIT";
+  /**
+   * Phase-3 zigzag dash chain. When > 0, the boss skips the long inter-dash
+   * cooldown and re-telegraphs immediately with a rotated direction.
+   */
+  private dashChainRemaining = 0;
+  /**
+   * Phase 2/3 ground-slam. Runs as a parallel sub-FSM that interrupts the dash
+   * cycle when its cooldown is ready and the boss isn't mid-dash. Pure root +
+   * radial AoE — telegraphed via the shared Telegraph ring so the player has
+   * 1.4s to vacate the area.
+   */
+  private slamCooldown = 6.0;
+  private slamWindUp = 0;
+  private slamRecover = 0;
+  /**
+   * Subclasses (Spire, Colossus — currently inherit this class) opt out of
+   * the slam attack when they own different combat verbs. Tier 1b-Spire and
+   * Tier 1b-Colossus replace inheritance with their own BossBase subclasses.
+   */
+  protected slamEnabled = true;
+  private static readonly SLAM_RADIUS = 5.0;
+  private static readonly SLAM_WIND_UP = 1.4;
+  private static readonly SLAM_DAMAGE = 22;
 
-  constructor(scene: Scene, shadow: ShadowGenerator, spawnPos: Vector3, idSuffix: string) {
+  constructor(scene: Scene, shadow: ShadowGenerator, spawnPos: Vector3, idSuffix: string, telegraph: Telegraph) {
     const body = MeshBuilder.CreateCylinder(
       `brawler_${idSuffix}_body`,
       { diameterTop: BRAWLER_DEF.radius * 1.6, diameterBottom: BRAWLER_DEF.radius * 2.2, height: 2.6, tessellation: 18 },
       scene,
     );
     body.position = new Vector3(0, 1.3, 0);
-    super(scene, shadow, BRAWLER_DEF, spawnPos, body, idSuffix);
+    super(scene, shadow, BRAWLER_DEF, spawnPos, body, idSuffix, telegraph);
+    this.bossDisplayName = "BRAWLER OF THE PIT";
+    // Three-phase fight. P1 = pure dash; P2 unlocks the ground slam; P3 also
+    // upgrades the dash to a 3-hit zigzag chain.
+    this.phaseHpThresholds = [0.66, 0.33];
+    this.enrageLines = ["THE BRAWLER ROARS", "BLOOD FOR BLOOD"];
+    this.spawnComposition = [
+      ["chaser", "chaser"],
+      ["elite", "chaser", "chaser"],
+    ];
     // Imposing slow shift — reads as a heavy creature breathing. Off during dash.
     this.swayAmpY = 0.03;
     this.swayFreqHz = 0.38;
@@ -116,8 +141,8 @@ export class BossBrawler extends Enemy {
 
   private ensureTelegraph(): void {
     if (this.telegraphBar) return;
-    // A long thin emissive bar that lies on the ground, pointing along the dash direction.
-    // Built unit-length on +Z, then scaled and rotated each telegraph frame.
+    // Long thin emissive bar lying on the ground along the dash direction.
+    // Built unit-length on +Z, scaled and rotated each telegraph frame.
     this.telegraphBar = MeshBuilder.CreateBox(
       `${this.id}_dashBar`,
       { width: 1.6, height: 0.05, depth: 1.0 },
@@ -133,33 +158,37 @@ export class BossBrawler extends Enemy {
     this.telegraphBar.isVisible = false;
   }
 
-  updateLogic(dt: number, player: Player): void {
-    if (!this.alive) {
-      if (this.telegraphBar) this.telegraphBar.isVisible = false;
-      return;
-    }
-    // Intro animation — body lerps scale.y from 0.4 → 1.0 over introDuration.
-    // While the timer is positive, the boss is invulnerable to AI logic but
-    // still ticks for hit-flash / shadow setup. The main.ts layer drives the
-    // camera orbit + banner via BOSS_INTRO_START emitted in EnemyManager.spawn.
-    if (this.introTimer > 0) {
-      this.introTimer = Math.max(0, this.introTimer - dt);
-      const t = 1 - this.introTimer / this.introDuration;
-      this.root.scaling.y = 0.4 + 0.6 * t;
-      // No XZ movement, no AI — just stand and rise.
-      this.tickCommon(dt);
-      return;
-    }
-    // Sway off during the dash itself; on through the rest of the FSM so the
-    // boss is never statue-still. tickCommon reads this each frame.
-    this.swayActive = this.state !== "attack";
-    this.tickCommon(dt);
-    if (this.contactCooldown > 0) this.contactCooldown = Math.max(0, this.contactCooldown - dt);
+  protected override onDeadFrame(): void {
+    if (this.telegraphBar) this.telegraphBar.isVisible = false;
+  }
 
-    // Phase 2: spawn adds at 50% HP (boss survives)
-    if (!this.hasSplit && this.hp <= this.def.hp * 0.5) {
-      this.hasSplit = true;
-      events.emit("BOSS_PHASE", { bossId: this.id, phase: 2, spawnPos: this.root.position.clone() });
+  protected override phaseAttackTick(dt: number, player: Player): void {
+    // Sway off during the dash itself; on through the rest of the FSM so the
+    // boss is never statue-still. tickCommon (in base) reads this each frame.
+    this.swayActive = this.state !== "attack" && this.slamWindUp === 0;
+
+    // ----- Slam sub-FSM (P2+) — runs in parallel with dash, interrupts when ready -----
+    if (this.slamEnabled && this.currentPhase >= 2) {
+      if (this.slamWindUp > 0) {
+        this.slamWindUp = Math.max(0, this.slamWindUp - dt);
+        if (this.slamWindUp === 0) this.detonateSlam(player);
+        return; // rooted while telegraphing
+      }
+      if (this.slamRecover > 0) {
+        this.slamRecover = Math.max(0, this.slamRecover - dt);
+        return;
+      }
+      this.slamCooldown -= dt;
+      // Only initiate slam if the dash isn't mid-flight; otherwise the dash
+      // and slam would visually clash and the slam ring would spawn at a
+      // misleading position.
+      if (
+        this.slamCooldown <= 0 &&
+        (this.state === "chase" || this.state === "recover")
+      ) {
+        this.beginSlam();
+        return;
+      }
     }
 
     const dx = player.root.position.x - this.root.position.x;
@@ -167,7 +196,6 @@ export class BossBrawler extends Enemy {
     const distSq = dx * dx + dz * dz;
     const dist = Math.sqrt(distSq);
 
-    // Dash logic
     this.dashTimer -= dt;
 
     if (this.state === "telegraph") {
@@ -175,21 +203,17 @@ export class BossBrawler extends Enemy {
       this.ensureTelegraph();
       if (this.telegraphBar && this.telegraphMat) {
         const t = 1 - this.dashTelegraphTimer / 0.5;
-        // Position the bar so it starts at the boss and extends along the dash direction.
         const halfLen = this.dashTelegraphLength / 2;
         const cx = this.root.position.x + this.dashDir.x * halfLen;
         const cz = this.root.position.z + this.dashDir.z * halfLen;
         this.telegraphBar.position.x = cx;
         this.telegraphBar.position.y = 0.06;
         this.telegraphBar.position.z = cz;
-        // Rotate to face dash direction (atan2 in XZ — same convention as Player.faceTowards).
         this.telegraphBar.rotation.y = Math.atan2(this.dashDir.x, this.dashDir.z);
-        // Stretch length along Z (local), pulse width slightly so the warning grows.
         this.telegraphBar.scaling.x = 0.9 + 0.4 * t;
         this.telegraphBar.scaling.z = this.dashTelegraphLength;
         this.telegraphBar.isVisible = true;
         this.telegraphMat.alpha = 0.55 + 0.4 * t;
-        // Fists cock backward as the wind-up builds — readable "about to swing" motion.
         const pull = 0.9 * t;
         this.fistL.position.z = -pull;
         this.fistR.position.z = -pull;
@@ -200,7 +224,6 @@ export class BossBrawler extends Enemy {
         this.state = "attack";
         this.dashActiveTimer = 0.32;
         if (this.telegraphBar) this.telegraphBar.isVisible = false;
-        // Thrust fists forward for the dash.
         this.fistL.position.z = 0.5;
         this.fistR.position.z = 0.5;
       }
@@ -213,27 +236,30 @@ export class BossBrawler extends Enemy {
       this.root.position.x += this.dashDir.x * dashSpeed * dt;
       this.root.position.z += this.dashDir.z * dashSpeed * dt;
       // Recompute distSq AFTER the dash position update — the cached value at
-      // the top of updateLogic was sampled before the boss moved, so contact
-      // range was effectively read one frame stale during the dash.
+      // the top was sampled before the boss moved, so contact range was read
+      // one frame stale during the dash.
       const adx = player.root.position.x - this.root.position.x;
       const adz = player.root.position.z - this.root.position.z;
       const adistSq = adx * adx + adz * adz;
       const touch = this.def.radius + player.stats.radius;
-      if (adistSq <= (touch + 0.6) * (touch + 0.6) && this.contactCooldown === 0) {
-        if (!player.isDodging) {
-          const dmg = 18;
-          events.emit("DAMAGE_TAKEN", { amount: dmg, source: this.id });
-          this.contactCooldown = 0.6;
-        } else if (player.tryConsumePerfectDodge()) {
-          events.emit("PERFECT_DODGE", {});
-        }
+      if (adistSq <= (touch + 0.6) * (touch + 0.6)) {
+        this.tryContactDamage(player, 18, 0.6);
       }
       if (this.dashActiveTimer <= 0) {
         this.state = "recover";
-        this.dashTimer = 3.5;
-        // Brief rest
-        this.dashActiveTimer = 0.6;
-        // Reset fist positions so the boss looks relaxed during cooldown.
+        // Zigzag chain (P3): the next dash reuses the same overall threat
+        // window but pivots ~45° from the current heading. Three dashes
+        // bracket the player from alternating angles before the boss takes
+        // its breather. dashChainRemaining is seeded at the start of the
+        // *first* dash in the chain (see telegraph branch below).
+        if (this.dashChainRemaining > 0) {
+          this.dashChainRemaining -= 1;
+          this.dashActiveTimer = 0.18; // short inter-dash beat
+          this.dashTimer = 0; // queue next telegraph immediately
+        } else {
+          this.dashTimer = 3.5;
+          this.dashActiveTimer = 0.6;
+        }
         this.fistL.position.z = 0;
         this.fistR.position.z = 0;
         this.fistL.scaling.set(1, 1, 1);
@@ -248,30 +274,105 @@ export class BossBrawler extends Enemy {
       return;
     }
 
-    // Begin dash telegraph
     if (this.dashTimer <= 0 && dist > 4) {
       this.state = "telegraph";
       this.dashTelegraphTimer = 0.5;
       if (dist > 1e-4) {
-        this.dashDir.x = dx / dist;
-        this.dashDir.z = dz / dist;
+        // Phase 3: lead the chain with a fresh aim at the player on dash 1,
+        // then alternate ±45° pivots from the locked direction on follow-ups.
+        if (this.currentPhase >= 3 && this.dashChainRemaining === 0) {
+          this.dashChainRemaining = 2; // 2 follow-ups → 3 dashes total
+          this.dashDir.x = dx / dist;
+          this.dashDir.z = dz / dist;
+        } else if (this.dashChainRemaining > 0) {
+          // Pivot ~45° on alternating sides — flips on each follow-up so the
+          // player can't out-strafe in a single direction.
+          const sign = this.dashChainRemaining === 2 ? 1 : -1;
+          const angle = sign * (Math.PI / 4);
+          const cs = Math.cos(angle);
+          const sn = Math.sin(angle);
+          const ndx = this.dashDir.x * cs - this.dashDir.z * sn;
+          const ndz = this.dashDir.x * sn + this.dashDir.z * cs;
+          this.dashDir.x = ndx;
+          this.dashDir.z = ndz;
+        } else {
+          this.dashDir.x = dx / dist;
+          this.dashDir.z = dz / dist;
+        }
       }
       return;
     }
 
-    // Default chase
     this.state = "chase";
     if (dist > this.def.radius + player.stats.radius && dist > 1e-4) {
       this.root.position.x += (dx / dist) * this.def.speed * dt;
       this.root.position.z += (dz / dist) * this.def.speed * dt;
-    } else if (this.contactCooldown === 0) {
+    } else {
+      // P3 contact bites harder — frothing rage, +50% touch damage.
+      const contact = this.currentPhase >= 3
+        ? Math.round(this.def.contactDamage * 1.5)
+        : this.def.contactDamage;
+      this.tryContactDamage(player, contact, 0.9);
+    }
+  }
+
+  protected override onPhaseEnter(phase: number): void {
+    // Each phase entry primes a slam ~1s after the transition so the player
+    // has a beat to read the new state, then pressure resumes immediately.
+    if (phase >= 2) {
+      this.slamCooldown = 1.0;
+    }
+  }
+
+  /** Begin the ground-slam wind-up — root the boss, spawn the ring telegraph. */
+  private beginSlam(): void {
+    this.slamWindUp = BossBrawler.SLAM_WIND_UP;
+    this.state = "telegraph"; // suppress sway, prevent dash from queueing
+    // Bright red ring on the floor centered under the boss. Grows from 0 →
+    // SLAM_RADIUS over the wind-up so the danger zone reads like a tightening
+    // fence the player must vacate.
+    this.telegraph.spawnRing(
+      this.root.position,
+      BossBrawler.SLAM_RADIUS,
+      BossBrawler.SLAM_WIND_UP,
+      [1.0, 0.18, 0.06],
+    );
+    // Cock both fists overhead — readable "about to come down hard" pose. The
+    // dash cycle's fist-thrust will reset on its own when dash resumes.
+    this.fistL.position.z = 0;
+    this.fistR.position.z = 0;
+    this.fistL.position.y = 1.0;
+    this.fistR.position.y = 1.0;
+  }
+
+  /** Resolve the slam impact — radial damage check + screen feedback. */
+  private detonateSlam(player: Player): void {
+    const dx = player.root.position.x - this.root.position.x;
+    const dz = player.root.position.z - this.root.position.z;
+    const distSq = dx * dx + dz * dz;
+    const r = BossBrawler.SLAM_RADIUS;
+    if (distSq <= r * r) {
+      // Direct hit: deal slam damage + heavy knockback away from the boss.
+      // Honor the player's dodge i-frames the same way contact damage does.
       if (!player.isDodging) {
-        events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
-        this.contactCooldown = 0.9;
+        events.emit("DAMAGE_TAKEN", { amount: BossBrawler.SLAM_DAMAGE, source: this.id });
       } else if (player.tryConsumePerfectDodge()) {
         events.emit("PERFECT_DODGE", {});
       }
     }
+    // Heavy-impact stinger so audio + screen layer treat it as a major beat.
+    // HEAVY_HIT is already wired to SfxManager + tempo gain — reuse it instead
+    // of inventing a new event.
+    events.emit("HEAVY_HIT", { x: this.root.position.x, z: this.root.position.z });
+    // Shorter cooldown in P3 — the slam comes much more often.
+    const baseCd = this.currentPhase >= 3 ? 4.0 : 7.0;
+    this.slamCooldown = baseCd;
+    this.slamRecover = 0.5;
+    // Drop fists back to baseline; dash cycle takes over from here.
+    this.fistL.position.y = 1.3;
+    this.fistR.position.y = 1.3;
+    this.state = "recover";
+    this.dashActiveTimer = 0.5;
   }
 
   dispose(): void {
@@ -283,9 +384,6 @@ export class BossBrawler extends Enemy {
       this.telegraphMat.dispose();
       this.telegraphMat = null;
     }
-    // Explicit fist disposal — they're parented to body and would cascade via
-    // super.dispose(), but spelling it out keeps the disposal contract clear
-    // even if the parent-cleanup behavior changes later.
     if (this.fistL) this.fistL.dispose();
     if (this.fistR) this.fistR.dispose();
     super.dispose();

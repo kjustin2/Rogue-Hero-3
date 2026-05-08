@@ -76,8 +76,15 @@ export class CardCaster {
     this.hooks = hooks;
   }
 
-  /** Returns true if the card was successfully played (AP was sufficient + gating passed). */
-  cast(card: CardDef, aimPoint: Vector3 | null): boolean {
+  /**
+   * Returns true if the card was successfully played (AP was sufficient + gating passed).
+   *
+   * `charged = true` (CTRL+LMB in main.ts): the cast costs +1 AP, deals 1.6×
+   * damage, and emits a `charged: true` flag on the CARD_PLAYED event so
+   * audio/visual layers can amplify their feedback. Utility cards (Aegis)
+   * ignore charging — there's no meaningful damage to amplify.
+   */
+  cast(card: CardDef, aimPoint: Vector3 | null, charged = false): boolean {
     // Aerial gating BEFORE AP cost so a misclick mid-walk doesn't burn AP.
     if (card.requiresAirborne && !this.player.isAirborne()) {
       events.emit("CARD_FAIL", { reason: "not_airborne" });
@@ -90,14 +97,18 @@ export class CardCaster {
       return false;
     }
 
-    const cost = this.hooks.cardCostOverride(card) ?? card.cost;
+    // Utility cards skip the charge bonus — there's no damage to amplify.
+    const isCharged = charged && card.type !== "utility";
+    const baseCost = this.hooks.cardCostOverride(card) ?? card.cost;
+    const cost = baseCost + (isCharged ? 1 : 0);
     if (this.player.ap < cost) {
       events.emit("CARD_FAIL", { reason: "no_ap" });
       return false;
     }
     this.player.ap -= cost;
 
-    const dmgMult = this.tempo.damageMultiplier() * this.hooks.damageMultiplier(card);
+    const chargeMult = isCharged ? 1.6 : 1.0;
+    const dmgMult = this.tempo.damageMultiplier() * this.hooks.damageMultiplier(card) * chargeMult;
     const dmg = Math.max(0, Math.round(card.damage * dmgMult));
 
     let hits: Enemy[] = [];

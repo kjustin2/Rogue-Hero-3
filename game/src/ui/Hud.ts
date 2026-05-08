@@ -71,6 +71,10 @@ export class Hud {
   private tempoZoneLabel: TextBlock;
   private crashBadge: TextBlock;
   private crashBadgePulse = 0;
+  private ultimateBadge!: TextBlock;
+  private ultimateFill = 0;
+  private ultimateReady = false;
+  private ultimatePulse = 0;
   private enemyCounter: TextBlock;
   private roomLabel: TextBlock;
   private hand: HandSlot[] = [];
@@ -166,6 +170,11 @@ export class Hud {
     this.crashBadge.fontWeight = "bold";
     this.crashBadge.isVisible = false;
 
+    // Ultimate readout — sits below the crash row. Shows live charge % while
+    // building, swaps to "[R] ULTIMATE READY" when full and pulses gold.
+    this.ultimateBadge = this.makeText("ULTIMATE  0%", 24, 200, "#a888ff", 15, "left", "top");
+    this.ultimateBadge.fontWeight = "bold";
+
     // ---- Top-right enemy counter ----
     this.enemyCounter = this.makeText("Enemies: 0", -24, 24, "#fff", 22, "right", "top");
 
@@ -249,7 +258,7 @@ export class Hud {
     // from the bottom, so anything at -150 would bake into them). Placed at
     // -190 with its own explicit height so the text has a guaranteed band.
     this.controlHint = this.makeText(
-      "LMB: use   RMB: next card   1–3: pick slot   Space: jump   Shift: dodge   Q/Tab: target",
+      "LMB: use   Ctrl+LMB: charged   R: ult   RMB: next card   1–3: slot   Space: jump   Shift: dodge   Q/Tab: target",
       0,
       -192,
       "#bbbbbb",
@@ -496,6 +505,13 @@ export class Hud {
     this.bossFlashTimer = 0.6;
   }
 
+  /** Drive the ultimate readout. Called every frame from main.ts. */
+  setUltimateState(fill: number, ready: boolean): void {
+    this.ultimateFill = Math.max(0, Math.min(1, fill));
+    if (ready && !this.ultimateReady) this.ultimatePulse = 0.6;
+    this.ultimateReady = ready;
+  }
+
   /** Show/hide the Metronome relic dot next to the Tempo bar. Called by main.ts. */
   setMetronomeActive(active: boolean): void {
     this.metronomeDot.isVisible = active;
@@ -738,6 +754,7 @@ export class Hud {
     const now = performance.now();
     // 3-second chain window: a later kill keeps the counter going; exceeding
     // the window resets to 1 (so the NEXT kill will take us to 2 and re-show).
+    const previous = this.comboCount;
     if (now - this.lastKillTime < 3000) {
       this.comboCount++;
     } else {
@@ -748,6 +765,21 @@ export class Hud {
       this.comboLabel.text = `×${this.comboCount}  CHAIN`;
       this.comboLabel.isVisible = true;
       this.comboTtl = 1.5;
+    }
+    // Kill-streak banner thresholds — a single fire on the *crossing* edge so
+    // we don't spam the banner on every subsequent kill in the streak. main.ts
+    // listens and renders the named banner with its dedicated SFX.
+    const crossings: { at: number; label: string }[] = [
+      { at: 3, label: "DOUBLE KILL" },
+      { at: 5, label: "RAMPAGE" },
+      { at: 8, label: "SLAUGHTER" },
+      { at: 12, label: "UNSTOPPABLE" },
+    ];
+    for (const c of crossings) {
+      if (previous < c.at && this.comboCount >= c.at) {
+        events.emit("KILL_STREAK", { count: this.comboCount, label: c.label });
+        break;
+      }
     }
   }
 
@@ -1178,6 +1210,18 @@ export class Hud {
     if (crashReady) {
       this.crashBadgePulse += 0.12;
       this.crashBadge.alpha = 0.55 + 0.45 * Math.abs(Math.sin(this.crashBadgePulse));
+    }
+
+    // Ultimate readout — purple while charging (shows percent), pulsing gold when ready.
+    if (this.ultimateReady) {
+      this.ultimatePulse += 0.16;
+      this.ultimateBadge.text = "[R] ULTIMATE READY";
+      this.ultimateBadge.color = "#ffd640";
+      this.ultimateBadge.alpha = 0.7 + 0.3 * Math.abs(Math.sin(this.ultimatePulse));
+    } else {
+      this.ultimateBadge.text = `ULTIMATE  ${Math.round(this.ultimateFill * 100)}%`;
+      this.ultimateBadge.color = "#a888ff";
+      this.ultimateBadge.alpha = 0.55 + 0.45 * this.ultimateFill;
     }
 
     // Enemy counter

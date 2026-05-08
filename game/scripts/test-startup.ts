@@ -32,6 +32,7 @@ import { buildArena, VERDANT_ENV_PALETTE } from "../src/scene/ArenaBuilder";
 import { Player } from "../src/player/Player";
 import { EnemyManager } from "../src/enemies/EnemyManager";
 import { HostileProjectileSystem } from "../src/combat/handlers/hostileProjectile";
+import { Telegraph } from "../src/fx/Telegraph";
 import { ProjectileSystem } from "../src/combat/handlers/projectile";
 import { CombatManager } from "../src/combat/CombatManager";
 import { CardCaster } from "../src/combat/CardCaster";
@@ -80,7 +81,8 @@ check(!!player.head, "humanoid player has a head");
 check(!!player.sword, "humanoid player has a sword");
 
 const hostileProjectiles = new HostileProjectileSystem(scene, player);
-const enemies = new EnemyManager(scene, shadow, hostileProjectiles);
+const telegraph = new Telegraph(scene);
+const enemies = new EnemyManager(scene, shadow, hostileProjectiles, telegraph);
 const projectiles = new ProjectileSystem(scene, enemies);
 const tempo = new TempoSystem();
 tempo.setClassPassives(BLADE.passives);

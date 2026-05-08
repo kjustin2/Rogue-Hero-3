@@ -36,6 +36,7 @@ import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
 import { Player } from "../src/player/Player";
 import { EnemyManager } from "../src/enemies/EnemyManager";
 import { HostileProjectileSystem } from "../src/combat/handlers/hostileProjectile";
+import { Telegraph } from "../src/fx/Telegraph";
 import { ProjectileSystem } from "../src/combat/handlers/projectile";
 import { CombatManager } from "../src/combat/CombatManager";
 import { TempoSystem } from "../src/tempo/TempoSystem";
@@ -75,7 +76,8 @@ cam.collisionRadius = new Vector3(0.6, 0.6, 0.6);
 // ---- Construct production managers ----
 const player = new Player(scene, shadow);
 const hostileProjectiles = new HostileProjectileSystem(scene, player);
-const enemies = new EnemyManager(scene, shadow, hostileProjectiles);
+const telegraph = new Telegraph(scene);
+const enemies = new EnemyManager(scene, shadow, hostileProjectiles, telegraph);
 const projectiles = new ProjectileSystem(scene, enemies);
 const tempo = new TempoSystem();
 tempo.setClassPassives(BLADE.passives);
