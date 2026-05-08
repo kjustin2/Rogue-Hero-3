@@ -212,11 +212,21 @@ export class BossBrawler extends Enemy {
       const dashSpeed = 14;
       this.root.position.x += this.dashDir.x * dashSpeed * dt;
       this.root.position.z += this.dashDir.z * dashSpeed * dt;
+      // Recompute distSq AFTER the dash position update — the cached value at
+      // the top of updateLogic was sampled before the boss moved, so contact
+      // range was effectively read one frame stale during the dash.
+      const adx = player.root.position.x - this.root.position.x;
+      const adz = player.root.position.z - this.root.position.z;
+      const adistSq = adx * adx + adz * adz;
       const touch = this.def.radius + player.stats.radius;
-      if (distSq <= (touch + 0.6) * (touch + 0.6) && this.contactCooldown === 0 && !player.isDodging) {
-        const dmg = 18;
-        events.emit("DAMAGE_TAKEN", { amount: dmg, source: this.id });
-        this.contactCooldown = 0.6;
+      if (adistSq <= (touch + 0.6) * (touch + 0.6) && this.contactCooldown === 0) {
+        if (!player.isDodging) {
+          const dmg = 18;
+          events.emit("DAMAGE_TAKEN", { amount: dmg, source: this.id });
+          this.contactCooldown = 0.6;
+        } else if (player.tryConsumePerfectDodge()) {
+          events.emit("PERFECT_DODGE", {});
+        }
       }
       if (this.dashActiveTimer <= 0) {
         this.state = "recover";
@@ -254,9 +264,13 @@ export class BossBrawler extends Enemy {
     if (dist > this.def.radius + player.stats.radius && dist > 1e-4) {
       this.root.position.x += (dx / dist) * this.def.speed * dt;
       this.root.position.z += (dz / dist) * this.def.speed * dt;
-    } else if (this.contactCooldown === 0 && !player.isDodging) {
-      events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
-      this.contactCooldown = 0.9;
+    } else if (this.contactCooldown === 0) {
+      if (!player.isDodging) {
+        events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+        this.contactCooldown = 0.9;
+      } else if (player.tryConsumePerfectDodge()) {
+        events.emit("PERFECT_DODGE", {});
+      }
     }
   }
 
@@ -269,6 +283,11 @@ export class BossBrawler extends Enemy {
       this.telegraphMat.dispose();
       this.telegraphMat = null;
     }
+    // Explicit fist disposal — they're parented to body and would cascade via
+    // super.dispose(), but spelling it out keeps the disposal contract clear
+    // even if the parent-cleanup behavior changes later.
+    if (this.fistL) this.fistL.dispose();
+    if (this.fistR) this.fistR.dispose();
     super.dispose();
   }
 }

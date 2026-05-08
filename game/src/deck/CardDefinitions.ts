@@ -39,6 +39,10 @@ export interface CardDef {
   arcDegrees?: number;
   /** Dash cards: when true, the dash applies no damage but full i-frames. */
   iframeOnly?: boolean;
+  /** "Heavy" cards (high commitment, big impact). On cast they emit HEAVY_HIT
+   *  on landed hits or HEAVY_MISS on whiffs — TempoSystem rewards both with
+   *  bigger gains than a normal swing. */
+  heavy?: boolean;
 }
 
 export const CardDefinitions: Record<string, CardDef> = {
@@ -68,6 +72,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     desc: "Narrow 60° overhead slam. Big damage + heavy knockback. +10 Tempo.",
     glyph: "🔨",
     arcDegrees: 60,
+    heavy: true,
   },
   whirlwind: {
     id: "whirlwind",
@@ -163,6 +168,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     glyph: "☄",
     aoeRadius: 4,
     requiresAirborne: true,
+    heavy: true,
   },
   // --- Utility ---
   aegis: {
@@ -179,6 +185,16 @@ export const CardDefinitions: Record<string, CardDef> = {
     effect: "shield",
   },
 };
+
+// Module-load validation — chain projectiles loop `for (h = 1; h < total; h++)`
+// in CardCaster.resolveChain, so a chainCount < 2 silently degrades the card to
+// "primary target only" with no further hops. Asserting at startup catches the
+// authoring footgun the moment a new chain card lands in the file.
+for (const c of Object.values(CardDefinitions)) {
+  if (c.chainCount !== undefined && c.chainCount < 2) {
+    throw new Error(`Card "${c.id}" has chainCount=${c.chainCount}; chain cards require chainCount >= 2`);
+  }
+}
 
 export const ALL_CARD_IDS: string[] = Object.keys(CardDefinitions);
 

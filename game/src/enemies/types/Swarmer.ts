@@ -86,9 +86,13 @@ export class Swarmer extends Enemy {
 
     // Contact damage on touch (with short cooldown to keep swarms tunable).
     const touchDist = this.def.radius + player.stats.radius;
-    if (distSq <= touchDist * touchDist && this.contactCooldown === 0 && !player.isDodging) {
-      events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
-      this.contactCooldown = 0.55;
+    if (distSq <= touchDist * touchDist && this.contactCooldown === 0) {
+      if (!player.isDodging) {
+        events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+        this.contactCooldown = 0.55;
+      } else if (player.tryConsumePerfectDodge()) {
+        events.emit("PERFECT_DODGE", {});
+      }
     }
   }
 }

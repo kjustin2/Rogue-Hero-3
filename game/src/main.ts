@@ -59,6 +59,7 @@ import { EnemyHealthPips } from "./ui/EnemyHealthPips";
 import { MenuSystem } from "./ui/MenuSystem";
 import { DevOverlay } from "./ui/DevOverlay";
 import { Enemy } from "./enemies/Enemy";
+import { SfxManager } from "./audio/SfxManager";
 
 const AP_REGEN_PER_SEC = 0.5;
 /** How far past the doorway plane the player has to step before the room
@@ -278,6 +279,21 @@ async function boot() {
   // draw calls. Off by default so players never see it.
   const devOverlay = new DevOverlay(scene, engine);
 
+  // Procedural Web Audio SFX — synthesises everything from oscillators + noise,
+  // no asset files. Browser autoplay policy keeps the AudioContext suspended
+  // until a user gesture, so we resume on the first pointer/key event.
+  const sfx = new SfxManager();
+  if (sfx.isAvailable()) {
+    const resumeSfx = (): void => {
+      sfx.resume();
+      canvas.removeEventListener("pointerdown", resumeSfx);
+      window.removeEventListener("keydown", resumeSfx);
+    };
+    canvas.addEventListener("pointerdown", resumeSfx, { once: true });
+    window.addEventListener("keydown", resumeSfx, { once: true });
+    window.addEventListener("beforeunload", () => sfx.dispose());
+  }
+
   // ---------- Dynamic resolution scaling (pressure valve, low-tier only) ----------
   // Active ONLY on the low quality tier. On medium/high we keep the canvas at
   // full resolution all the time — the scaling pass blurs the GUI text (since
@@ -447,6 +463,42 @@ async function boot() {
         damageNumbers.spawnPlayerHit(player.root.position, amount);
       }
     }
+  });
+
+  // Heavy hits — bigger camera kick than a normal swing so the weight reads.
+  // The HEAVY_HIT event fires from CardCaster for melee/dash/aoe cards flagged
+  // `heavy` (Crashing Blow + Meteor Slam today) when at least one enemy is hit.
+  events.on("HEAVY_HIT", () => {
+    cam.shake(0.18, 0.45);
+  });
+  // Heavy whiff — small kick, signals the windup landed nothing.
+  events.on("HEAVY_MISS", () => {
+    cam.shake(0.05, 0.18);
+  });
+
+  // Perfect-dodge flash — white vignette pulse for ~0.2s on a perfect-frame
+  // dodge. The event fires from enemy contact paths via Player.tryConsumePerfectDodge.
+  let perfectDodgeFlashTimer = 0;
+  events.on("PERFECT_DODGE", () => {
+    perfectDodgeFlashTimer = 0.22;
+    cam.shake(0.05, 0.16);
+  });
+
+  // Combo counter popup — `xN` tag spawned at the player's position when a
+  // multi-hit cast lands 2+ enemies. Color shifts yellow→gold as combos grow.
+  events.on<{ hitNum: number; count: number }>("COMBO_HIT", (p) => {
+    if ((p?.count ?? 0) < 2) return;
+    const n = Math.max(1, Math.min(16, p.count));
+    // Yellow at 2 → gold at 5+
+    const goldT = Math.min(1, (n - 2) / 3);
+    const r = Math.round(255).toString(16).padStart(2, "0");
+    const g = Math.round(0xe0 - 0x40 * goldT).toString(16).padStart(2, "0");
+    const b = Math.round(0x66 - 0x66 * goldT).toString(16).padStart(2, "0");
+    damageNumbers.spawn(player.root.position, n, `#${r}${g}${b}`, n >= 4);
+    // Override the rendered text — `spawn` writes the number; we want the tag
+    // to read as "x4" not "4". Reach into the most recently spawned popup.
+    // (DamageNumbers doesn't expose this directly, so we use a small overload below.)
+    damageNumbers.relabelLast(`x${n}`);
   });
 
   // Boss kill-cam — when the boss dies, orbit its last position for 2.5s with
@@ -1300,6 +1352,7 @@ async function boot() {
     }
     damageFlashTimer = 0;
     bossPhaseFlashTimer = 0;
+    perfectDodgeFlashTimer = 0;
     pipeline.chromaticAberrationEnabled = false;
     pipeline.bloomWeight = 0.4;
     hud.clearRelicBadges();
@@ -1356,7 +1409,12 @@ async function boot() {
       e.knockback(dx / d, dz / d, 6);
       hits++;
     }
-    if (hits > 0) events.emit("COMBO_HIT", { hitNum: 1, count: hits });
+    if (hits > 0) {
+      events.emit("COMBO_HIT", { hitNum: hits, count: hits });
+      if (card.heavy) events.emit("HEAVY_HIT", {});
+    } else if (card.heavy) {
+      events.emit("HEAVY_MISS", {});
+    }
     // Surface a slam-shaped CARD_FX so main.ts's pooled card-fx layer can draw
     // the ground shockwave at the impact point.
     events.emit("CARD_FX", {
@@ -1733,11 +1791,16 @@ async function boot() {
       if (bossPhaseFlashTimer === 0) hud.setBanner(null);
     }
 
-    // Low-HP heartbeat — takes over from the tempo-zone tint when HP drops.
-    // Vignette priority: damage flash > low-HP heartbeat > tempo-zone tint.
+    // Vignette priority: perfect-dodge flash > damage flash > low-HP heartbeat >
+    // zone-transition flash > zone-ambient tint. Perfect-dodge is rarest and
+    // shortest, so it wins the cosmetic budget when it fires.
     const vc = pipeline.imageProcessing.vignetteColor;
     const hpRatio = Math.max(0, player.hp / player.stats.maxHp);
-    if (damageFlashTimer > 0) {
+    if (perfectDodgeFlashTimer > 0) {
+      perfectDodgeFlashTimer = Math.max(0, perfectDodgeFlashTimer - realDt);
+      const t = perfectDodgeFlashTimer / 0.22;
+      vc.r = 1; vc.g = 1; vc.b = 1; vc.a = 0.65 * t;
+    } else if (damageFlashTimer > 0) {
       damageFlashTimer = Math.max(0, damageFlashTimer - realDt);
       const t = damageFlashTimer / 0.35;
       vc.r = 1; vc.g = 0.05; vc.b = 0.05; vc.a = 0.85 * t;

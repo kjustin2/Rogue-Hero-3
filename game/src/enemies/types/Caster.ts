@@ -184,8 +184,12 @@ export class Caster extends Enemy {
     const dx = player.root.position.x - this.telegraphCenter.x;
     const dz = player.root.position.z - this.telegraphCenter.z;
     const r = this.telegraphRadius + player.stats.radius;
-    if (dx * dx + dz * dz <= r * r && !player.isDodging) {
-      events.emit("DAMAGE_TAKEN", { amount: 14, source: this.id });
+    if (dx * dx + dz * dz <= r * r) {
+      if (!player.isDodging) {
+        events.emit("DAMAGE_TAKEN", { amount: 14, source: this.id });
+      } else if (player.tryConsumePerfectDodge()) {
+        events.emit("PERFECT_DODGE", {});
+      }
     }
     if (this.telegraphMesh) this.telegraphMesh.isVisible = false;
   }

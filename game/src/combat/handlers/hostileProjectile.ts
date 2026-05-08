@@ -90,6 +90,8 @@ export class HostileProjectileSystem {
       if (dx * dx + dz * dz <= r * r) {
         if (!this.player.isDodging) {
           events.emit("DAMAGE_TAKEN", { amount: p.damage, source: "projectile" });
+        } else if (this.player.tryConsumePerfectDodge()) {
+          events.emit("PERFECT_DODGE", {});
         }
         consumed = true;
       }

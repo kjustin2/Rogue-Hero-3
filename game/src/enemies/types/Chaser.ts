@@ -144,8 +144,12 @@ export class Chaser extends Enemy {
         this.material.emissiveColor.set(0, 0, 0);
         if (this.telegraph) this.telegraph.isVisible = false;
         // Strike: if the player is still within contact range, deal damage.
-        if (distSq <= (touchDist + this.ATTACK_RADIUS) * (touchDist + this.ATTACK_RADIUS) && !player.isDodging) {
-          events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+        if (distSq <= (touchDist + this.ATTACK_RADIUS) * (touchDist + this.ATTACK_RADIUS)) {
+          if (!player.isDodging) {
+            events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+          } else if (player.tryConsumePerfectDodge()) {
+            events.emit("PERFECT_DODGE", {});
+          }
         }
         this.contactCooldown = 0.75;
         this.state = "recover";

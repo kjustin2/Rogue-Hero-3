@@ -128,8 +128,12 @@ export class Leaper extends Enemy {
         const ddx = player.root.position.x - this.root.position.x;
         const ddz = player.root.position.z - this.root.position.z;
         const reach = this.LEAP_AOE + player.stats.radius;
-        if (ddx * ddx + ddz * ddz <= reach * reach && !player.isDodging && !player.isAirborne()) {
-          events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+        if (ddx * ddx + ddz * ddz <= reach * reach && !player.isAirborne()) {
+          if (!player.isDodging) {
+            events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+          } else if (player.tryConsumePerfectDodge()) {
+            events.emit("PERFECT_DODGE", {});
+          }
         }
         this.mode = "recover";
         this.recoverTimer = this.RECOVER;

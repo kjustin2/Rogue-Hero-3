@@ -181,9 +181,13 @@ export class Elite extends Enemy {
       this.root.position.z += this.chargeDir.z * chargeSpeed * dt;
       // Contact damage
       const touchDist = this.def.radius + player.stats.radius;
-      if (distSq <= touchDist * touchDist && this.contactCooldown === 0 && !player.isDodging) {
-        events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
-        this.contactCooldown = 0.7;
+      if (distSq <= touchDist * touchDist && this.contactCooldown === 0) {
+        if (!player.isDodging) {
+          events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+          this.contactCooldown = 0.7;
+        } else if (player.tryConsumePerfectDodge()) {
+          events.emit("PERFECT_DODGE", {});
+        }
       }
       if (this.chargeActive <= 0) {
         this.state = "recover";
@@ -201,9 +205,13 @@ export class Elite extends Enemy {
       this.root.position.z += (dz / dist) * this.def.speed * dt;
     }
     const touchDist = this.def.radius + player.stats.radius;
-    if (distSq <= touchDist * touchDist && this.contactCooldown === 0 && !player.isDodging) {
-      events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
-      this.contactCooldown = 0.7;
+    if (distSq <= touchDist * touchDist && this.contactCooldown === 0) {
+      if (!player.isDodging) {
+        events.emit("DAMAGE_TAKEN", { amount: this.def.contactDamage, source: this.id });
+        this.contactCooldown = 0.7;
+      } else if (player.tryConsumePerfectDodge()) {
+        events.emit("PERFECT_DODGE", {});
+      }
     }
   }
 

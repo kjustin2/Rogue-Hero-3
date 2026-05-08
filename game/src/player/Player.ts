@@ -141,6 +141,12 @@ export class Player {
   dodgeCooldownTimer = 0;
   dodgeDir = new Vector3(0, 0, 1);
   facing = new Vector3(0, 0, 1);
+  /** Perfect-dodge window — first PERFECT_DODGE_WINDOW seconds of a dodge are
+   *  "perfect-frame", awarding the bonus tempo. Consumed once per dodge so an
+   *  enemy whose contact check passes every frame can't spam the event. Reset
+   *  on dodge start in PlayerController. */
+  perfectDodgeConsumed = false;
+  static readonly PERFECT_DODGE_WINDOW = 0.10;
   /** Last non-zero WASD movement direction (unit vector). Used by Phase Step
    *  so it blinks in the direction the player is actually traveling, not
    *  toward the cursor. */
@@ -479,6 +485,21 @@ export class Player {
   }
 
   /**
+   * Check (and consume) a perfect-dodge: returns true exactly once per dodge,
+   * but only if the elapsed dodge time is within the perfect-frame window.
+   * Damage sources call this when they would have hit but the player is
+   * dodging — emitting PERFECT_DODGE on a true return.
+   */
+  tryConsumePerfectDodge(): boolean {
+    if (this.perfectDodgeConsumed) return false;
+    if (!this.isDodging) return false;
+    const elapsed = this.stats.dodgeDuration - this.dodgeTimer;
+    if (elapsed >= Player.PERFECT_DODGE_WINDOW) return false;
+    this.perfectDodgeConsumed = true;
+    return true;
+  }
+
+  /**
    * Animate torso bob, sword swing, and dodge lean. Called once per frame from
    * PlayerController after the movement update. Inputs are the movement delta
    * for loco-bob tuning and the dodge flag for the body lean.
@@ -758,6 +779,7 @@ export class Player {
     this.dodgeTimer = 0;
     this.dodgeCooldownTimer = 0;
     this.dodgeDir.set(0, 0, 1);
+    this.perfectDodgeConsumed = false;
     this.facing.set(0, 0, 1);
     this.root.position.set(0, 0, 0);
     this.aimPivot.rotation.y = 0;

@@ -131,8 +131,12 @@ export class Lancer extends Enemy {
         const perpDistSq = perpX * perpX + perpZ * perpZ;
         const inLength = along >= 0 && along <= this.BEAM_LEN;
         const halfWidth = this.BEAM_W / 2 + player.stats.radius;
-        if (inLength && perpDistSq <= halfWidth * halfWidth && !player.isDodging) {
-          events.emit("DAMAGE_TAKEN", { amount: this.DAMAGE, source: this.id });
+        if (inLength && perpDistSq <= halfWidth * halfWidth) {
+          if (!player.isDodging) {
+            events.emit("DAMAGE_TAKEN", { amount: this.DAMAGE, source: this.id });
+          } else if (player.tryConsumePerfectDodge()) {
+            events.emit("PERFECT_DODGE", {});
+          }
         }
         this.mode = "recover";
         this.recoverTimer = this.RECOVER_DUR;

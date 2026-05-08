@@ -59,6 +59,11 @@ const NULL_HOOKS: ItemHooks = {
 
 export class CardCaster {
   private hooks: ItemHooks = NULL_HOOKS;
+  // Reused scratch buffers — castProjectile fires multiple times per second
+  // during sustained ranged play; allocating two new Vector3s per cast was
+  // showing up as GC pressure during heavy combat.
+  private dirBuf = new Vector3();
+  private spawnBuf = new Vector3();
 
   constructor(
     private player: Player,
@@ -158,7 +163,10 @@ export class CardCaster {
         out.push(e); hits++;
       }
     }
-    if (hits > 0) events.emit("COMBO_HIT", { hitNum: 1, count: hits });
+    if (hits > 0) events.emit("COMBO_HIT", { hitNum: hits, count: hits });
+    if (card.heavy) {
+      events.emit(hits > 0 ? "HEAVY_HIT" : "HEAVY_MISS", {});
+    }
     events.emit<CardArcFx>("CARD_FX", {
       kind: "arc",
       range: card.range,
@@ -170,17 +178,25 @@ export class CardCaster {
 
   private castProjectile(card: CardDef, dmg: number, aimPoint: Vector3 | null): Enemy[] {
     const origin = this.player.root.position;
-    let dir: Vector3;
     if (aimPoint) {
-      dir = new Vector3(aimPoint.x - origin.x, 0, aimPoint.z - origin.z);
+      this.dirBuf.set(aimPoint.x - origin.x, 0, aimPoint.z - origin.z);
     } else {
-      dir = new Vector3(this.player.facing.x, 0, this.player.facing.z);
+      this.dirBuf.set(this.player.facing.x, 0, this.player.facing.z);
     }
+    const dir = this.dirBuf;
     const len = Math.hypot(dir.x, dir.z);
     const offsetDist = 0.7;
-    const spawn = len > 1e-4
-      ? new Vector3(origin.x + (dir.x / len) * offsetDist, origin.y, origin.z + (dir.z / len) * offsetDist)
-      : origin;
+    let spawn: Vector3;
+    if (len > 1e-4) {
+      this.spawnBuf.set(
+        origin.x + (dir.x / len) * offsetDist,
+        origin.y,
+        origin.z + (dir.z / len) * offsetDist,
+      );
+      spawn = this.spawnBuf;
+    } else {
+      spawn = origin;
+    }
 
     if (card.chainCount && card.chainCount > 1) {
       // Instant-resolve chain: pick the closest enemy in cone, then jump up to
@@ -264,7 +280,7 @@ export class CardCaster {
       this.hooks.onEnemyHit(e, dmg, card);
       if (!e.alive) this.hooks.onKill(e, card);
     }
-    if (path.length > 0) events.emit("COMBO_HIT", { hitNum: 1, count: path.length });
+    if (path.length > 0) events.emit("COMBO_HIT", { hitNum: path.length, count: path.length });
 
     events.emit<CardArcFx>("CARD_FX", {
       kind: "chain", range: maxRange, x: origin.x, z: origin.z, fx: dirNx, fz: dirNz,
@@ -316,7 +332,12 @@ export class CardCaster {
         }
       }
     }
-    if (hits > 0) events.emit("COMBO_HIT", { hitNum: 1, count: hits });
+    if (hits > 0) {
+      events.emit("COMBO_HIT", { hitNum: hits, count: hits });
+      if (card.heavy) events.emit("HEAVY_HIT", {});
+    } else if (card.heavy && !card.iframeOnly) {
+      events.emit("HEAVY_MISS", {});
+    }
 
     events.emit<CardArcFx>("CARD_FX", {
       kind: "dash", range: dist, x: startX, z: startZ, fx: dir.x, fz: dir.z,
@@ -358,7 +379,12 @@ export class CardCaster {
       if (!e.alive) this.hooks.onKill(e, card);
       out.push(e); hits++;
     }
-    if (hits > 0) events.emit("COMBO_HIT", { hitNum: 1, count: hits });
+    if (hits > 0) {
+      events.emit("COMBO_HIT", { hitNum: hits, count: hits });
+      if (card.heavy) events.emit("HEAVY_HIT", {});
+    } else if (card.heavy) {
+      events.emit("HEAVY_MISS", {});
+    }
     events.emit<CardArcFx>("CARD_FX", {
       kind: "aoe", range: radius, x: px, z: pz, fx: 0, fz: 1,
     });

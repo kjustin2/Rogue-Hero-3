@@ -103,6 +103,11 @@ export class PlayerController {
       p.dodgeDir.copyFrom(this.dirBuf);
       p.isDodging = true;
       p.dodgeTimer = p.stats.dodgeDuration;
+      p.perfectDodgeConsumed = false;
+      // Tempo system listens for DODGE — small drain (or no-op in COLD) so each
+      // dodge has a tempo cost. PERFECT_DODGE fires later if a contact check
+      // lands inside the perfect-frame window.
+      events.emit("DODGE", {});
     }
 
     // Compute movement vector. Tempo multiplier shapes everything — at HOT/CRITICAL

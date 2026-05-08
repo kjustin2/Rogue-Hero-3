@@ -215,6 +215,8 @@ export class CardRewardPicker {
   private startAnimations(): void {
     this.stopAnimations();
     const observer = this.scene.onBeforeRenderObservable.add(() => {
+      // Defensive — close() removes the observer but a queued tick may fire once.
+      if (!this.isOpen) return;
       const now = performance.now();
       for (const a of this.animations) {
         const elapsed = now - a.startedAt - a.delayMs;
@@ -255,6 +257,11 @@ export class CardRewardPicker {
     this.isOpen = false;
     this.container.isVisible = false;
     this.stopAnimations();
+    // Dispose card controls so their pointer observers are released — prevents
+    // phantom hover handlers from accumulating across multiple boss rewards.
+    for (const c of this.cards) c.dispose();
+    this.cards.length = 0;
+    this.animations.length = 0;
     const r = this.resolve;
     this.resolve = null;
     if (r) r(picked);

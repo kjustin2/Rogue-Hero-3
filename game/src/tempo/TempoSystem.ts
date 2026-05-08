@@ -28,6 +28,11 @@ export const CRASH_READY_THRESHOLD = 85;
 /** Crash AOE radius in meters. Used both by the gameplay damage check and the
  *  HUD's ground telegraph so the visible ring matches the kill zone exactly. */
 export const CRASH_RADIUS = 6;
+/** Tempo zone boundaries — value >= TEMPO_HOT is the "hot" zone, >= TEMPO_CRITICAL
+ *  is "critical". Reused by FX systems so tempo zone visuals/audio share thresholds
+ *  with stateName(). Adjusting these here updates every consumer in lockstep. */
+export const TEMPO_HOT = 70;
+export const TEMPO_CRITICAL = 90;
 
 export class TempoSystem {
   value = 50;
@@ -196,7 +201,17 @@ export class TempoSystem {
   /** Internal flag — see setValue() for usage. */
   private _allowingManualCrash = false;
 
-  onComboHit(hitNum: number): void { this.add(hitNum === 3 ? 15 : 4); }
+  onComboHit(hitNum: number): void {
+    // Tempo gain bands by combo size — single-target hits give a small bump,
+    // multi-hit swings (Cleave/Whirlwind/Chain Lightning) award progressively
+    // more so chained crowd-clears actually feel rewarded. Capped at 16 so a
+    // pathological 30-hit chain can't gift 100% tempo in a single cast.
+    const n = Math.max(1, Math.min(16, hitNum));
+    if (n >= 5) this.add(20);
+    else if (n >= 3) this.add(15);
+    else if (n >= 2) this.add(8);
+    else this.add(4);
+  }
   onKill(): void { this.add(10); }
   onDodge(): void {
     if (this.classPassives?.fortifiedDodge) return;

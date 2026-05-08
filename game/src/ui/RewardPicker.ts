@@ -261,16 +261,14 @@ export class RewardPicker {
   private startAnimations(): void {
     this.stopAnimations();
     const observer = this.scene.onBeforeRenderObservable.add(() => {
+      // Defensive — close() removes the observer, but a queued tick scheduled
+      // before remove still fires once. Bail so we don't tween hidden cards.
+      if (!this.isOpen) return;
       const now = performance.now();
-      let anyEntering = false;
       for (const a of this.animations) {
         const elapsed = now - a.startedAt - a.delayMs;
-        if (elapsed < 0) {
-          anyEntering = true;
-          continue;
-        }
+        if (elapsed < 0) continue;
         if (elapsed < RewardPicker.ENTER_DUR_MS) {
-          anyEntering = true;
           const t = elapsed / RewardPicker.ENTER_DUR_MS;
           // Cubic ease-out: 1 - (1-t)^3.
           const e = 1 - (1 - t) * (1 - t) * (1 - t);
@@ -294,9 +292,6 @@ export class RewardPicker {
           a.card.scaleY = a.hover;
         }
       }
-      // Observer runs continuously while the picker is up so hover tweens are
-      // always responsive — cost is negligible (3 cards, simple math).
-      void anyEntering;
     });
     this.animObserver = {
       remove: () => this.scene.onBeforeRenderObservable.remove(observer),
@@ -315,6 +310,12 @@ export class RewardPicker {
     this.isOpen = false;
     this.container.isVisible = false;
     this.stopAnimations();
+    // Dispose card controls — Babylon GUI controls auto-clean their pointer
+    // observables on dispose, so we don't accumulate phantom hover handlers
+    // across multiple room rewards. The next open() rebuilds the cards fresh.
+    for (const c of this.cards) c.dispose();
+    this.cards.length = 0;
+    this.animations.length = 0;
     const r = this.resolve;
     this.resolve = null;
     if (r) r(picked);

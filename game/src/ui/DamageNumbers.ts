@@ -123,6 +123,20 @@ export class DamageNumbers {
     this.spawn(worldPos, amount, "#ff5555", false);
   }
 
+  /**
+   * Override the displayed text on the most-recently-spawned popup. Used by
+   * the COMBO_HIT handler to retag the numeric "4" as "x4" without inflating
+   * the spawn() API. Returns silently if no popup exists yet.
+   */
+  relabelLast(label: string): void {
+    let newest: PooledNumber | null = null;
+    for (const n of this.pool) {
+      if (!n.active) continue;
+      if (!newest || n.ttl > newest.ttl) newest = n;
+    }
+    if (newest) newest.text.text = label;
+  }
+
   update(dt: number): void {
     for (const n of this.pool) {
       if (!n.active) continue;

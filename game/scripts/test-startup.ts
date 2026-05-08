@@ -41,6 +41,7 @@ import { ItemManager } from "../src/items/ItemManager";
 import { BLADE } from "../src/characters/Blade";
 import { GameState } from "../src/state/GameState";
 import { VERTICAL_SLICE_ROOMS } from "../src/run/RunManager";
+import { SfxManager } from "../src/audio/SfxManager";
 
 let failures = 0;
 function check(cond: unknown, label: string): void {
@@ -176,6 +177,15 @@ for (let i = 0; i < 120; i++) {
 }
 check(enemies.enemies.length === 0, "all enemies disposed after dissolve");
 check(roomClearedCount === 1, "ROOM_CLEARED fired exactly once after wipe");
+
+// ---------- SfxManager headless probe ----------
+// In Node there's no AudioContext, so the manager should construct as a
+// tombstone, register no listeners, and dispose cleanly.
+const sfx = new SfxManager();
+check(!sfx.isAvailable(), "SfxManager reports unavailable in headless");
+sfx.resume(); // no-op; should not throw
+sfx.setMasterVolume(0.5); // no-op
+sfx.dispose();
 
 // ---------- Tear down ----------
 arena.dispose();
