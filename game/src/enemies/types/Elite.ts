@@ -176,7 +176,7 @@ export class Elite extends Enemy {
     if (this.state === "attack") {
       this.chargeActive -= dt;
       // Charge forward fast
-      const chargeSpeed = this.def.speed * 3.2;
+      const chargeSpeed = this.def.speed * 3.2 * this.speedScale();
       this.root.position.x += this.chargeDir.x * chargeSpeed * dt;
       this.root.position.z += this.chargeDir.z * chargeSpeed * dt;
       // Contact damage
@@ -201,8 +201,8 @@ export class Elite extends Enemy {
     this.state = "chase";
     const dist = Math.sqrt(distSq);
     if (dist > 1e-4) {
-      this.root.position.x += (dx / dist) * this.def.speed * dt;
-      this.root.position.z += (dz / dist) * this.def.speed * dt;
+      this.root.position.x += (dx / dist) * this.def.speed * this.speedScale() * dt;
+      this.root.position.z += (dz / dist) * this.def.speed * this.speedScale() * dt;
     }
     const touchDist = this.def.radius + player.stats.radius;
     if (distSq <= touchDist * touchDist && this.contactCooldown === 0) {

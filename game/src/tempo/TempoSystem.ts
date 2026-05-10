@@ -72,7 +72,6 @@ export class TempoSystem {
     events.on("HEAVY_HIT", () => this.onHeavyHit());
     events.on("HEAVY_MISS", () => this.onHeavyMiss());
     events.on("DAMAGE_TAKEN", () => this.onDamageTaken());
-    events.on("DRAIN", () => this.onDrained());
   }
 
   setClassPassives(passives: ClassPassives | null): void {
@@ -229,7 +228,6 @@ export class TempoSystem {
   onDamageTaken(): void {
     if (this.classPassives?.damageTempoBuild) this.add(this.classPassives.damageTempoBuild);
   }
-  onDrained(): void { this.add(-20); }
 
   private _triggerManualCrash(): void {
     if (this.isCrashed) return;

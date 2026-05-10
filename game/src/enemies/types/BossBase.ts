@@ -9,6 +9,22 @@ import { Telegraph } from "../../fx/Telegraph";
 import type { EnemyKind } from "../EnemyManager";
 
 /**
+ * Helper: sample the player's dominant archetype from the deck collection.
+ * Read once per fight (first phase tick) so the boss can bias its AI.
+ *
+ * Late-bound import — DeckManager + CardDefinitions live outside the enemies
+ * module tree, so we resolve via a globally-set accessor wired in main.ts.
+ * This avoids creating a hard dependency from enemies → deck.
+ */
+let _archAccessor: (() => "fire" | "frost" | "storm" | null) | null = null;
+export function setBossArchAccessor(fn: () => "fire" | "frost" | "storm" | null): void {
+  _archAccessor = fn;
+}
+function sampleDominantArchetype(): "fire" | "frost" | "storm" | null {
+  return _archAccessor ? _archAccessor() : null;
+}
+
+/**
  * Payload emitted on BOSS_PHASE. Adds per-boss enrage line + minion composition
  * so the main.ts listeners (banner + spawn) don't have to special-case bosses.
  */
@@ -20,16 +36,25 @@ export interface BossPhasePayload {
   spawnComposition: EnemyKind[];
 }
 
+/** Deferred strike used by every boss to resolve a windup at a future tick. */
+interface PendingStrike {
+  ttl: number;
+  resolve: (player: Player) => void;
+}
+
 /**
  * Shared boss machinery: intro tween, phase-threshold transitions, contact
- * cooldown helper. Subclasses define their own attack FSM in `phaseAttackTick`
- * and override the per-phase config (`phaseHpThresholds`, `enrageLines`,
- * `spawnComposition`).
+ * cooldown helper, deferred-strike queue, hyperarmor flag.
+ *
+ * Subclasses define their own attack FSM in `phaseAttackTick` and override the
+ * per-phase config (`phaseHpThresholds`, `enrageLines`, `spawnComposition`).
  *
  * Why a base class: every boss currently inherits `BossBrawler` to reuse the
  * dash FSM, which means they all play the same fight. Pulling the cross-cutting
- * pieces (intro, healthbar plumbing, phase events) up here lets each boss own
- * its own combat verbs without dragging the brawler's FSM along.
+ * pieces (intro, healthbar plumbing, phase events, pending strikes) up here
+ * lets each boss own its own combat verbs without dragging the brawler's FSM
+ * along — and lets the new four-phase content (Earthsplitter, Mirror Spire,
+ * Magma Mines) reuse one queue instead of redefining it per subclass.
  */
 export abstract class BossBase extends Enemy {
   /** Intro animation — body lerps scale.y from 0.4 → 1.0 over `introDuration`. */
@@ -40,9 +65,9 @@ export abstract class BossBase extends Enemy {
   /** Optional subtitle line. Subclass override; empty = no subtitle row. */
   introSubtitle = "";
   /**
-   * HP-fraction thresholds for phase transitions, descending. e.g. `[0.66, 0.33]`
-   * → phase 2 fires at 66% HP, phase 3 at 33% HP. Each fires once. The
-   * matching `enrageLines` / `spawnComposition` entry is read at index
+   * HP-fraction thresholds for phase transitions, descending. e.g. `[0.75, 0.50, 0.25]`
+   * → phase 2 fires at 75% HP, phase 3 at 50%, phase 4 at 25%. Each fires once.
+   * The matching `enrageLines` / `spawnComposition` entry is read at index
    * `phase - 2`.
    */
   protected phaseHpThresholds: number[] = [0.5];
@@ -56,6 +81,29 @@ export abstract class BossBase extends Enemy {
   protected contactCooldown = 0;
   /** Shared telegraph library for boss attacks (slam ring, sky-lance line, geyser disc, beam cone). */
   protected telegraph: Telegraph;
+  /**
+   * When true the boss ignores knockback impulses. Set during signature
+   * windups (Brawler's Earthsplitter cock, Colossus's Tectonic Slam) so the
+   * player can't stagger them out of a committed attack — preserves the
+   * "this is happening, dodge it" pressure the plan calls for.
+   */
+  protected hyperarmorActive = false;
+  /** Deferred strikes — drained each frame via `tickPending`. */
+  protected pending: PendingStrike[] = [];
+  /**
+   * Total seconds the player has been engaged with this boss. Drives the
+   * Enrage scaling — past 90 s the boss attacks faster + hits harder, capped
+   * at +60% over a 90 s ramp. Subclasses read `enrageMultiplier()` to scale
+   * windups and contact damage; reading is allocation-free.
+   */
+  protected fightElapsedSec = 0;
+  /**
+   * Dominant player archetype, sampled at first phase tick. Used by the
+   * adaptive AI hooks below — the boss bias their attack mix slightly to
+   * counter the player's dominant build. Set once and stable for the fight.
+   */
+  protected dominantArchetype: "fire" | "frost" | "storm" | null = null;
+  private dominantSampled = false;
 
   constructor(
     scene: Scene,
@@ -107,8 +155,24 @@ export abstract class BossBase extends Enemy {
     }
     this.tickCommon(dt);
     if (this.contactCooldown > 0) this.contactCooldown = Math.max(0, this.contactCooldown - dt);
+    this.fightElapsedSec += dt;
+    if (!this.dominantSampled) {
+      this.dominantSampled = true;
+      this.dominantArchetype = sampleDominantArchetype();
+    }
     this.checkPhaseTransitions();
     this.phaseAttackTick(dt, player);
+  }
+
+  /**
+   * Enrage scaling — kicks in past 90 s of engagement. Linear ramp +0.05/s
+   * up to +60% over the next 12 s, then capped. Subclasses multiply attack
+   * windup decay and contact damage by this value to make late fights
+   * pressure-cook the player.
+   */
+  protected enrageMultiplier(): number {
+    if (this.fightElapsedSec < 90) return 1.0;
+    return Math.min(1.6, 1.0 + (this.fightElapsedSec - 90) * 0.05);
   }
 
   protected checkPhaseTransitions(): void {
@@ -146,5 +210,33 @@ export abstract class BossBase extends Enemy {
     } else if (player.tryConsumePerfectDodge()) {
       events.emit("PERFECT_DODGE", {});
     }
+  }
+
+  /** Queue a deferred strike — `resolve` runs after `delaySec` with the live player ref. */
+  protected queueStrike(delaySec: number, resolve: (player: Player) => void): void {
+    this.pending.push({ ttl: delaySec, resolve });
+  }
+
+  /** Drain pending strikes; call once per frame from `phaseAttackTick`. */
+  protected tickPending(dt: number, player: Player): void {
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const s = this.pending[i];
+      s.ttl -= dt;
+      if (s.ttl <= 0) {
+        s.resolve(player);
+        this.pending.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * Honor hyperarmor — bosses mid-signature-windup can't be punted around the
+   * arena, otherwise a charged Crashing Blow could trivially break a committed
+   * attack and the windup telegraph would lie to the player. Subclasses set
+   * `hyperarmorActive = true` during the relevant windup state.
+   */
+  override knockback(dx: number, dz: number, force: number): void {
+    if (this.hyperarmorActive) return;
+    super.knockback(dx, dz, force);
   }
 }

@@ -19,8 +19,9 @@ import { createFollowCamera } from "./scene/FollowCamera";
 import { InputController } from "./input/InputController";
 import { Player } from "./player/Player";
 import { PlayerController } from "./player/PlayerController";
-import { EnemyManager } from "./enemies/EnemyManager";
+import { EnemyManager, EnemyKind } from "./enemies/EnemyManager";
 import type { BossPhasePayload } from "./enemies/types/BossBase";
+import { setBossArchAccessor } from "./enemies/types/BossBase";
 import { CombatManager } from "./combat/CombatManager";
 import { Hud } from "./ui/Hud";
 import { TempoSystem } from "./tempo/TempoSystem";
@@ -28,8 +29,22 @@ import { DeckManager } from "./deck/DeckManager";
 import { ProjectileSystem } from "./combat/handlers/projectile";
 import { HostileProjectileSystem } from "./combat/handlers/hostileProjectile";
 import { CardCaster, CardArcFx } from "./combat/CardCaster";
-import { UltimateSystem } from "./combat/UltimateSystem";
+import { HazardZones } from "./combat/HazardZones";
 import { validateBabylonRuntime } from "./engine/BabylonRuntimeCheck";
+import { generateRunMap } from "./run/MapGenerator";
+import { RunNode } from "./run/RunMap";
+import { DoorChoiceHud } from "./ui/DoorChoiceHud";
+import { OptionPicker } from "./ui/OptionPicker";
+import { setActiveAnomaly, isAnomaly } from "./run/Anomalies";
+import { SHRINE_DEFS, ShrineId, rollShrineOptions } from "./run/Shrines";
+import { rollShopOffers, ShopOffer } from "./run/Shops";
+import { CardUpgrades } from "./deck/CardUpgrades";
+import { ArchetypeSynergy } from "./items/ArchetypeSynergy";
+import { ComboChains } from "./combat/ComboChains";
+import { ComboMeter } from "./combat/ComboMeter";
+import { PerfectClear } from "./run/PerfectClear";
+import { addShards, markFlawless, shardBuffsFor } from "./meta/MetaProgression";
+import { DamageLog, formatBreakdown } from "./combat/DamageLog";
 import { events } from "./engine/EventBus";
 import { ItemManager } from "./items/ItemManager";
 import { ItemDefinitions, ItemDef, ALL_ITEM_IDS } from "./items/ItemDefinitions";
@@ -37,7 +52,7 @@ import { RewardPicker } from "./ui/RewardPicker";
 import { CardRewardPicker } from "./ui/CardRewardPicker";
 import { HandPicker } from "./ui/HandPicker";
 import { CardDef, CardDefinitions, ALL_CARD_IDS } from "./deck/CardDefinitions";
-import { RunManager, VERTICAL_SLICE_ROOMS } from "./run/RunManager";
+import { RunManager, VERTICAL_SLICE_ROOMS, RoomDescriptor } from "./run/RunManager";
 import { BiomeHazardManager, Biome } from "./run/BiomeHazardManager";
 import { GameState } from "./state/GameState";
 import { BLADE } from "./characters/Blade";
@@ -106,27 +121,45 @@ async function boot() {
   const hostileProjectiles = new HostileProjectileSystem(scene, player);
   // Shared telegraph library for boss + enemy attacks. Pre-allocates pooled
   // shapes (lines, rings, discs, cones); per-frame `update` advances active
-  // slots, `clearAll` is wired to ZONE_TRANSITION so leftover telegraphs
-  // don't persist into the next room.
+  // slots. Active telegraphs clear implicitly on room transition because
+  // EnemyManager.clear() retires every enemy that owns one.
   const telegraph = new Telegraph(scene);
   const enemies = new EnemyManager(scene, shadow, hostileProjectiles, telegraph);
 
-  // Run sequence
+  // Run sequence — branching map mode. The RunMap graph generates 13 layers
+  // (start → 3 acts × 3 non-boss layers + boss) with deterministic per-seed
+  // node placement. Linear-mode `loadRoom(idx)` remains supported for tests
+  // and dev shortcuts; main flow drives `loadNode(node)`.
   const run = new RunManager(scene, shadow, enemies, VERTICAL_SLICE_ROOMS);
-  const arena0 = run.loadRoom(0);
+  let runMap = generateRunMap((Date.now() & 0xffffffff) >>> 0);
+  run.setMap(runMap);
+  const startNode0 = runMap.byId.get(runMap.startId)!;
+  const arena0 = run.loadNode(startNode0);
   input.setFloorReference(arena0.floor);
   enemies.setPillars(arena0.pillars);
+  const doorChoiceHud = new DoorChoiceHud(scene);
+  // The start lobby has no enemies — pre-unlock the doors so the player can
+  // immediately pick their first room. Banner reminds them what they're
+  // looking at. ROOM_CLEARED won't fire here (no enemies to kill), so this
+  // boot-time wiring is the only path that opens the start-lobby doors.
+  function openLobbyDoorsForStart(): void {
+    const choices = run.currentChoices();
+    const ar = run.arena;
+    if (!ar) return;
+    for (let i = 0; i < ar.doors.length; i++) {
+      ar.doors[i].setLocked(false);
+      ar.doorPasses[i].active = true;
+    }
+    if (run.map && choices.length === ar.doors.length) {
+      const xCenters = ar.doors.map((d) => (d.xMin + d.xMax) / 2);
+      doorChoiceHud.setChoices(xCenters, choices, ar.doors[0].zPlane);
+    }
+  }
 
   // Tempo first — PlayerController reads tempo.speedMultiplier() each frame
   // so we need it constructed before the controller.
   const tempo = new TempoSystem();
   tempo.setClassPassives(BLADE.passives);
-
-  // Ultimate meter — charges from combat events. Cast via R key (only in
-  // playing phase; R is also rebound to "restart" while dead/victory). The
-  // cast itself resolves below in the input handler with a radial AoE +
-  // shock-ring burst + camera shake.
-  const ultimate = new UltimateSystem();
 
   // Per-biome ambient hazards — falling debris (Act 1) / lightning strikes
   // (Act 2) / magma geysers (Act 3). Active in normal rooms; muted in boss
@@ -161,13 +194,78 @@ async function boot() {
   };
 
   const deck = new DeckManager(BLADE.startingDeck, 0xc0ffee);
+  // Archetype synergy — recomputed when the deck collection changes; emits
+  // ARCHETYPE_TIER_CHANGED for downstream listeners (HUD chip, passive hooks).
+  const archSynergy = new ArchetypeSynergy(deck);
+  archSynergy.recompute();
+  // Bridge the deck → boss adaptive-AI sampling. Bosses sample once per fight
+  // to bias their attack mix against the player's dominant archetype.
+  setBossArchAccessor((): "fire" | "frost" | "storm" | null => {
+    const counts: Record<"fire" | "frost" | "storm", number> = { fire: 0, frost: 0, storm: 0 };
+    for (const id of deck.collection) {
+      const def = CardDefinitions[id];
+      if (def?.archetype) counts[def.archetype]++;
+    }
+    let best: "fire" | "frost" | "storm" | null = null;
+    let bestN = 0;
+    for (const a of ["fire", "frost", "storm"] as const) {
+      if (counts[a] > bestN) { bestN = counts[a]; best = a; }
+    }
+    return best;
+  });
   const projectiles = new ProjectileSystem(scene, enemies);
+  // Hazard zones for player AoE patches — Mine Field, Frost Field, Sundered
+  // trail, Phantom Decoy, Fire Pillars. Pooled so per-frame spawns don't
+  // allocate. Reset on room load alongside projectiles below.
+  const hazards = new HazardZones(scene, enemies, telegraph);
+  hazards.setPlayer(player);
   const caster = new CardCaster(player, enemies, tempo, projectiles);
+  caster.setHazards(hazards);
+  // Run-scoped card upgrade + mutator overrides. Composed at cast time inside
+  // CardCaster.cast() so neither the deck nor the picker UIs need to know
+  // about the override layer.
+  const cardUpgrades = new CardUpgrades();
+  caster.setUpgrades(cardUpgrades);
+  // Combo chain detector — listens to CARD_PLAYED and emits CARD_COMBO when
+  // recognised pairs land within 1.5 s. The constructor self-subscribes; the
+  // instance lives for the program lifetime, so no local binding is needed.
+  new ComboChains();
+  // No-hit combo meter — separate from the ComboChains pair detector. Counts
+  // consecutive enemy hits without taking damage; tiers up the post-fx amp.
+  const comboMeter = new ComboMeter();
+  // Perfect-clear flag tracker — records noHit / noCardCast / under30s flags
+  // per room. Award is computed and shards added on ROOM_CLEARED.
+  const perfectClear = new PerfectClear();
+  events.on("ROOM_CLEARED", () => {
+    const { flags, shards } = perfectClear.evaluate();
+    if (shards > 0) {
+      gs.shards += shards;
+      hud.setBanner(`+${shards} shard${shards > 1 ? "s" : ""}: ${flags.join(", ")}`);
+    }
+  });
+  // Post-fx tier amp — listens to COMBO_TIER_CHANGED and escalates bloom +
+  // saturation. Releases on combo break (tier=0).
+  events.on<{ tier: number; dir: number }>("COMBO_TIER_CHANGED", ({ tier }) => {
+    // Base values: bloom 0.4, saturation 0, contrast 1.05. Amp per tier.
+    const tBloom = [0.4, 0.5, 0.62, 0.78][tier] ?? 0.4;
+    const tSat = [0, 8, 18, 28][tier] ?? 0;
+    pipeline.bloomWeight = tBloom;
+    if (pipeline.imageProcessing?.colorCurves) {
+      pipeline.imageProcessing.colorCurves.globalSaturation = tSat;
+    }
+  });
+  // Damage log — captures per-card damage attribution for the boss-death
+  // breakdown banner. Forwarded from CardCaster's onEnemyHit hook so it sees
+  // the live card that landed each hit.
+  const damageLog = new DamageLog();
   caster.setItemHooks({
     cardCostOverride: (card) => items.cardCostOverride(card),
     damageMultiplier: (card) => items.damageMultiplier(card),
     onCardCast: (card, hits) => items.onCardCast(card, hits),
-    onEnemyHit: (enemy, dmg, card) => items.onEnemyHit(enemy, dmg, card),
+    onEnemyHit: (enemy, dmg, card) => {
+      items.onEnemyHit(enemy, dmg, card);
+      damageLog.record(enemy, dmg, card);
+    },
     onKill: (enemy, card) => items.onKill(enemy, card),
   });
   // Frozen-enemy accessor for Frost Chord — the item lives in items/, but the
@@ -244,6 +342,11 @@ async function boot() {
   const rewardPicker = new RewardPicker(scene);
   const cardRewardPicker = new CardRewardPicker(scene);
   const handPicker = new HandPicker(scene);
+  // Generic option pickers for the new room kinds and pre-boss curse picker.
+  // Each one owns its own ADT so they don't clash with the reward stack.
+  const shrinePicker = new OptionPicker<ShrineId>(scene, "Choose a Shrine", "shrineUI");
+  const shopPicker = new OptionPicker<ShopOffer | null>(scene, "Wandering Vendor", "shopUI");
+  const cursePicker = new OptionPicker<string | null>(scene, "Choose a Curse", "curseUI");
   const hitFx = new HitParticles(scene);
   // Now that outline and hitFx exist, wire the EnemyManager lifecycle hooks.
   // onSpawn paints a default warm outline on every body part; onDispose removes
@@ -548,9 +651,42 @@ async function boot() {
   // Banner clears itself when ROOM_CLEARED fires shortly after (or after a
   // hard timeout in case ROOM_CLEARED is delayed).
   let bossDefeatedBannerTimer = 0;
-  events.on<{ bossId: string; name: string; pos: Vector3 }>("BOSS_DEFEATED", ({ name }) => {
+  events.on<{ bossId: string; name: string; pos: Vector3 }>("BOSS_DEFEATED", ({ bossId, name }) => {
     hud.setBanner(`${name} — DEFEATED`);
     bossDefeatedBannerTimer = 2.6;
+    items.resetBossKillCount();
+    // Restore HP if Frail curse was active.
+    if (gs.bossCurseId === "half_hp" && gs.preBossMaxHp > 0) {
+      player.stats.maxHp = gs.preBossMaxHp;
+      gs.preBossMaxHp = 0;
+    }
+    // Grant +1 reward roll if a curse was taken (consumed by next openCardRewardPicker via gs.bossCurseRewardBonus).
+    if (gs.bossCurseId !== null) {
+      gs.bossCurseRewardBonus = true;
+    }
+    gs.bossCurseId = null;
+    // Hero unlock conditions — first kill of each boss unlocks a hero.
+    if (bossId.startsWith("e_boss_brawler")) unlockHero("stalker");
+    else if (bossId.startsWith("e_boss_spire_caster")) unlockHero("sparkmage");
+    else if (bossId.startsWith("e_boss_colossus")) unlockHero("bulwark");
+    // Flawless flag — if no DAMAGE_TAKEN fired during this fight (which we can
+    // only proxy via the per-room PerfectClear noHit flag, since the room IS
+    // the boss fight in this game), mark the boss flawless for cosmetic skin.
+    if (perfectClear.noHit) {
+      const baseId = bossId.replace(/^e_/, "").replace(/_\d+$/, "");
+      markFlawless(baseId);
+    }
+    // Shard reward — per-boss bonus on top of perfect-clear shards.
+    addShards(1);
+    gs.shards += 1;
+    // Damage breakdown — last 5 s of attribution; flashes after the defeat
+    // banner. Auto-clears via bossDefeatedBannerTimer.
+    const breakdown = formatBreakdown(damageLog.recentByCard(5000));
+    setTimeout(() => {
+      if (gs.phase === "playing" || gs.phase === "door_open") {
+        hud.setBanner(breakdown);
+      }
+    }, 1400);
   });
 
   // Kill-streak named banners — Hud.registerKill emits KILL_STREAK on threshold
@@ -561,6 +697,23 @@ async function boot() {
     hud.setBanner(`${label} — ×${count}`);
     killStreakBannerTimer = 1.4;
     cam.shake(0.08, 0.25);
+  });
+
+  // Twin Spawn anomaly — when an enemy dies, 25% chance to echo a low-HP
+  // duplicate at the death position. Skips bosses (a low-HP boss clone makes
+  // no sense and re-fires BOSS_INTRO_START) and skips twins (no recursion).
+  events.on<{ enemyId: string }>("KILL", ({ enemyId }) => {
+    if (!isAnomaly("twin_spawn")) return;
+    const dying = enemies.enemies.find((e) => e.id === enemyId);
+    if (!dying) return;
+    if (dying.def.name.startsWith("boss_")) return;
+    if (dying.isTwin) return;
+    if (Math.random() >= 0.25) return;
+    const spawnPos = dying.root.position.clone();
+    spawnPos.y = 0;
+    const twin = enemies.spawn(dying.def.name as EnemyKind, spawnPos);
+    twin.isTwin = true;
+    twin.hp = Math.max(1, Math.floor(twin.def.hp * 0.25));
   });
 
   // Boss kill-cam — when the boss dies, orbit its last position for 2.5s with
@@ -722,50 +875,6 @@ async function boot() {
     r.maxRadius = maxRadius;
     r.active = true;
     r.mesh.setEnabled(true);
-  }
-
-  /**
-   * Player ultimate cast — radial AoE around the player. Damages every alive
-   * enemy within ULTIMATE_RADIUS, spawns three staggered shock rings (gold
-   * tint), heavy camera shake, and a chromatic-aberration burst. Bound to
-   * the R key (only in `playing` phase). The meter is consumed via
-   * `ultimate.consume()`; if the meter wasn't full the call is a no-op.
-   */
-  const ULTIMATE_RADIUS = 12;
-  const ULTIMATE_DAMAGE = 60;
-  function tryCastUltimate(): void {
-    if (!ultimate.consume()) return;
-    const px = player.root.position.x;
-    const pz = player.root.position.z;
-    // Damage all alive enemies inside the radius. Knockback radiates outward
-    // so the visual + impact compose; bosses get fractional knockback inside
-    // Enemy.knockback so they don't slide across the arena.
-    const r2 = ULTIMATE_RADIUS * ULTIMATE_RADIUS;
-    let hits = 0;
-    for (const e of enemies.enemies) {
-      if (!e.alive) continue;
-      const dx = e.root.position.x - px;
-      const dz = e.root.position.z - pz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 > r2) continue;
-      e.takeDamage(ULTIMATE_DAMAGE);
-      const len = Math.max(1e-4, Math.sqrt(d2));
-      e.knockback(dx / len, dz / len, 8);
-      hits++;
-    }
-    // Visual + audio swell — three staggered rings, large flare, screen shake.
-    spawnShockRing(ULTIMATE_RADIUS);
-    defer(() => spawnShockRing(ULTIMATE_RADIUS * 0.75), 80);
-    defer(() => spawnShockRing(ULTIMATE_RADIUS * 0.55), 170);
-    cam.shake(0.32, 0.85);
-    cam.setFovTarget(0.78, 4);
-    defer(() => cam.setFovTarget(null, 2), 700);
-    hitFx.flare(player.root.position, [1.0, 0.85, 0.25], 6.0, 0.7);
-    evScratch.set(px, 0.5, pz);
-    hitFx.burst(evScratch, 64, [1.0, 0.85, 0.35], 1.4);
-    // Reuse HEAVY_HIT for the audio stinger; SfxManager already handles it.
-    events.emit("HEAVY_HIT", { x: px, z: pz });
-    events.emit("ULTIMATE_CAST", { hits });
   }
 
   function updateShockRings(dt: number): void {
@@ -1202,13 +1311,21 @@ async function boot() {
   // already cools the light, and a dedicated "spire" grading would risk
   // introducing more color drift than it'd add). Once a Spire/Magma preset
   // is added to ColorGrading.ts they slot in here.
-  function presetForRoom(idx: number): GradingPreset {
-    const desc = run.rooms[idx];
+  /** Resolve the active room descriptor for the current load — map or linear. */
+  function currentRoomDescriptor(): RoomDescriptor | undefined {
+    if (run.map) {
+      const node = run.map.byId.get(run.map.currentId);
+      return node?.descriptor ?? undefined;
+    }
+    return run.rooms[gs.roomIndex];
+  }
+  function presetForRoom(_idx: number): GradingPreset {
+    const desc = currentRoomDescriptor();
     if (desc?.isBoss) return "pit";
     return "verdant";
   }
-  function isBossRoom(idx: number): boolean {
-    return run.rooms[idx]?.isBoss === true;
+  function isBossRoom(_idx: number): boolean {
+    return currentRoomDescriptor()?.isBoss === true;
   }
   applyGradingPreset(pipeline, presetForRoom(0));
   applyBossLighting(sceneBundle, isBossRoom(0));
@@ -1235,11 +1352,19 @@ async function boot() {
     if (idx <= 5) return "spire";
     return "magma";
   }
+  /** Map-mode aware biome lookup — read the act from the active node, not idx. */
+  function biomeForCurrent(): Biome {
+    if (run.map) {
+      const node = run.map.byId.get(run.map.currentId);
+      if (node) return node.act === 0 ? "verdant" : node.act === 1 ? "spire" : "magma";
+    }
+    return biomeForRoom(gs.roomIndex);
+  }
   function updateBiomeHazards(): void {
     const idx = gs.roomIndex;
-    biomeHazards.setBiome(biomeForRoom(idx));
+    biomeHazards.setBiome(biomeForCurrent());
     biomeHazards.setActive(!isBossRoom(idx));
-    const desc = run.rooms[idx];
+    const desc = currentRoomDescriptor();
     biomeHazards.setArenaHalf((desc?.arena.size ?? 40) / 2);
   }
   updateBiomeHazards();
@@ -1281,38 +1406,63 @@ async function boot() {
       if (activeHero.id === "stalker") {
         unlockHero("bulwark");
       }
+      // Persistent shard reward on victory — cross-run currency for stat shards.
+      addShards(3);
       return;
     }
-    // Otherwise: open the door and let the player walk to it themselves. The
-    // reward picker fires AFTER they cross the threshold, in `runDoorTransition`.
+    // Otherwise: open ALL doors and let the player walk through whichever
+    // they choose. In map mode the choice routes to a specific next-node;
+    // in legacy single-door mode the lone door advances linearly.
     gs.setPhase("door_open");
-    hud.setBanner("EXIT THROUGH THE DOOR");
+    const choices = run.currentChoices();
+    hud.setBanner(choices.length > 1 ? "CHOOSE A DOOR" : "EXIT THROUGH THE DOOR");
     const arena = run.arena;
-    if (arena && arena.door) {
-      arena.door.setLocked(false);
-      arena.doorPass.active = true;
+    if (arena && arena.doors.length > 0) {
+      for (let i = 0; i < arena.doors.length; i++) {
+        arena.doors[i].setLocked(false);
+        arena.doorPasses[i].active = true;
+      }
+      // Wire door-choice preview labels — only when we have a multi-choice
+      // (start + non-boss layers). For single-door rooms (boss / pre-boss
+      // convergent) we skip labels since the choice is unambiguous.
+      if (run.map && choices.length === arena.doors.length) {
+        const xCenters = arena.doors.map((d) => (d.xMin + d.xMax) / 2);
+        doorChoiceHud.setChoices(xCenters, choices, arena.doors[0].zPlane);
+      } else {
+        doorChoiceHud.clear();
+      }
     } else {
-      // Defensive fallback — if the room has no door (shouldn't happen for a
-      // non-last room, but if a future room descriptor sets exitDoor:false
-      // mid-run we want to still be able to advance), skip straight to
-      // transition. Reuses the same path the doorway crossing fires.
-      void runDoorTransition();
+      // Defensive fallback — if the room has no doors, skip straight to
+      // transition (the final boss case).
+      void runDoorTransition(null);
     }
   }
 
   /**
-   * Player has crossed the doorway threshold (or no door exists). Fade with a
-   * brief flash, swap the arena under cover, then surface the reward picker
-   * as the player "enters" the new room.
+   * Player has crossed a door (or no door exists for the final room). Fade
+   * with a brief flash, swap the arena under cover, then surface the reward
+   * picker as the player "enters" the new room. `targetNode` is the map
+   * node the player chose (which door); pass null in linear mode or for
+   * the no-door final-boss fallback.
    */
-  async function runDoorTransition(): Promise<void> {
+  async function runDoorTransition(targetNode: RunNode | null): Promise<void> {
     if (gs.phase !== "door_open" && gs.phase !== "playing") return;
     gs.setPhase("transitioning");
     hud.setBanner(null);
+    doorChoiceHud.clear();
     // Brief white flash hides the arena swap. Swap happens at the apex (~75ms in).
     const flashPromise = hud.playFlash("#ffffff", 180, 0.92);
+    const enteredRef: { desc: RoomDescriptor | null } = { desc: null };
     setTimeout(() => {
-      const nextArena = run.nextRoom();
+      let nextArena: ReturnType<typeof run.loadNode>;
+      if (run.map && targetNode) {
+        nextArena = run.loadNode(targetNode);
+        enteredRef.desc = targetNode.descriptor;
+      } else {
+        // Legacy linear path
+        nextArena = run.nextRoom();
+        enteredRef.desc = run.rooms[run.currentIndex] ?? null;
+      }
       gs.roomIndex = run.currentIndex;
       input.setFloorReference(nextArena.floor);
       enemies.setPillars(nextArena.pillars);
@@ -1322,7 +1472,8 @@ async function boot() {
         doorPass: nextArena.doorPass,
       });
       placePlayerAtSpawn(nextArena.bounds);
-      hud.setRoomIndicator(`${run.rooms[gs.roomIndex].name} (${gs.roomIndex + 1}/${run.rooms.length})`);
+      const label = enteredRef.desc?.name ?? "ROOM";
+      hud.setRoomIndicator(targetNode ? `${label} · L${targetNode.layer}` : `${label} (${gs.roomIndex + 1}/${run.rooms.length})`);
       applyGradingPreset(pipeline, presetForRoom(gs.roomIndex));
       applyBossLighting(sceneBundle, isBossRoom(gs.roomIndex));
       fireflies.setEnabled(!isBossRoom(gs.roomIndex));
@@ -1332,18 +1483,217 @@ async function boot() {
       ensureValidSelection();
     }, 90);
     await flashPromise;
-    // Reward stage — boss rooms award a new card; non-boss rooms award a relic.
-    // Whichever fires, the hand picker follows immediately so the player can
-    // bring the new card (or just rebalance) into the next fight.
-    const enteredRoom = run.rooms[run.currentIndex];
-    if (enteredRoom?.isBoss) {
+    // Apply per-node entry effects (anomaly, risk-tier HP scaling, elite spawns).
+    if (targetNode) applyNodeEntry(targetNode);
+    perfectClear.beginRoom();
+    // Reward stage depends on node kind.
+    //   boss            → card reward
+    //   shrine          → ShrinePicker (HP-cost altar)
+    //   shop            → ShopPicker (shard offers)
+    //   combat / elite  → relic reward (deferred until ROOM_CLEARED)
+    //   start (lobby)   → no reward, just open doors
+    const kind = targetNode?.kind ?? "combat";
+    if (kind === "boss") {
+      // Card reward for the previous room's clear, then the boss-curse picker
+      // (player chooses an optional curse for +1 reward roll on the kill).
+      // Both must complete before the boss-intro phase begins.
       await openCardRewardPicker();
+      await openBossCursePicker();
+    } else if (kind === "shrine") {
+      await openShrinePicker();
+    } else if (kind === "shop") {
+      await openShopPicker();
+    } else if (kind === "start") {
+      // Lobby — no reward, no enemies, doors open immediately.
+      gs.setPhase("door_open");
+      hud.setBanner("CHOOSE A DOOR");
+      const choices = run.currentChoices();
+      const ar = run.arena;
+      if (ar) {
+        for (let i = 0; i < ar.doors.length; i++) {
+          ar.doors[i].setLocked(false);
+          ar.doorPasses[i].active = true;
+        }
+        if (run.map && choices.length === ar.doors.length) {
+          const xCenters = ar.doors.map((d) => (d.xMin + d.xMax) / 2);
+          doorChoiceHud.setChoices(xCenters, choices, ar.doors[0].zPlane);
+        }
+      }
+      return;
     } else {
+      // Combat / elite — relic reward like before.
       await openRewardPicker();
+    }
+    // Shrines and shops auto-open their doors (no combat). Combat/elite/boss
+    // rooms reach door_open via ROOM_CLEARED → handleRoomCleared() instead.
+    if (kind === "shrine" || kind === "shop") {
+      gs.setPhase("door_open");
+      hud.setBanner("CHOOSE A DOOR");
+      const choices = run.currentChoices();
+      const ar = run.arena;
+      if (ar) {
+        for (let i = 0; i < ar.doors.length; i++) {
+          ar.doors[i].setLocked(false);
+          ar.doorPasses[i].active = true;
+        }
+        if (run.map && choices.length === ar.doors.length) {
+          const xCenters = ar.doors.map((d) => (d.xMin + d.xMax) / 2);
+          doorChoiceHud.setChoices(xCenters, choices, ar.doors[0].zPlane);
+        }
+      }
+      return;
     }
     gs.setPhase("hand_pick");
     await openHandPicker();
     gs.setPhase("playing");
+  }
+
+  /** Per-node entry effects — anomaly, risk tier, Pyre carryover, elite spawn boost. */
+  function applyNodeEntry(node: RunNode): void {
+    // Anomaly — apply unless an anomaly_scroll consumes this room's anomaly.
+    if (gs.anomalyScrollCharges > 0 && node.anomalyId !== null) {
+      gs.anomalyScrollCharges--;
+      setActiveAnomaly(null);
+    } else {
+      setActiveAnomaly(node.anomalyId);
+    }
+    // Pyre carryover — next room's enemies start at 50% HP.
+    if (gs.pyreActive) {
+      gs.pyreActive = false;
+      for (const e of enemies.enemies) {
+        if (e.alive) e.hp = Math.max(1, Math.floor(e.hp * 0.5));
+      }
+    }
+    // Risk tier — boost enemy HP and spawn count for elite_dense rooms.
+    if (node.riskTier === "elite_dense") {
+      for (const e of enemies.enemies) {
+        if (e.alive) e.hp = Math.floor(e.hp * 1.5);
+      }
+    }
+    // Elite room — multiply remaining HP on the existing spawns by 2.5×.
+    // The arena reuses combat templates, so we boost via this hook rather
+    // than adding new enemy types.
+    if (node.kind === "elite") {
+      for (const e of enemies.enemies) {
+        if (e.alive) {
+          e.hp = Math.floor(e.hp * 2.5);
+        }
+      }
+    }
+  }
+
+  async function openShrinePicker(): Promise<void> {
+    const seedRng = mulberry32(((Date.now() & 0xffffffff) ^ 0xa11) >>> 0);
+    const offers = rollShrineOptions(seedRng, 3);
+    hud.setBanner("CHOOSE A SHRINE");
+    pipeline.depthOfFieldEnabled = true;
+    pipeline.depthOfField.focalLength = 50;
+    pipeline.depthOfField.fStop = 1.4;
+    pipeline.depthOfField.focusDistance = 8000;
+    pipeline.depthOfField.lensSize = 50;
+    const picked = await shrinePicker.open(
+      offers.map((s) => ({
+        data: s.id,
+        title: s.name,
+        glyph: s.glyph,
+        description: s.description,
+        costLabel: `Cost: ${Math.round(s.hpCost * 100)}% max HP`,
+        color: "#aa88ff",
+      })),
+    );
+    pipeline.depthOfFieldEnabled = false;
+    hud.setBanner(null);
+    if (picked) applyShrineEffect(picked);
+  }
+
+  function applyShrineEffect(id: ShrineId): void {
+    const s = SHRINE_DEFS[id];
+    const before = player.stats.maxHp;
+    const reduce = Math.floor(before * s.hpCost);
+    player.stats.maxHp = Math.max(10, before - reduce);
+    if (player.hp > player.stats.maxHp) player.hp = player.stats.maxHp;
+    if (id === "forge") {
+      // Forge bias hook lands later; only the HP cost takes effect for now.
+    } else if (id === "anvil") {
+      // Extend hand size by 1.
+      deck.handSize = Math.min(deck.handSize + 1, 5);
+    } else if (id === "echo_stone") {
+      // Re-roll starting deck (replace the player's full deck collection).
+      const all = ALL_CARD_IDS;
+      const fresh: string[] = [];
+      while (fresh.length < 3) {
+        const c = all[Math.floor(Math.random() * all.length)];
+        if (!fresh.includes(c)) fresh.push(c);
+      }
+      deck.setStartingDeck(fresh);
+      deck.reset();
+    } else if (id === "pyre") {
+      gs.pyreActive = true;
+    } else if (id === "crucible") {
+      // Drop a random Mutator. Wired with CardUpgrades in Phase 3 — for now
+      // no-op so the shrine still costs HP and the door opens.
+    }
+  }
+
+  async function openShopPicker(): Promise<void> {
+    const seedRng = mulberry32(((Date.now() & 0xffffffff) ^ 0x5404) >>> 0);
+    const offers = rollShopOffers(seedRng, 3);
+    hud.setBanner(`SHOP — Shards: ${gs.shards}`);
+    const picked = await shopPicker.open(
+      offers.map((o) => ({
+        data: o,
+        title: o.name,
+        glyph: o.glyph,
+        description: o.description,
+        costLabel: `Cost: ${o.cost} shards`,
+        color: "#66e0ff",
+      })),
+    );
+    hud.setBanner(null);
+    if (picked && gs.shards >= picked.cost) {
+      gs.shards -= picked.cost;
+      applyShopPurchase(picked);
+    }
+  }
+
+  async function openBossCursePicker(): Promise<void> {
+    hud.setBanner("CHOOSE A CURSE — +1 reward roll");
+    const offers: { id: string; title: string; glyph: string; description: string; color: string }[] = [
+      { id: "boss_regen", title: "Regenerator", glyph: "♺", description: "Boss heals 5% max HP per 10s.", color: "#ff7777" },
+      { id: "half_hp", title: "Frail", glyph: "♥", description: "Your max HP is halved during this fight.", color: "#ff7777" },
+      { id: "no_relics", title: "Stripped", glyph: "✕", description: "One random equipped relic is disabled for this fight.", color: "#ff7777" },
+    ];
+    const picked = await cursePicker.open(
+      offers.map((o) => ({
+        data: o.id,
+        title: o.title,
+        glyph: o.glyph,
+        description: o.description,
+        costLabel: "+1 reward roll",
+        color: o.color,
+      })),
+    );
+    hud.setBanner(null);
+    gs.bossCurseId = picked;
+    if (picked === "half_hp") {
+      // Apply immediately; restored on BOSS_DEFEATED.
+      gs.preBossMaxHp = player.stats.maxHp;
+      player.stats.maxHp = Math.floor(player.stats.maxHp * 0.5);
+      if (player.hp > player.stats.maxHp) player.hp = player.stats.maxHp;
+    }
+  }
+
+  function applyShopPurchase(o: ShopOffer): void {
+    if (o.kind === "heal_partial") {
+      player.hp = Math.min(player.stats.maxHp, player.hp + Math.floor(player.stats.maxHp * 0.3));
+    } else if (o.kind === "anomaly_scroll") {
+      gs.anomalyScrollCharges++;
+    } else if (o.kind === "relic_uncommon") {
+      // Force a single uncommon relic offer right away.
+      const opts = pickRewardOptions();
+      if (opts.length > 0) items.equip(opts[0].id);
+    }
+    // card_upgrade and mutator wire into Phase 3's CardUpgrades — no-op for now.
   }
 
   async function openRewardPicker(): Promise<void> {
@@ -1383,7 +1733,11 @@ async function boot() {
   }
 
   async function openCardRewardPicker(): Promise<void> {
-    const options = pickCardRewards(3);
+    // Boss-curse +1 reward roll — consume here so it only applies to one
+    // picker session.
+    const count = gs.bossCurseRewardBonus ? 4 : 3;
+    if (gs.bossCurseRewardBonus) gs.bossCurseRewardBonus = false;
+    const options = pickCardRewards(count);
     if (options.length === 0) return;
     // Relabel when the deck is at MAX_COLLECTION_SIZE so the player understands
     // their pick will displace an existing card (the oldest one, FIFO).
@@ -1445,7 +1799,6 @@ async function boot() {
     clearDeferred();
     player.reset();
     tempo.reset();
-    ultimate.reset();
     // Re-apply the active hero's tints, stats, passives, and starting deck.
     // applyHero handles the deck reset itself (via deck.setStartingDeck), so
     // the explicit deck.reset() below would just thrash the already-fresh state.
@@ -1454,6 +1807,7 @@ async function boot() {
     items.reset();
     projectiles.reset();
     hostileProjectiles.reset();
+    hazards.reset();
     damageNumbers.reset();
     dodgeGhosts.reset();
     weaponTrail.reset();
@@ -1487,9 +1841,22 @@ async function boot() {
     pipeline.bloomWeight = 0.4;
     hud.clearRelicBadges();
     selection.slot = 0;
-    gs.setPhase("playing");
+    gs.setPhase("door_open");
     gs.roomIndex = 0;
-    const arena = run.loadRoom(0);
+    gs.shards = 0;
+    gs.bossElapsed = 0;
+    gs.pyreActive = false;
+    gs.anomalyScrollCharges = 0;
+    gs.skullDebt = 0;
+    setActiveAnomaly(null);
+    cardUpgrades.reset();
+    archSynergy.recompute();
+    // Re-seed and regenerate the map for a fresh run topology each time.
+    runMap = generateRunMap((Date.now() & 0xffffffff) >>> 0);
+    run.setMap(runMap);
+    const startNode = runMap.byId.get(runMap.startId)!;
+    const arena = run.loadNode(startNode);
+    doorChoiceHud.clear();
     input.setFloorReference(arena.floor);
     enemies.setPillars(arena.pillars);
     controller.setArena({
@@ -1498,8 +1865,9 @@ async function boot() {
       doorPass: arena.doorPass,
     });
     placePlayerAtSpawn(arena.bounds);
-    hud.setBanner(null);
-    hud.setRoomIndicator(`${run.rooms[0].name} (1/${run.rooms.length})`);
+    openLobbyDoorsForStart();
+    hud.setBanner("CHOOSE A DOOR");
+    hud.setRoomIndicator(`${startNode.descriptor?.name ?? "ROOM"} · L0`);
     applyGradingPreset(pipeline, presetForRoom(0));
     applyBossLighting(sceneBundle, isBossRoom(0));
     fireflies.setEnabled(!isBossRoom(0));
@@ -1520,7 +1888,9 @@ async function boot() {
   events.on<{ aerial: boolean }>("PLAYER_LANDED", ({ aerial }) => {
     if (!aerial) return;
     const cardId = player.pendingAerialCardId;
+    const wasCharged = player.pendingAerialCharged;
     player.pendingAerialCardId = null;
+    player.pendingAerialCharged = false;
     if (!cardId) return;
     const card = CardDefinitions[cardId];
     if (!card) return;
@@ -1552,6 +1922,29 @@ async function boot() {
       kind: "slam", range: radius,
       x: px, z: pz, fx: player.facing.x, fz: player.facing.z, y: 0,
     });
+    // Meteor Slam signature — Fire Pillars in a triangle around the impact
+    // point (5 in pentagon when CTRL-charged). Each pillar is a small lingering
+    // hazard zone that ticks fire damage to enemies who cross it.
+    if (cardId === "meteor_slam") {
+      const pillarCount = wasCharged ? 5 : 3;
+      const pillarR = 1.2;
+      const pillarRadius = wasCharged ? 4.5 : 3.5;
+      const baseAngle = Math.random() * Math.PI * 2;
+      for (let i = 0; i < pillarCount; i++) {
+        const a = baseAngle + (i * Math.PI * 2) / pillarCount;
+        hazards.spawn({
+          x: px + Math.cos(a) * pillarRadius,
+          z: pz + Math.sin(a) * pillarRadius,
+          radius: pillarR,
+          duration: 3.0,
+          dmgPerTick: 8,
+          tickInterval: 0.4,
+          color: [1.0, 0.45, 0.10],
+          kind: "fire",
+          sourceCard: cardId,
+        });
+      }
+    }
     // Crash equivalence at high tempo — meteor slam is the high-skill alt to
     // hitting F. If the meter is ready, pop a normal Crash here so it
     // composes with shock-ring FX without duplicating logic.
@@ -1579,6 +1972,7 @@ async function boot() {
   events.on<{ bossId: string; duration: number; name: string; pos: Vector3 }>("BOSS_INTRO_START", ({ duration, name, pos }) => {
     if (gs.phase !== "playing") return;
     gs.setPhase("boss_intro");
+    items.coAggroBossActive = true;
     hud.setBanner(name);
     cam.startKillCam(pos.clone(), 11, 0.7, duration);
     // Hard fallback in case the boss is killed during its own intro tween
@@ -1605,8 +1999,6 @@ async function boot() {
     }
     if (e.key.toLowerCase() === "r" && (gs.phase === "dead" || gs.phase === "victory")) {
       resetRun();
-    } else if (e.key.toLowerCase() === "r" && gs.phase === "playing") {
-      tryCastUltimate();
     }
     if (e.key.toLowerCase() === "g") {
       // Cycle low → medium → high. SSAO + god rays toggle immediately; shadow +
@@ -1683,10 +2075,11 @@ async function boot() {
 
   function applyHero(def: HeroDef): void {
     activeHero = def;
-    // Stats
-    player.stats.maxHp = def.hp;
+    // Stats — base def + persistent shard buffs.
+    const buffs = shardBuffsFor(def.id);
+    player.stats.maxHp = def.hp + buffs.hp;
     player.stats.moveSpeed = def.moveSpeed;
-    player.hp = def.hp;
+    player.hp = player.stats.maxHp;
     // Tempo passives
     tempo.setClassPassives(def.passives);
     // Visual tints
@@ -1722,7 +2115,10 @@ async function boot() {
     const def = HERO_BY_ID[heroId] ?? BLADE;
     applyHero(def);
     menus.hide();
-    gs.setPhase("playing");
+    gs.setPhase("door_open");
+    // Lobby is the start node — pre-open its doors so the player can pick.
+    openLobbyDoorsForStart();
+    hud.setBanner("CHOOSE A DOOR");
   }
   await runStartMenu();
 
@@ -1770,6 +2166,8 @@ async function boot() {
       combat.update(dt);
       projectiles.update(dt);
       hostileProjectiles.update(dt);
+      hazards.update(dt);
+      comboMeter.update(dt);
 
       ensureValidSelection();
 
@@ -1797,20 +2195,25 @@ async function boot() {
       // LMB: play whatever is selected. Cards are NOT consumed — AP is the cost.
       // The same 4 cards stay in the same slots for the entire run; only the AP
       // bar drains on cast.
-      if (frame.attackPressed) {
-        const idx = selection.slot;
-        const card = deck.peek(idx);
-        if (card) {
-          const cast = caster.cast(card, frame.aimPoint, frame.chargedHeld);
-          if (cast) {
-            if (card.type === "melee") combat.triggerFlash();
-            deck.play(idx);
-            events.emit("CARD_PLAYED_SLOT", { slot: idx });
-            if (frame.chargedHeld && card.type !== "utility") {
-              // Visual + camera amp on charged casts so the bonus damage reads.
-              cam.shake(0.15, 0.35);
-              hitFx.flare(player.root.position, [1.0, 0.85, 0.35], 4.0, 0.4);
-            }
+      //
+      // Charged Beam is the only card that fires on RELEASE — its tier (tap /
+      // piercing line / wide beam) is decided by how long LMB was held. Every
+      // other card fires on press, with attackHeldDuration=0 since the press
+      // is the cast.
+      const idx = selection.slot;
+      const selectedCard = deck.peek(idx);
+      const isHoldCard = selectedCard?.type === "charged_beam";
+      const shouldCast = isHoldCard ? frame.attackReleased : frame.attackPressed;
+      if (shouldCast && selectedCard) {
+        const cast = caster.cast(selectedCard, frame.aimPoint, frame.chargedHeld, frame.attackHeldDuration);
+        if (cast) {
+          if (selectedCard.type === "melee") combat.triggerFlash();
+          deck.play(idx);
+          events.emit("CARD_PLAYED_SLOT", { slot: idx });
+          if (frame.chargedHeld && selectedCard.type !== "utility") {
+            // Visual + camera amp on charged casts so the bonus damage reads.
+            cam.shake(0.15, 0.35);
+            hitFx.flare(player.root.position, [1.0, 0.85, 0.35], 4.0, 0.4);
           }
         }
       }
@@ -2069,25 +2472,36 @@ async function boot() {
     if (!inDoorSafety && player.root.position.z < a.bounds.minZ + r) player.root.position.z = a.bounds.minZ + r;
     if (player.root.position.z > a.bounds.maxZ - r) player.root.position.z = a.bounds.maxZ - r;
 
-    // Door tick + threshold trigger. The arena's door (when present) animates
-    // open after unlock; once the player crosses the doorway plane on the
-    // -Z side while in the door's x-range, fire the room transition exactly
-    // once. The phase guard prevents re-entry while the swap is in flight.
-    if (run.arena && run.arena.door) run.arena.door.tick(realDt);
-    if (gs.phase === "door_open" && run.arena && run.arena.door) {
-      const door = run.arena.door;
+    // Door tick + threshold trigger. Each arena door animates open after
+    // unlock; once the player crosses any doorway plane while in that door's
+    // x-range, fire the room transition exactly once routed to the matching
+    // next-node. The phase guard prevents re-entry while the swap is in flight.
+    if (run.arena) {
+      for (const d of run.arena.doors) d.tick(realDt);
+    }
+    if (gs.phase === "door_open" && run.arena && run.arena.doors.length > 0) {
       const px = player.root.position.x;
       const pz = player.root.position.z;
-      if (pz < door.zPlane - DOOR_PASS_Z_TOLERANCE && px > door.xMin && px < door.xMax) {
-        void runDoorTransition();
+      const doors = run.arena.doors;
+      const choices = run.currentChoices();
+      // Doors are built in the same x-order as `doorXCenters` (left-to-right).
+      // currentChoices() preserves the map's edge order; both arrays sized N.
+      // For boss / pre-boss convergent rooms there's only one door.
+      for (let i = 0; i < doors.length; i++) {
+        const door = doors[i];
+        if (pz < door.zPlane - DOOR_PASS_Z_TOLERANCE && px > door.xMin && px < door.xMax) {
+          const target = (run.map && choices.length === doors.length) ? choices[i] : null;
+          void runDoorTransition(target);
+          break;
+        }
       }
     }
 
     cam.update(dt);
     // HUD animates in real time — hitstop shouldn't freeze bar lerps, that'd
     // read as a UI bug. Pass realDt.
-    hud.setUltimateState(ultimate.fillFraction(), ultimate.canCast());
     hud.update(realDt);
+    doorChoiceHud.update(realDt, cam.camera);
     devOverlay.update(realDt);
     tickAdaptiveScaling(realDt);
   });

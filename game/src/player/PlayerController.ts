@@ -4,6 +4,7 @@ import { FrameInput } from "../input/InputController";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { TempoSystem } from "../tempo/TempoSystem";
 import { events } from "../engine/EventBus";
+import { isAnomaly } from "../run/Anomalies";
 
 const GRAVITY = -28;
 // Bumped from 9 → 13 so the jump arc is high enough to feel satisfying and
@@ -115,14 +116,16 @@ export class PlayerController {
     // multiplier so the entire "feel" of high tempo is present in motion, not
     // just damage numbers.
     const tempoMul = this.tempo.speedMultiplier();
+    // Slick Floor anomaly — every move slides 30% farther.
+    const slickMul = isAnomaly("slick_floor") ? 1.3 : 1.0;
     let mv: Vector3;
     let speed: number;
     if (p.isDodging) {
       mv = p.dodgeDir;
-      speed = p.stats.dodgeSpeed * tempoMul;
+      speed = p.stats.dodgeSpeed * tempoMul * slickMul;
     } else {
       mv = input.move;
-      speed = p.stats.moveSpeed * tempoMul;
+      speed = p.stats.moveSpeed * tempoMul * slickMul;
     }
 
     // Cache last non-zero move dir so Phase Step (which reads it) blinks

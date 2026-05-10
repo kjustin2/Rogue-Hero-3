@@ -39,12 +39,19 @@ export const ItemDefinitions: Record<string, ItemDef> = {
     charSpecific: "blade",
   },
   // ---- New combat-affecting relics ----
+  co_aggro_charm: {
+    id: "co_aggro_charm",
+    name: "Co-Aggro Charm",
+    rarity: "rare",
+    color: "#aaffcc",
+    desc: "During boss fights, every 4th kill restores 8 HP and grants 6s of +25% damage.",
+  },
   chain_amulet: {
     id: "chain_amulet",
     name: "Chain Amulet",
     rarity: "rare",
     color: "#88ddff",
-    desc: "Bolt projectiles fork to a second nearby target on hit.",
+    desc: "Charged Beam projectiles fork to a second nearby target on hit.",
   },
   bloodthirst: {
     id: "bloodthirst",

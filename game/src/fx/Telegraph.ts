@@ -57,9 +57,14 @@ export class Telegraph {
   private cones: ConeSlot[] = [];
 
   constructor(private scene: Scene) {
-    for (let i = 0; i < 16; i++) this.lines.push(this.makeLineSlot(i));
-    for (let i = 0; i < 16; i++) this.rings.push(this.makeRingSlot(i));
-    for (let i = 0; i < 8; i++) this.discs.push(this.makeDiscSlot(i));
+    // Pool sizes sized for the worst-case boss tick. Colossus P4 can have up
+    // to ~14 active rings (Tectonic Slam 3 + Mine 6 + Pound + Geyser + a
+    // couple of player crash rings) and ~14 active discs (mines + lava trail
+    // patches + boulder craters). Lines need headroom for Spire Convergence
+    // (5 simultaneous) plus mirror-spire echoes plus Brawler fissures.
+    for (let i = 0; i < 24; i++) this.lines.push(this.makeLineSlot(i));
+    for (let i = 0; i < 24; i++) this.rings.push(this.makeRingSlot(i));
+    for (let i = 0; i < 16; i++) this.discs.push(this.makeDiscSlot(i));
     for (let i = 0; i < 8; i++) this.cones.push(this.makeConeSlot(i));
   }
 

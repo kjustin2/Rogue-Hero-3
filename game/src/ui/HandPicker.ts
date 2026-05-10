@@ -203,7 +203,12 @@ export class HandPicker {
       card.addControl(tag);
 
       const desc = new TextBlock();
-      desc.text = opt.desc;
+      // Compose description with the signature mechanic line below it so the
+      // novel mechanic each card carries is visible at draft time, not buried
+      // in a tooltip. Empty signatureMechanic falls back to plain desc.
+      desc.text = opt.signatureMechanic
+        ? `${opt.desc}\n\n◆ ${opt.signatureMechanic}`
+        : opt.desc;
       desc.color = "#dddddd";
       desc.fontSize = 12;
       desc.fontFamily = "monospace";

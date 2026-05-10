@@ -118,7 +118,7 @@ export class Shooter extends Enemy {
       let moveDir = 0;
       if (dist > this.kiteRange + this.kiteHysteresis) moveDir = 1;
       else if (dist < this.kiteRange - this.kiteHysteresis) moveDir = -1;
-      const step = this.def.speed * dt * moveDir;
+      const step = this.def.speed * this.speedScale() * dt * moveDir;
       this.root.position.x += nx * step;
       this.root.position.z += nz * step;
       // Face the player with the bow so the silhouette tracks intent.

@@ -13,7 +13,7 @@ import { events } from "../../engine/EventBus";
 
 const COLOSSUS_DEF: EnemyDef = {
   name: "boss_colossus",
-  hp: 280,
+  hp: 420,
   speed: 2.0,
   radius: 1.7,
   contactDamage: 12,
@@ -21,45 +21,42 @@ const COLOSSUS_DEF: EnemyDef = {
   aggroRange: 60,
 };
 
-interface PendingStrike {
-  ttl: number;
-  resolve: (player: Player) => void;
-}
-
 /**
  * Act III boss — Magma Colossus.
  *
- *   P1 (HP 100% → 66%): Ground Pound — large radial telegraph (7m, 24 dmg,
- *     1.5s wind-up, ~5.5s cycle) plus the room's static lava pools.
+ *   P1 (100→75%): Ground Pound — large radial telegraph (7m, 24 dmg, 1.05s
+ *     wind-up, ~5.5s cycle) plus the room's static lava pools.
  *
- *   P2 (HP 66% → 33%) "THE MOUNTAIN ERUPTS": Roots itself at center.
- *     Geysers (3m disc, 18 dmg) spawn at the player's position on a 2.5s
- *     cycle; boulder craters (4m disc, 14 dmg, slower) hit random arena
- *     locations on a 4s cycle. Spawns 1 lancer + 1 chaser.
+ *   P2 (75→50%) "THE MOUNTAIN ERUPTS": Roots itself at center. Geysers + boulder
+ *     craters fall on cycles; Magma Mines spawn 4 lava orbs across the arena
+ *     every 6s that detonate after 3s into 3m fire discs.
  *
- *   P3 (HP 33% → 0%) "THE FORGE CONSUMES": Rotates in place. Pound cadence
- *     halves; a 90° fire-wave cone sweeps continuously at ~0.5 rad/sec,
- *     dealing damage if the player stays in the arc. Boulder craters fall
- *     more often.
+ *   P3 (50→25%) "THE FORGE CONSUMES": Pound cadence halves; a 60° fire wave
+ *     sweeps in place, leaving Lava Trail patches behind it that linger 5s
+ *     and deny zone access. Boulder craters fall more often.
+ *
+ *   P4 (25→0%) "THE CALDERA CRACKS": Tectonic Slam replaces Pound — three
+ *     concentric rings expanding outward (4m / 8m / 12m, staggered 0.4s).
+ *     Magma Mines spawn 6 at a time. The forge gives no quarter.
  */
 export class BossColossus extends BossBase {
   // Pound state
   private poundCooldown = 4.0;
   private poundWindUp = 0;
   private static readonly POUND_RADIUS = 7.0;
-  private static readonly POUND_WIND_UP = 1.5;
+  private static readonly POUND_WIND_UP = 1.05;
   private static readonly POUND_DAMAGE = 24;
 
   // Geyser state (P2+)
   private geyserCooldown = 2.5;
   private static readonly GEYSER_RADIUS = 3.0;
-  private static readonly GEYSER_WIND_UP = 1.4;
+  private static readonly GEYSER_WIND_UP = 0.95;
   private static readonly GEYSER_DAMAGE = 18;
 
   // Boulder crater state (P2+)
   private boulderCooldown = 3.0;
   private static readonly BOULDER_RADIUS = 4.0;
-  private static readonly BOULDER_WIND_UP = 2.0;
+  private static readonly BOULDER_WIND_UP = 1.4;
   private static readonly BOULDER_DAMAGE = 14;
   /** Approximate arena half-extent for random boulder targeting. */
   private static readonly ARENA_HALF = 22;
@@ -71,12 +68,28 @@ export class BossColossus extends BossBase {
   private static readonly WAVE_RANGE = 12;
   private static readonly WAVE_ANG_VEL = 0.55;
   private static readonly WAVE_DPS = 22;
+  /** Cadence for Lava Trail patch drops along the fire-wave sweep (P3+). */
+  private lavaTrailAcc = 0;
+  private static readonly LAVA_TRAIL_INTERVAL = 0.5;
+  private static readonly LAVA_TRAIL_RADIUS = 2.5;
+  private static readonly LAVA_TRAIL_DURATION = 5.0;
+  private static readonly LAVA_TRAIL_TICK_DAMAGE = 4;
+
+  // Magma Mines state (P2+) — 4 lava orbs, 3s fuse, detonate into fire discs
+  private mineCooldown = 4.0;
+  private static readonly MINE_FUSE = 3.0;
+  private static readonly MINE_RADIUS = 3.0;
+  private static readonly MINE_DAMAGE = 16;
+
+  // Tectonic Slam state (P4) — replaces Pound. Three concentric expanding rings.
+  private static readonly TECTONIC_WIND_UP = 1.6;
+  private static readonly TECTONIC_RING_RADII = [4.0, 8.0, 12.0];
+  private static readonly TECTONIC_DAMAGE = 22;
 
   // Visuals
   private vein!: Mesh;
   private veinMat!: StandardMaterial;
 
-  private pending: PendingStrike[] = [];
   private rooted = false;
 
   constructor(scene: Scene, shadow: ShadowGenerator, spawnPos: Vector3, idSuffix: string, telegraph: Telegraph) {
@@ -88,9 +101,13 @@ export class BossColossus extends BossBase {
     body.position = new Vector3(0, 1.6, 0);
     super(scene, shadow, COLOSSUS_DEF, spawnPos, body, idSuffix, telegraph);
     this.bossDisplayName = "MAGMA COLOSSUS";
-    this.phaseHpThresholds = [0.66, 0.33];
-    this.enrageLines = ["THE MOUNTAIN ERUPTS", "THE FORGE CONSUMES"];
-    this.spawnComposition = [["lancer", "chaser"], ["lancer", "lancer", "chaser"]];
+    this.phaseHpThresholds = [0.75, 0.50, 0.25];
+    this.enrageLines = ["THE MOUNTAIN ERUPTS", "THE FORGE CONSUMES", "THE CALDERA CRACKS"];
+    this.spawnComposition = [
+      ["lancer", "chaser"],
+      ["lancer", "lancer", "chaser"],
+      ["lancer", "lancer"],
+    ];
     this.introTimer = 3.8;
     this.introDuration = 3.8;
     this.swayAmpY = 0.04;
@@ -127,10 +144,17 @@ export class BossColossus extends BossBase {
       this.rooted = true;
       this.geyserCooldown = 1.0;
       this.boulderCooldown = 1.5;
+      this.mineCooldown = 2.0;
     }
     if (phase === 3) {
       this.poundCooldown = 1.5;
       this.boulderCooldown = 1.0;
+    }
+    if (phase === 4) {
+      // Tectonic Slam queues immediately on phase entry — gives the player a
+      // moment to read the banner before the rings start expanding.
+      this.poundCooldown = 1.0;
+      this.mineCooldown = 1.5;
     }
   }
 
@@ -151,6 +175,7 @@ export class BossColossus extends BossBase {
     // P2+ extras run alongside the pound cadence; pound itself stays the spine.
     if (this.currentPhase >= 2) this.tickGeyser(dt, player);
     if (this.currentPhase >= 2) this.tickBoulder(dt);
+    if (this.currentPhase >= 2) this.tickMines(dt);
     if (this.currentPhase >= 3) this.tickFireWave(dt, player);
 
     this.poundCooldown -= dt;
@@ -172,7 +197,11 @@ export class BossColossus extends BossBase {
     }
 
     if (this.poundCooldown <= 0) {
-      this.beginPound();
+      // P4 swaps the standard radial pound for the Tectonic Slam — three
+      // concentric expanding rings with safe gaps between. Pound stays the
+      // attack-cycle spine; only the visual + damage shape changes.
+      if (this.currentPhase >= 4) this.beginTectonic();
+      else this.beginPound();
     }
   }
 
@@ -185,8 +214,50 @@ export class BossColossus extends BossBase {
     );
     this.poundWindUp = BossColossus.POUND_WIND_UP;
     this.state = "telegraph";
+    this.hyperarmorActive = true;
     // Cycle scales with phase — P3 hits much more often.
     this.poundCooldown = this.currentPhase >= 3 ? 3.5 : 5.5;
+  }
+
+  /**
+   * P4 Tectonic Slam — replaces beginPound. Three concentric expanding rings
+   * staggered by 0.4s. The safe gap is between rings, so the player has to
+   * time movement to one of two thin shells. Reuses poundWindUp + state so
+   * the rest of the FSM doesn't need to special-case P4.
+   */
+  private beginTectonic(): void {
+    const origin = this.root.position.clone();
+    const radii = BossColossus.TECTONIC_RING_RADII;
+    for (let i = 0; i < radii.length; i++) {
+      const r = radii[i];
+      const delay = i * 0.4;
+      // Telegraph each ring at its delay, then resolve damage at the same beat.
+      this.queueStrike(delay, () => {
+        if (!this.alive) return;
+        this.telegraph.spawnRing(origin, r, 0.65, [1.0, 0.35, 0.05]);
+        this.queueStrike(0.65, (p) => {
+          if (!this.alive) return;
+          const dx = p.root.position.x - origin.x;
+          const dz = p.root.position.z - origin.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          // Hit if player is within ±1.4m of this ring's radius. The gaps
+          // between successive radii (4→8 = 4m, 8→12 = 4m) leave ~1.2m of
+          // safe shell on each side after accounting for player radius.
+          if (Math.abs(dist - r) <= 1.4 + p.stats.radius) {
+            if (!p.isDodging) {
+              events.emit("DAMAGE_TAKEN", { amount: BossColossus.TECTONIC_DAMAGE, source: this.id });
+            } else if (p.tryConsumePerfectDodge()) {
+              events.emit("PERFECT_DODGE", {});
+            }
+          }
+        });
+      });
+    }
+    // Mirror the pound state shape so the existing recover transitions still apply.
+    this.poundWindUp = BossColossus.TECTONIC_WIND_UP;
+    this.state = "telegraph";
+    this.hyperarmorActive = true;
+    this.poundCooldown = 3.5;
   }
 
   private detonatePound(player: Player): void {
@@ -202,6 +273,40 @@ export class BossColossus extends BossBase {
     }
     events.emit("HEAVY_HIT", { x: this.root.position.x, z: this.root.position.z });
     this.state = "recover";
+    this.hyperarmorActive = false;
+  }
+
+  /**
+   * Magma Mines (P2+) — spawn 4 lava orbs at random arena spots; each detonates
+   * after a 3s fuse into a 3m fire disc. Telegraphed by a small disc that
+   * grows to MINE_RADIUS over the fuse so the player knows how big the
+   * eventual blast will be. P4 spawns 6 at a time for denser zone control.
+   */
+  private tickMines(dt: number): void {
+    this.mineCooldown -= dt;
+    if (this.mineCooldown > 0) return;
+    const count = this.currentPhase >= 4 ? 6 : 4;
+    const r = BossColossus.ARENA_HALF * 0.78;
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 3 + Math.random() * (r - 3);
+      const cx = Math.cos(angle) * radius;
+      const cz = Math.sin(angle) * radius;
+      const center = new Vector3(cx, 0, cz);
+      this.telegraph.spawnDisc(center, BossColossus.MINE_RADIUS, BossColossus.MINE_FUSE, [1.0, 0.55, 0.10]);
+      this.queueStrike(BossColossus.MINE_FUSE, (p) => {
+        if (!this.alive) return;
+        events.emit("HOSTILE_AOE", {
+          x: cx,
+          z: cz,
+          radius: BossColossus.MINE_RADIUS,
+          damage: BossColossus.MINE_DAMAGE,
+          source: this.id,
+        });
+        void p;
+      });
+    }
+    this.mineCooldown = this.currentPhase >= 4 ? 5.0 : 6.0;
   }
 
   private tickGeyser(dt: number, player: Player): void {
@@ -266,6 +371,45 @@ export class BossColossus extends BossBase {
     // inside the current arc.
     this.waveAngle += BossColossus.WAVE_ANG_VEL * dt;
     this.waveDamageAcc += dt;
+    this.lavaTrailAcc += dt;
+    // Lava Trail — drop a persistent fire disc along the wave's leading edge
+    // every LAVA_TRAIL_INTERVAL seconds. The patches outlast the cone sweep,
+    // turning the wave into a floor-painting attack rather than a one-shot.
+    if (this.lavaTrailAcc >= BossColossus.LAVA_TRAIL_INTERVAL) {
+      this.lavaTrailAcc -= BossColossus.LAVA_TRAIL_INTERVAL;
+      const dirXTrail = Math.cos(this.waveAngle);
+      const dirZTrail = Math.sin(this.waveAngle);
+      // Drop the patch at the wave's leading edge — ~70% of WAVE_RANGE along
+      // the current direction. That's where the player tends to dodge to.
+      const leadDist = BossColossus.WAVE_RANGE * 0.7;
+      const cx = this.root.position.x + dirXTrail * leadDist;
+      const cz = this.root.position.z + dirZTrail * leadDist;
+      this.telegraph.spawnDisc(
+        new Vector3(cx, 0, cz),
+        BossColossus.LAVA_TRAIL_RADIUS,
+        BossColossus.LAVA_TRAIL_DURATION,
+        [1.0, 0.30, 0.05],
+      );
+      // Tick damage every 0.6s for the patch's lifetime — gives the player
+      // multiple chances to recognise the threat without instakill chaining.
+      const ticks = Math.floor(BossColossus.LAVA_TRAIL_DURATION / 0.6);
+      for (let k = 1; k <= ticks; k++) {
+        this.queueStrike(k * 0.6, (p) => {
+          if (!this.alive) return;
+          const dx = p.root.position.x - cx;
+          const dz = p.root.position.z - cz;
+          const r = BossColossus.LAVA_TRAIL_RADIUS + p.stats.radius;
+          if (dx * dx + dz * dz <= r * r) {
+            if (!p.isDodging) {
+              events.emit("DAMAGE_TAKEN", {
+                amount: BossColossus.LAVA_TRAIL_TICK_DAMAGE,
+                source: this.id,
+              });
+            }
+          }
+        });
+      }
+    }
     if (this.waveDamageAcc < 0.18) return; // gate visual + damage on the same beat
     this.waveDamageAcc -= 0.18;
 
@@ -286,21 +430,6 @@ export class BossColossus extends BossBase {
     if (!player.isDodging) {
       const tickDmg = Math.round(BossColossus.WAVE_DPS * 0.18);
       events.emit("DAMAGE_TAKEN", { amount: tickDmg, source: this.id });
-    }
-  }
-
-  private queueStrike(delaySec: number, resolve: (player: Player) => void): void {
-    this.pending.push({ ttl: delaySec, resolve });
-  }
-
-  private tickPending(dt: number, player: Player): void {
-    for (let i = this.pending.length - 1; i >= 0; i--) {
-      const s = this.pending[i];
-      s.ttl -= dt;
-      if (s.ttl <= 0) {
-        s.resolve(player);
-        this.pending.splice(i, 1);
-      }
     }
   }
 }

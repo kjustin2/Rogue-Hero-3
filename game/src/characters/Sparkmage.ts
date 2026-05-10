@@ -16,9 +16,9 @@ export const SPARKMAGE: HeroDef = {
     crashResetValue: 60,
     perfectDodgeTempoGain: 12,
   },
-  // Pure caster identity: a fast single-target bolt, a panic-AoE freeze, and
-  // a phase blink for kiting. No melee — leans into the glass-cannon fantasy.
-  startingDeck: ["bolt", "frost_nova", "phase_step"],
+  // Pure caster identity: a charged beam for ranged pressure, a panic-AoE
+  // freeze, and a phase blink for kiting. No melee — leans into glass-cannon.
+  startingDeck: ["charged_beam", "frost_nova", "phase_step"],
   bodyTint: new Color3(0.30, 0.55, 0.95),
   capeTint: new Color3(0.18, 0.28, 0.62),
   swordTint: new Color3(0.55, 0.85, 1.0),

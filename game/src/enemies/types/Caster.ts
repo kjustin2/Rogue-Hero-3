@@ -150,8 +150,8 @@ export class Caster extends Enemy {
       // Slowly back away from player a bit
       const dist = Math.sqrt(distSq);
       if (dist < 6 && dist > 1e-4) {
-        this.root.position.x -= (dx / dist) * this.def.speed * 0.5 * dt;
-        this.root.position.z -= (dz / dist) * this.def.speed * 0.5 * dt;
+        this.root.position.x -= (dx / dist) * this.def.speed * 0.5 * this.speedScale() * dt;
+        this.root.position.z -= (dz / dist) * this.def.speed * 0.5 * this.speedScale() * dt;
       }
       if (this.cooldown === 0) this.state = "chase";
       return;
@@ -161,8 +161,8 @@ export class Caster extends Enemy {
     const dist = Math.sqrt(distSq);
     if (dist > 5 && dist > 1e-4) {
       this.state = "chase";
-      this.root.position.x += (dx / dist) * this.def.speed * dt;
-      this.root.position.z += (dz / dist) * this.def.speed * dt;
+      this.root.position.x += (dx / dist) * this.def.speed * this.speedScale() * dt;
+      this.root.position.z += (dz / dist) * this.def.speed * this.speedScale() * dt;
     } else {
       this.beginTelegraph(player);
     }

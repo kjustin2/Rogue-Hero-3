@@ -15,9 +15,9 @@ export const BULWARK: HeroDef = {
     crashResetValue: 45,
     dampedDecay: 0.6,
   },
-  // Tank identity: heavy single-target slam, an omni spin for crowd control,
+  // Tank identity: heavy single-target slam, mine-field for crowd control,
   // and a shield to soak hits. Slow, deliberate, defensive.
-  startingDeck: ["crashing_blow", "whirlwind", "aegis"],
+  startingDeck: ["crashing_blow", "mine_field", "aegis"],
   bodyTint: new Color3(0.55, 0.55, 0.60),
   capeTint: new Color3(0.30, 0.30, 0.40),
   swordTint: new Color3(0.70, 0.72, 0.78),

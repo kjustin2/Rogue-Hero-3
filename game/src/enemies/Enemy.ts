@@ -9,6 +9,7 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { FresnelParameters } from "@babylonjs/core/Materials/fresnelParameters";
 import { Player } from "../player/Player";
 import { events } from "../engine/EventBus";
+import { isAnomaly } from "../run/Anomalies";
 
 /**
  * Red rim fresnel on enemy bodies — helps silhouette against the green verdant
@@ -99,6 +100,29 @@ export abstract class Enemy {
   freezeTimer = 0;
   /** Multiplier applied to speed while frozen (0.5 = 50% slow). */
   static readonly FREEZE_SLOW_MUL = 0.5;
+  /**
+   * Bleed status — applied by Cleave hits. Each stack ticks 3 dmg/sec for the
+   * remaining bleedTimer; max 6 stacks. Capped so that a single Cleave can't
+   * stack a one-shot DoT but a follow-up Cleave keeps the pressure on.
+   */
+  bleedStacks = 0;
+  bleedTimer = 0;
+  private bleedTickAcc = 0;
+  static readonly BLEED_MAX_STACKS = 6;
+  static readonly BLEED_DPS_PER_STACK = 3;
+  static readonly BLEED_DURATION = 4.0;
+  /**
+   * Conduit mark — applied by Chain Lightning's first hit. While > 0, the next
+   * Chain Lightning cast re-arcs from this enemy automatically. Consumed on
+   * use (re-arc resolution sets it to 0).
+   */
+  conduitTimer = 0;
+  static readonly CONDUIT_DURATION = 4.0;
+  /**
+   * Twin Spawn anomaly — when this enemy is itself a low-HP twin spawned by
+   * the KILL→twin listener, set true so the twin's own death doesn't recurse.
+   */
+  isTwin = false;
 
   constructor(
     scene: Scene,
@@ -152,6 +176,9 @@ export abstract class Enemy {
 
   takeDamage(amount: number): void {
     if (!this.alive) return;
+    // Stoneskin Mob anomaly — enemies take 25% less damage. Apply before HP
+    // bookkeeping so the hit-flash ratio reflects the actual damage dealt.
+    if (isAnomaly("stoneskin_mob")) amount = amount * 0.75;
     this.hp -= amount;
     // Scale the white-flash with the hit's damage relative to the enemy's
     // max HP — a 30% chunk lands a longer flash than a 5% chip. Capped at
@@ -253,12 +280,50 @@ export abstract class Enemy {
 
   /** Returns the speed multiplier the enemy should currently use. */
   speedScale(): number {
-    return this.freezeTimer > 0 ? Enemy.FREEZE_SLOW_MUL : 1.0;
+    let s = this.freezeTimer > 0 ? Enemy.FREEZE_SLOW_MUL : 1.0;
+    // Stoneskin Mob anomaly — enemies move 30% slower while it's active.
+    if (isAnomaly("stoneskin_mob")) s *= 0.7;
+    return s;
+  }
+
+  /** Apply bleed stacks; cap at BLEED_MAX_STACKS. Refreshes the duration. */
+  applyBleed(stacks: number): void {
+    this.bleedStacks = Math.min(Enemy.BLEED_MAX_STACKS, this.bleedStacks + stacks);
+    this.bleedTimer = Enemy.BLEED_DURATION;
+  }
+
+  /** Apply Conduit mark — refreshes duration. */
+  markConduit(): void {
+    this.conduitTimer = Enemy.CONDUIT_DURATION;
+  }
+
+  /** Consume the conduit mark (used by Chain Lightning re-arc). */
+  consumeConduit(): boolean {
+    if (this.conduitTimer <= 0) return false;
+    this.conduitTimer = 0;
+    return true;
   }
 
   tickCommon(dt: number): void {
     this.partClock += dt;
     if (this.freezeTimer > 0) this.freezeTimer = Math.max(0, this.freezeTimer - dt);
+    if (this.conduitTimer > 0) this.conduitTimer = Math.max(0, this.conduitTimer - dt);
+    // Bleed tick — apply BLEED_DPS_PER_STACK × stacks every second while
+    // the bleed is alive. Subclasses don't need to opt in; takeDamage handles
+    // the actual HP application uniformly.
+    if (this.bleedTimer > 0) {
+      this.bleedTimer = Math.max(0, this.bleedTimer - dt);
+      this.bleedTickAcc += dt;
+      if (this.bleedTickAcc >= 1.0) {
+        this.bleedTickAcc -= 1.0;
+        const dmg = this.bleedStacks * Enemy.BLEED_DPS_PER_STACK;
+        if (dmg > 0) this.takeDamage(dmg);
+      }
+      if (this.bleedTimer === 0) {
+        this.bleedStacks = 0;
+        this.bleedTickAcc = 0;
+      }
+    }
     // Capture the resting Y once so the sway is purely additive — subclass logic
     // continues to write root.position.y for movement/stagger and the sway
     // composes around it without drifting.

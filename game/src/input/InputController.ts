@@ -13,6 +13,13 @@ export interface FrameInput {
   attackPressed: boolean;
   /** True while LMB is held (for future channel cards) */
   attackHeld: boolean;
+  /** True the frame LMB was released. Drives Charged Beam release-on-up. */
+  attackReleased: boolean;
+  /**
+   * Seconds LMB has been held continuously. 0 when LMB is up. On a release
+   * frame, this captures the final hold duration before the timer resets.
+   */
+  attackHeldDuration: number;
   /** True when CTRL is held — modifier for charged casts (CardCaster reads this) */
   chargedHeld: boolean;
   /** True the frame RMB was pressed — cycles the selected hand slot */
@@ -34,7 +41,12 @@ export class InputController {
   private dodgeQueued = false;
   private jumpQueued = false;
   private attackQueuedDown = false;
+  private attackQueuedUp = false;
   private attackHeld = false;
+  /** Wall-clock ms when LMB went down, or null if up. Resolved into seconds at consume(). */
+  private attackHeldStartMs: number | null = null;
+  /** Final hold duration captured at release, in seconds. Reset on next press. */
+  private lastReleasedHoldSec = 0;
   private cycleQueued = false;
   private crashQueued = false;
   private cycleTargetQueued = false;
@@ -55,6 +67,8 @@ export class InputController {
     dodgePressed: false,
     attackPressed: false,
     attackHeld: false,
+    attackReleased: false,
+    attackHeldDuration: 0,
     chargedHeld: false,
     cycleSelectedPressed: false,
     selectSlotPressed: this.cardQueueOut,
@@ -93,11 +107,20 @@ export class InputController {
         if (pi.event.button === 0) {
           this.attackQueuedDown = true;
           this.attackHeld = true;
+          this.attackHeldStartMs = performance.now();
+          this.lastReleasedHoldSec = 0;
         } else if (pi.event.button === 2) {
           this.cycleQueued = true;
         }
       } else if (pi.type === PointerEventTypes.POINTERUP && pi.event.button === 0) {
+        // Capture final hold duration before clearing — `consume()` reads it
+        // into the next frame so Charged Beam can pick its tier on release.
+        if (this.attackHeldStartMs !== null) {
+          this.lastReleasedHoldSec = (performance.now() - this.attackHeldStartMs) / 1000;
+        }
         this.attackHeld = false;
+        this.attackHeldStartMs = null;
+        this.attackQueuedUp = true;
       } else if (pi.type === PointerEventTypes.POINTERMOVE) {
         this.updateAim();
       }
@@ -203,6 +226,16 @@ export class InputController {
     out.dodgePressed = this.dodgeQueued;
     out.attackPressed = this.attackQueuedDown;
     out.attackHeld = this.attackHeld;
+    out.attackReleased = this.attackQueuedUp;
+    // On a release frame, expose the captured final hold; otherwise expose the
+    // live running hold (or 0 if LMB is up between frames).
+    if (this.attackQueuedUp) {
+      out.attackHeldDuration = this.lastReleasedHoldSec;
+    } else {
+      out.attackHeldDuration = this.attackHeldStartMs === null
+        ? 0
+        : Math.max(0, (performance.now() - this.attackHeldStartMs) / 1000);
+    }
     // CTRL modifier for charged casts. KeyboardEvent reports "control" on
     // either-side CTRL down; we keep the held bit live in `keys` and read it
     // here so the cast handler can consume the flag in the same frame as the
@@ -217,6 +250,7 @@ export class InputController {
     this.dodgeQueued = false;
     this.jumpQueued = false;
     this.attackQueuedDown = false;
+    this.attackQueuedUp = false;
     this.cycleQueued = false;
     this.crashQueued = false;
     this.cycleTargetQueued = false;

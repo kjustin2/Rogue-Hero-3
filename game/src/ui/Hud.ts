@@ -11,6 +11,7 @@ import { CardType } from "../deck/CardDefinitions";
 import { events } from "../engine/EventBus";
 import { dampCoeff } from "../util/Smoothing";
 import { ItemDefinitions } from "../items/ItemDefinitions";
+import { ANOMALY_DEFS, AnomalyId } from "../run/Anomalies";
 
 interface Bar {
   bg: Rectangle;
@@ -48,6 +49,8 @@ const TYPE_COLOR: Record<CardType, string> = {
   aoe: "#66e0ff",
   aerial: "#ff7733",
   utility: "#a8ffd2",
+  mine_field: "#ff7022",
+  charged_beam: "#80c8ff",
 };
 
 const TYPE_LABEL: Record<CardType, string> = {
@@ -57,6 +60,8 @@ const TYPE_LABEL: Record<CardType, string> = {
   aoe: "AOE",
   aerial: "AERIAL",
   utility: "UTIL",
+  mine_field: "MINES",
+  charged_beam: "CHARGE",
 };
 
 export class Hud {
@@ -71,10 +76,6 @@ export class Hud {
   private tempoZoneLabel: TextBlock;
   private crashBadge: TextBlock;
   private crashBadgePulse = 0;
-  private ultimateBadge!: TextBlock;
-  private ultimateFill = 0;
-  private ultimateReady = false;
-  private ultimatePulse = 0;
   private enemyCounter: TextBlock;
   private roomLabel: TextBlock;
   private hand: HandSlot[] = [];
@@ -169,11 +170,6 @@ export class Hud {
     this.crashBadge = this.makeText("[F] CRASH READY", 24, 178, "#ffe066", 16, "left", "top");
     this.crashBadge.fontWeight = "bold";
     this.crashBadge.isVisible = false;
-
-    // Ultimate readout — sits below the crash row. Shows live charge % while
-    // building, swaps to "[R] ULTIMATE READY" when full and pulses gold.
-    this.ultimateBadge = this.makeText("ULTIMATE  0%", 24, 200, "#a888ff", 15, "left", "top");
-    this.ultimateBadge.fontWeight = "bold";
 
     // ---- Top-right enemy counter ----
     this.enemyCounter = this.makeText("Enemies: 0", -24, 24, "#fff", 22, "right", "top");
@@ -351,6 +347,24 @@ export class Hud {
       this.apFailFlashTimer = 0.45;
     });
 
+    // Anomaly entry banner — fires when the player crosses into a room whose
+    // door advertised an anomaly. Null id = the room is anomaly-free, in which
+    // case there's nothing to announce.
+    events.on<{ id: AnomalyId | null }>("ANOMALY_CHANGED", ({ id }) => {
+      if (!id) return;
+      const def = ANOMALY_DEFS[id];
+      this.setBanner(`ANOMALY ${def.glyph} ${def.name.toUpperCase()}`);
+    });
+
+    // Archetype synergy chip — banner pops when 3+ same-archetype cards are
+    // collected. `active=null` clears the synergy (e.g. a card was removed
+    // and the count fell below 3); we silently ignore the deactivation here
+    // since the player's recent action already implied it.
+    events.on<{ archetype: string; active: boolean }>("ARCHETYPE_TIER_CHANGED", ({ archetype, active }) => {
+      if (!active) return;
+      this.setBanner(`SYNERGY: ${archetype.toUpperCase()} ★★★`);
+    });
+
     // ---- Room transition wipe (full-screen black) ----
     this.wipe = new Rectangle("wipe");
     this.wipe.width = "100%";
@@ -503,13 +517,6 @@ export class Hud {
   /** Flash the boss HP bar yellow — called via BOSS_PHASE event hookup in main.ts. */
   flashBossPhase(): void {
     this.bossFlashTimer = 0.6;
-  }
-
-  /** Drive the ultimate readout. Called every frame from main.ts. */
-  setUltimateState(fill: number, ready: boolean): void {
-    this.ultimateFill = Math.max(0, Math.min(1, fill));
-    if (ready && !this.ultimateReady) this.ultimatePulse = 0.6;
-    this.ultimateReady = ready;
   }
 
   /** Show/hide the Metronome relic dot next to the Tempo bar. Called by main.ts. */
@@ -1210,18 +1217,6 @@ export class Hud {
     if (crashReady) {
       this.crashBadgePulse += 0.12;
       this.crashBadge.alpha = 0.55 + 0.45 * Math.abs(Math.sin(this.crashBadgePulse));
-    }
-
-    // Ultimate readout — purple while charging (shows percent), pulsing gold when ready.
-    if (this.ultimateReady) {
-      this.ultimatePulse += 0.16;
-      this.ultimateBadge.text = "[R] ULTIMATE READY";
-      this.ultimateBadge.color = "#ffd640";
-      this.ultimateBadge.alpha = 0.7 + 0.3 * Math.abs(Math.sin(this.ultimatePulse));
-    } else {
-      this.ultimateBadge.text = `ULTIMATE  ${Math.round(this.ultimateFill * 100)}%`;
-      this.ultimateBadge.color = "#a888ff";
-      this.ultimateBadge.alpha = 0.55 + 0.45 * this.ultimateFill;
     }
 
     // Enemy counter

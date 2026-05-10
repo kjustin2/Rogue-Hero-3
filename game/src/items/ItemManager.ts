@@ -67,6 +67,8 @@ export class ItemManager {
     let m = 1.0;
     if (this.has("kinetic_core") && card.type === "dash") m *= 1.5;
     if (this.has("meteor_charm") && card.type === "aerial") m *= 1.3;
+    // Co-Aggro Charm — active during a +25% damage window after a 4th boss kill.
+    if (this.has("co_aggro_charm")) m *= this.coAggroDamageMultiplier();
     return m;
   }
 
@@ -86,8 +88,8 @@ export class ItemManager {
 
   /** Fires per damaged enemy. */
   onEnemyHit(enemy: Enemy, _dmg: number, card: CardDef): void {
-    // Chain Amulet — Bolt forks once to a nearby second target.
-    if (this.has("chain_amulet") && card.id === "bolt" && !(enemy as Enemy & { _chainedThisShot?: boolean })._chainedThisShot) {
+    // Chain Amulet — Charged Beam forks once to a nearby second target.
+    if (this.has("chain_amulet") && card.id === "charged_beam" && !(enemy as Enemy & { _chainedThisShot?: boolean })._chainedThisShot) {
       // Tag so the original projectile doesn't keep chaining on its own.
       (enemy as Enemy & { _chainedThisShot?: boolean })._chainedThisShot = true;
       // Fork: pick the closest other enemy within 5m and apply the same damage.
@@ -112,10 +114,35 @@ export class ItemManager {
   }
 
   /** Fires when a card kill drops an enemy. */
-  onKill(_enemy: Enemy, _card: CardDef): void {
+  onKill(enemy: Enemy, _card: CardDef): void {
     if (this.has("bloodthirst") && this.player) {
       this.player.hp = Math.min(this.player.stats.maxHp, this.player.hp + 5);
     }
+    // Co-Aggro Charm — every 4th kill during a boss fight heals 8 HP and
+    // grants a 6 s damage boost. Kills are counted in `bossKillCount` and
+    // reset when a boss dies (handled by main.ts via the BOSS_DEFEATED event).
+    if (this.has("co_aggro_charm") && this.player && this.coAggroBossActive) {
+      this.bossKillCount++;
+      if (this.bossKillCount % 4 === 0) {
+        this.player.hp = Math.min(this.player.stats.maxHp, this.player.hp + 8);
+        this.coAggroDmgBoostUntil = performance.now() + 6000;
+      }
+    }
+    void enemy;
+  }
+
+  /** Set by main.ts on BOSS_INTRO_START / BOSS_DEFEATED to gate co_aggro_charm. */
+  coAggroBossActive = false;
+  private bossKillCount = 0;
+  private coAggroDmgBoostUntil = 0;
+  /** Live damage multiplier from the co-aggro buff window. Read each cast. */
+  coAggroDamageMultiplier(): number {
+    return performance.now() < this.coAggroDmgBoostUntil ? 1.25 : 1.0;
+  }
+  resetBossKillCount(): void {
+    this.bossKillCount = 0;
+    this.coAggroBossActive = false;
+    this.coAggroDmgBoostUntil = 0;
   }
 
   /**

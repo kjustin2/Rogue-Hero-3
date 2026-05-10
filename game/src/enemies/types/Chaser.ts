@@ -163,7 +163,7 @@ export class Chaser extends Enemy {
     if (dist > 1e-4) {
       const nx = dx / dist;
       const nz = dz / dist;
-      const step = this.def.speed * dt;
+      const step = this.def.speed * this.speedScale() * dt;
       this.root.position.x += nx * step;
       this.root.position.z += nz * step;
     }

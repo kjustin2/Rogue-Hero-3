@@ -5,6 +5,7 @@ import { ShadowGenerator } from "@babylonjs/core/Lights/Shadows/shadowGenerator"
 import { Arena, buildArena, ArenaOptions, VERDANT_ENV_PALETTE, PIT_ENV_PALETTE } from "../scene/ArenaBuilder";
 import { EnemyManager, SpawnRequest } from "../enemies/EnemyManager";
 import { HazardTileSpec } from "../scene/HazardTiles";
+import { RunMap, RunNode, nextChoices } from "./RunMap";
 
 export interface RoomDescriptor {
   name: string;
@@ -233,6 +234,13 @@ export const VERTICAL_SLICE_ROOMS = ACT_ROOMS;
 export class RunManager {
   arena: Arena | null = null;
   currentIndex = -1;
+  /**
+   * Active run-map. When set, room loads route through `loadNode` and the
+   * 3-door branching flow is active. When null, RunManager operates in
+   * legacy linear mode against `rooms[]` (used by the smoke + integration
+   * tests until they migrate, and by any caller that opts out of branching).
+   */
+  map: RunMap | null = null;
 
   constructor(
     private scene: Scene,
@@ -241,7 +249,12 @@ export class RunManager {
     public rooms: RoomDescriptor[],
   ) {}
 
-  /** Load the room at idx. Disposes the current arena and clears enemies first. */
+  /** Switch to map mode. Subsequent loads use `loadNode`. */
+  setMap(map: RunMap): void {
+    this.map = map;
+  }
+
+  /** Load the room at idx (linear mode). Disposes the current arena and clears enemies first. */
   loadRoom(idx: number): Arena {
     if (idx < 0 || idx >= this.rooms.length) {
       throw new Error(`RunManager: room index ${idx} out of bounds (have ${this.rooms.length})`);
@@ -253,13 +266,63 @@ export class RunManager {
     this.enemies.clear();
 
     const desc = this.rooms[idx];
+    // Non-boss linear rooms get the legacy single door (count = 1) unless a
+    // RoomDescriptor explicitly overrides via arena.exitDoorCount.
     this.arena = buildArena(this.scene, this.shadow, desc.arena);
     this.enemies.spawnAll(desc.spawns);
     this.currentIndex = idx;
     return this.arena;
   }
 
+  /**
+   * Load the descriptor at the given map node. Sets the right number of doors
+   * (3 for non-boss nodes that have multi-choice exits; 1 for boss / pre-boss
+   * convergent nodes). Updates `map.currentId` for downstream readers.
+   */
+  loadNode(node: RunNode): Arena {
+    if (!this.map) throw new Error("RunManager.loadNode called without setMap()");
+    if (!node.descriptor) {
+      throw new Error(`RunManager.loadNode: node ${node.id} has no descriptor`);
+    }
+    if (this.arena) {
+      this.arena.dispose();
+      this.arena = null;
+    }
+    this.enemies.clear();
+
+    // Choice count for this node — it's the number of next-choices the player
+    // will get when this room is cleared. Boss / final rooms collapse to 1
+    // door, branching rooms get 3.
+    const nextCount = (this.map.edges.get(node.id) ?? []).length;
+    const exitDoorCount: 1 | 3 = nextCount >= 2 ? 3 : 1;
+
+    const arenaOpts: ArenaOptions = {
+      ...node.descriptor.arena,
+      // Final boss has no exit door (exitDoor: false). Otherwise build the
+      // matching number of doors.
+      exitDoor: node.descriptor.arena.exitDoor !== false,
+      exitDoorCount,
+    };
+    this.arena = buildArena(this.scene, this.shadow, arenaOpts);
+    this.enemies.spawnAll(node.descriptor.spawns);
+    this.map.currentId = node.id;
+    // Track currentIndex for legacy callers (HUD ring labels, etc.) — use the
+    // node's layer as the closest analogue to a 0-N progress index.
+    this.currentIndex = node.layer;
+    return this.arena;
+  }
+
+  /** Choices the player can pick next, in map-mode. Empty in linear mode. */
+  currentChoices(): RunNode[] {
+    if (!this.map) return [];
+    return nextChoices(this.map);
+  }
+
   isLastRoom(): boolean {
+    if (this.map) {
+      const cur = this.map.byId.get(this.map.currentId);
+      return cur != null && cur.id === this.map.finalBossId;
+    }
     return this.currentIndex >= this.rooms.length - 1;
   }
 
@@ -267,6 +330,7 @@ export class RunManager {
     return !this.isLastRoom();
   }
 
+  /** Linear-mode helper: load the next ACT_ROOMS entry. */
   nextRoom(): Arena {
     return this.loadRoom(this.currentIndex + 1);
   }

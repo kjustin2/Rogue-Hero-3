@@ -41,9 +41,17 @@ export interface Arena {
   env: EnvBundle | null;
   /** Ceiling slab if the arena was built enclosed; null otherwise. */
   ceiling: Mesh | null;
-  /** Exit door on the -Z wall if the arena has one; null for the final room. */
+  /**
+   * Exit doors on the -Z wall — 0, 1, or 3 doors. The first door (`doors[0]`)
+   * is also surfaced as `door` for legacy single-door call sites; non-boss
+   * branching rooms use the full array.
+   */
+  doors: Door[];
+  /** Mutable bound overrides — one per door, parallel to `doors`. */
+  doorPasses: DoorPass[];
+  /** Convenience: first door, or null if there are no exits. */
   door: Door | null;
-  /** Mutable bound override allowing the player to step past minZ when active. */
+  /** Convenience: first door pass, or an inactive default. */
   doorPass: DoorPass;
   dispose(): void;
 }
@@ -64,6 +72,12 @@ export interface ArenaOptions {
   /** When true (default), cut a doorway opening into the south (-Z) wall and
    *  attach a Door mesh that can be unlocked on room clear. */
   exitDoor?: boolean;
+  /**
+   * How many doors to build on the south wall — 1 (default, single centered
+   * door) or 3 (Slay-the-Spire-style fork; doors at -size/3, 0, +size/3). Only
+   * applied when `exitDoor !== false`. Boss rooms typically use 1.
+   */
+  exitDoorCount?: 1 | 3;
   /**
    * Layout pattern for the pillars. "scatter" (default) keeps the existing
    * RNG placement; "ring" wraps them around the player's spawn-side; "rows"
@@ -167,39 +181,60 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
   makeWall("wallE", wallThickness, size, half + wallThickness / 2, 0);
   makeWall("wallW", wallThickness, size, -half - wallThickness / 2, 0);
 
-  // South wall — when the room has an exit door, split it into two side
-  // segments + a lintel above the opening. Otherwise build a solid box like
-  // the other walls. The doorway sits centered on x=0.
+  // South wall — when the room has exit doors, build segments separated by
+  // openings centered at each `doorXCenter`. The lintel above each opening
+  // hides the void behind the open door. With 0 doors we build a solid wall
+  // like the other sides.
   const southZ = -half - wallThickness / 2;
+  const doorXCenters: number[] = [];
   if (buildExitDoor) {
+    const count = opts.exitDoorCount ?? 1;
+    if (count === 3) {
+      doorXCenters.push(-size / 3, 0, size / 3);
+    } else {
+      doorXCenters.push(0);
+    }
+  }
+  if (doorXCenters.length > 0) {
     const opening = DOOR_OPENING_WIDTH;
     const lintelStart = DOOR_OPENING_HEIGHT;
-    const sideWallW = (size + wallThickness * 2 - opening) / 2;
     const totalW = size + wallThickness * 2;
-    // Left segment: from -totalW/2 to -opening/2.
-    const leftCenter = -totalW / 2 + sideWallW / 2;
-    makeWall("wallS_left", sideWallW, wallThickness, leftCenter, southZ);
-    // Right segment: from +opening/2 to +totalW/2.
-    const rightCenter = totalW / 2 - sideWallW / 2;
-    makeWall("wallS_right", sideWallW, wallThickness, rightCenter, southZ);
-    // Lintel — spans the opening above the door, sits between DOOR_OPENING_HEIGHT
-    // and wallHeight. We build it as a separate makeWall variant inline since the
-    // shared helper places centered at wallHeight/2.
+    // Build wall segments around each opening. We sort the opening edges along
+    // the X axis and build a wall box between each successive pair.
+    const sortedCenters = [...doorXCenters].sort((a, b) => a - b);
+    const edges: number[] = [-totalW / 2];
+    for (const c of sortedCenters) {
+      edges.push(c - opening / 2);
+      edges.push(c + opening / 2);
+    }
+    edges.push(totalW / 2);
+    for (let i = 0; i < edges.length; i += 2) {
+      const a = edges[i];
+      const b = edges[i + 1];
+      const segW = b - a;
+      if (segW <= 0.05) continue; // skip degenerate slivers when openings touch the corner
+      makeWall(`wallS_${i / 2}`, segW, wallThickness, (a + b) / 2, southZ);
+    }
+    // Lintel above each door — spans the opening between DOOR_OPENING_HEIGHT
+    // and wallHeight to hide the gap above the door.
     if (wallHeight > lintelStart) {
       const lintelH = wallHeight - lintelStart;
-      const lintel = MeshBuilder.CreateBox(
-        "wallS_lintel",
-        { width: opening, height: lintelH, depth: wallThickness },
-        scene,
-      );
-      lintel.position = new Vector3(0, lintelStart + lintelH / 2, southZ);
-      lintel.material = wallMat;
-      lintel.receiveShadows = true;
-      lintel.checkCollisions = true;
-      lintel.parent = root;
-      lintel.doNotSyncBoundingInfo = true;
-      lintel.freezeWorldMatrix();
-      shadow.addShadowCaster(lintel);
+      for (let i = 0; i < doorXCenters.length; i++) {
+        const xc = doorXCenters[i];
+        const lintel = MeshBuilder.CreateBox(
+          `wallS_lintel_${i}`,
+          { width: opening, height: lintelH, depth: wallThickness },
+          scene,
+        );
+        lintel.position = new Vector3(xc, lintelStart + lintelH / 2, southZ);
+        lintel.material = wallMat;
+        lintel.receiveShadows = true;
+        lintel.checkCollisions = true;
+        lintel.parent = root;
+        lintel.doNotSyncBoundingInfo = true;
+        lintel.freezeWorldMatrix();
+        shadow.addShadowCaster(lintel);
+      }
     }
   } else {
     makeWall("wallS", size + wallThickness * 2, wallThickness, 0, southZ);
@@ -292,20 +327,21 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     ceilingMat.freeze();
   }
 
-  // Door — the visible plank that fills the opening while locked. Slides up
-  // into the lintel when unlocked. Only built when exitDoor is enabled.
-  let door: Door | null = null;
-  if (buildExitDoor) {
+  // Doors — the visible planks that fill each opening while locked. Slides up
+  // into the lintel when unlocked. One per `doorXCenters` entry.
+  const doors: Door[] = [];
+  for (let dIdx = 0; dIdx < doorXCenters.length; dIdx++) {
+    const xCenter = doorXCenters[dIdx];
     const opening = DOOR_OPENING_WIDTH;
     const doorH = DOOR_OPENING_HEIGHT - 0.2;
     const doorMesh = MeshBuilder.CreateBox(
-      "doorPlank",
+      `doorPlank_${dIdx}`,
       { width: opening - 0.1, height: doorH, depth: 0.18 },
       scene,
     );
     const closedY = doorH / 2 + 0.05;
-    doorMesh.position = new Vector3(0, closedY, southZ);
-    const doorMat = new StandardMaterial("doorMat", scene);
+    doorMesh.position = new Vector3(xCenter, closedY, southZ);
+    const doorMat = new StandardMaterial(`doorMat_${dIdx}`, scene);
     doorMat.diffuseColor = new Color3(0.32, 0.20, 0.10);
     doorMat.specularColor = new Color3(0.08, 0.06, 0.04);
     doorMat.emissiveColor = new Color3(0, 0, 0);
@@ -317,42 +353,41 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     shadow.addShadowCaster(doorMesh);
 
     // Frame — a thin bright trim around the opening so the door reads even
-    // before unlock. One narrow box per side; merged would be cheaper but
-    // three boxes is already negligible for a single arena.
+    // before unlock. One narrow box per side.
     const frameThickness = 0.18;
     const sideHeight = DOOR_OPENING_HEIGHT;
-    const frameMat = new StandardMaterial("doorFrameMat", scene);
+    const frameMat = new StandardMaterial(`doorFrameMat_${dIdx}`, scene);
     frameMat.diffuseColor = new Color3(0.45, 0.36, 0.22);
     frameMat.emissiveColor = new Color3(0.05, 0.04, 0.02);
     frameMat.specularColor = new Color3(0.05, 0.05, 0.05);
     const frameLeft = MeshBuilder.CreateBox(
-      "doorFrameL",
+      `doorFrameL_${dIdx}`,
       { width: frameThickness, height: sideHeight, depth: 0.4 },
       scene,
     );
-    frameLeft.position = new Vector3(-opening / 2 - frameThickness / 2, sideHeight / 2, southZ);
+    frameLeft.position = new Vector3(xCenter - opening / 2 - frameThickness / 2, sideHeight / 2, southZ);
     frameLeft.material = frameMat;
     frameLeft.parent = root;
     frameLeft.checkCollisions = true;
     frameLeft.freezeWorldMatrix();
     frameLeft.doNotSyncBoundingInfo = true;
     const frameRight = MeshBuilder.CreateBox(
-      "doorFrameR",
+      `doorFrameR_${dIdx}`,
       { width: frameThickness, height: sideHeight, depth: 0.4 },
       scene,
     );
-    frameRight.position = new Vector3(opening / 2 + frameThickness / 2, sideHeight / 2, southZ);
+    frameRight.position = new Vector3(xCenter + opening / 2 + frameThickness / 2, sideHeight / 2, southZ);
     frameRight.material = frameMat;
     frameRight.parent = root;
     frameRight.checkCollisions = true;
     frameRight.freezeWorldMatrix();
     frameRight.doNotSyncBoundingInfo = true;
     const frameTop = MeshBuilder.CreateBox(
-      "doorFrameT",
+      `doorFrameT_${dIdx}`,
       { width: opening + frameThickness * 2, height: frameThickness, depth: 0.4 },
       scene,
     );
-    frameTop.position = new Vector3(0, sideHeight + frameThickness / 2, southZ);
+    frameTop.position = new Vector3(xCenter, sideHeight + frameThickness / 2, southZ);
     frameTop.material = frameMat;
     frameTop.parent = root;
     frameTop.freezeWorldMatrix();
@@ -366,12 +401,12 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     // visible only when the door unlocks. Single emissive plane, billboarded
     // so it always reads from the player's POV. Hidden until setLocked(false).
     const shaft = MeshBuilder.CreatePlane(
-      "doorShaft",
+      `doorShaft_${dIdx}`,
       { width: opening * 0.85, height: DOOR_OPENING_HEIGHT * 1.1, sideOrientation: Mesh.DOUBLESIDE },
       scene,
     );
-    shaft.position = new Vector3(0, DOOR_OPENING_HEIGHT * 0.55, southZ - 0.05);
-    const shaftMat = new StandardMaterial("doorShaftMat", scene);
+    shaft.position = new Vector3(xCenter, DOOR_OPENING_HEIGHT * 0.55, southZ - 0.05);
+    const shaftMat = new StandardMaterial(`doorShaftMat_${dIdx}`, scene);
     shaftMat.disableLighting = true;
     shaftMat.emissiveColor = new Color3(1.0, 0.78, 0.35);
     shaftMat.diffuseColor = new Color3(0, 0, 0);
@@ -387,7 +422,7 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     // Reuse a soft white sprite procedurally so we don't ship a texture file.
     let dustTex: Texture;
     {
-      const dt = new DynamicTexture("doorDustTex", { width: 16, height: 16 }, scene, false);
+      const dt = new DynamicTexture(`doorDustTex_${dIdx}`, { width: 16, height: 16 }, scene, false);
       const ctx = dt.getContext();
       const grad = ctx.createRadialGradient(8, 8, 0.5, 8, 8, 7);
       grad.addColorStop(0, "rgba(255,240,200,1)");
@@ -398,11 +433,11 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
       dt.hasAlpha = true;
       dustTex = dt;
     }
-    const dust = new ParticleSystem("doorDust", 50, scene);
+    const dust = new ParticleSystem(`doorDust_${dIdx}`, 50, scene);
     dust.particleTexture = dustTex;
-    dust.emitter = new Vector3(0, 0.2, southZ);
-    dust.minEmitBox = new Vector3(-opening / 2 + 0.4, 0, -0.1);
-    dust.maxEmitBox = new Vector3(opening / 2 - 0.4, 0.4, 0.2);
+    dust.emitter = new Vector3(xCenter, 0.2, southZ);
+    dust.minEmitBox = new Vector3(xCenter - opening / 2 + 0.4, 0, -0.1);
+    dust.maxEmitBox = new Vector3(xCenter + opening / 2 - 0.4, 0.4, 0.2);
     dust.color1 = new Color4(1.0, 0.85, 0.55, 0.7);
     dust.color2 = new Color4(0.95, 0.75, 0.45, 0.5);
     dust.colorDead = new Color4(0.9, 0.7, 0.4, 0);
@@ -424,12 +459,12 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     let openProgress = 0; // 0 = closed, 1 = fully retracted
     let shaftTargetAlpha = 0;
     const openTargetY = closedY + doorH + 0.2; // slid up into the lintel
-    door = {
+    const door: Door = {
       mesh: doorMesh,
       frame: frameTop,
       zPlane: southZ,
-      xMin: -opening / 2,
-      xMax: opening / 2,
+      xMin: xCenter - opening / 2,
+      xMax: xCenter + opening / 2,
       setLocked(b: boolean) {
         locked = b;
         if (!b) {
@@ -469,7 +504,7 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     // and into the void outside the south wall. The slab fills that gap so
     // the unlocked doorway reads as a dark recess, not skybox.
     const backSlab = MeshBuilder.CreateBox(
-      "doorBackSlab",
+      `doorBackSlab_${dIdx}`,
       {
         width: opening + frameThickness * 2 + 0.4,
         height: DOOR_OPENING_HEIGHT + 1.0,
@@ -477,8 +512,8 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
       },
       scene,
     );
-    backSlab.position = new Vector3(0, (DOOR_OPENING_HEIGHT + 1.0) / 2, southZ - 0.6);
-    const slabMat = new StandardMaterial("doorBackSlabMat", scene);
+    backSlab.position = new Vector3(xCenter, (DOOR_OPENING_HEIGHT + 1.0) / 2, southZ - 0.6);
+    const slabMat = new StandardMaterial(`doorBackSlabMat_${dIdx}`, scene);
     slabMat.diffuseColor = new Color3(0.02, 0.02, 0.02);
     slabMat.specularColor = new Color3(0, 0, 0);
     slabMat.emissiveColor = new Color3(0, 0, 0);
@@ -489,6 +524,7 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     backSlab.freezeWorldMatrix();
     backSlab.doNotSyncBoundingInfo = true;
     slabMat.freeze();
+    doors.push(door);
   }
 
   // Wall sconces — emissive billboards near the top of each side wall to give
@@ -552,6 +588,8 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
   // pillarMat only exists if we built any pillars — freeze via the first pillar's material.
   if (pillars.length > 0 && pillars[0].material) (pillars[0].material as StandardMaterial).freeze();
 
+  const doorPasses: DoorPass[] = doors.map((d) => ({ active: false, xMin: d.xMin, xMax: d.xMax }));
+  const firstDoor = doors[0] ?? null;
   return {
     root,
     floor,
@@ -559,8 +597,10 @@ export function buildArena(scene: Scene, shadow: ShadowGenerator, opts: ArenaOpt
     pillars,
     env,
     ceiling,
-    door,
-    doorPass: { active: false, xMin: door ? door.xMin : 0, xMax: door ? door.xMax : 0 },
+    doors,
+    doorPasses,
+    door: firstDoor,
+    doorPass: doorPasses[0] ?? { active: false, xMin: 0, xMax: 0 },
     dispose() {
       env.dispose();
       // Dispose all descendants then root

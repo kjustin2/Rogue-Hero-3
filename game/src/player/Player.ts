@@ -158,6 +158,8 @@ export class Player {
   aerialSlamming = false;
   /** Pending aerial-card payload — resolved on PLAYER_LANDED in main.ts. */
   pendingAerialCardId: string | null = null;
+  /** Whether the pending aerial cast was CTRL-charged. Drives Fire Pillar count. */
+  pendingAerialCharged = false;
   /** Cyan absorb-shield from utility cards (Aegis). Consumed before HP. */
   absorbHp = 0;
   absorbHpTimer = 0;

@@ -76,7 +76,10 @@ for (const [id, def] of Object.entries(CardDefinitions)) {
   if (isDamaging) check(def.damage > 0, `damaging card "${id}" has non-zero damage`);
   check(def.damage >= 0, `card "${id}" has non-negative damage`);
   check(def.range > 0, `card "${id}" has positive range`);
-  check(["melee", "projectile", "dash", "aoe", "aerial", "utility"].includes(def.type), `card "${id}" type is a known handler`);
+  check(
+    ["melee", "projectile", "dash", "aoe", "aerial", "utility", "mine_field", "charged_beam"].includes(def.type),
+    `card "${id}" type is a known handler`,
+  );
 }
 
 // ---------------------------------------------------------- Items

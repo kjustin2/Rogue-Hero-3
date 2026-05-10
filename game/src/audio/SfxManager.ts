@@ -176,10 +176,19 @@ export class SfxManager {
     this.subs.push(events.on("ROOM_CLEARED", () => this.playRoomCleared()));
     this.subs.push(events.on("BOSS_INTRO_START", () => this.playBossIntroStart()));
     this.subs.push(events.on("BOSS_PHASE", () => this.playBossPhase()));
-    this.subs.push(events.on("DRAIN", () => this.playDrain()));
     this.subs.push(events.on("PLAYER_STEP", () => this.onPlayerStep()));
     this.subs.push(events.on<PlayerLandedPayload>("PLAYER_LANDED", (p) => this.playPlayerLanded(p)));
     this.subs.push(events.on<string>("PLAY_SOUND", (p) => this.onPlaySound(p)));
+    this.subs.push(events.on<{ kind: string }>("HAZARD_SPAWNED", (p) => this.playHazardSpawned(p)));
+    this.subs.push(events.on("BEAM_CHARGED", () => this.playBeamCharged()));
+    this.subs.push(events.on("BLEED_TICK", () => this.onBleedTick()));
+    this.subs.push(events.on("PHANTOM_DETONATE", () => this.playPhantomDetonate()));
+    this.subs.push(events.on<{ tier: number; dir: number }>("COMBO_TIER_CHANGED", (p) => {
+      // Drum kicker only when escalating to tier 3 — quieter beats at lower
+      // tiers would clutter combat audio without adding meaningful feedback.
+      if (p.tier === 3 && p.dir > 0) this.playComboKicker();
+    }));
+    this.subs.push(events.on<{ id: string; name: string }>("CARD_COMBO", () => this.playCardCombo()));
   }
 
   // -------- Event-side handlers (with throttling / coalescing) --------
@@ -532,6 +541,126 @@ export class SfxManager {
     this.scheduleNoise(t0, 0.18, "bandpass", 1500, 0.3, 8);
   }
 
+  /**
+   * Hazard spawn — a short hiss + low thud. Per-kind tonal shifts give each
+   * card's hazard its own audio identity (mine = clack, fire = whoosh, etc.)
+   * without spawning per-card synthesis branches.
+   */
+  private playHazardSpawned(p: { kind: string }): void {
+    if (!this.ctx) return;
+    const t0 = this.now();
+    const gain = this.mkGain(0.0001);
+    if (!gain) return;
+    const tone = this.ctx.createOscillator();
+    tone.type = "sine";
+    // Per-kind base pitch — mines clack high, frost / fire hiss mid, phantoms wobble low.
+    const basePitch = p.kind === "mine" ? 480 : p.kind === "frost" ? 720 : p.kind === "phantom" ? 220 : 360;
+    tone.frequency.setValueAtTime(basePitch, t0);
+    tone.frequency.exponentialRampToValueAtTime(basePitch * 0.55, t0 + 0.18);
+    tone.connect(gain);
+    gain.gain.linearRampToValueAtTime(0.10, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+    tone.start(t0); tone.stop(t0 + 0.24);
+    this.scheduleNoise(t0, 0.18, "highpass", 1200, 0.25, 6);
+  }
+
+  /**
+   * Charged Beam reaching its top tier — bright synth note with a sweep up so
+   * the player's ear catches "this hit hard". Reuses the bolt SFX shape with
+   * a longer tail and a rising frequency ramp.
+   */
+  private playBeamCharged(): void {
+    if (!this.ctx) return;
+    const t0 = this.now();
+    const gain = this.mkGain(0.0001);
+    if (!gain) return;
+    const sine = this.ctx.createOscillator();
+    sine.type = "triangle";
+    sine.frequency.setValueAtTime(520, t0);
+    sine.frequency.exponentialRampToValueAtTime(1320, t0 + 0.22);
+    sine.connect(gain);
+    gain.gain.exponentialRampToValueAtTime(0.28, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.36);
+    sine.start(t0); sine.stop(t0 + 0.38);
+    this.scheduleNoise(t0, 0.30, "bandpass", 1800, 0.4, 10);
+  }
+
+  /** Tracks last bleed-tick time so dense combat doesn't churn out a stream. */
+  private lastBleedTickAt = 0;
+  /**
+   * Bleed tick — a tiny throttled pip so the DoT has audio presence without
+   * drowning combat. Coalesces multi-bleed-stack frames to one sound event.
+   */
+  private onBleedTick(): void {
+    if (!this.ctx) return;
+    const now = this.now();
+    if (now - this.lastBleedTickAt < 0.18) return;
+    this.lastBleedTickAt = now;
+    const gain = this.mkGain(0.0001);
+    if (!gain) return;
+    const tone = this.ctx.createOscillator();
+    tone.type = "square";
+    tone.frequency.setValueAtTime(420, now);
+    tone.frequency.exponentialRampToValueAtTime(220, now + 0.08);
+    tone.connect(gain);
+    gain.gain.linearRampToValueAtTime(0.06, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.10);
+    tone.start(now); tone.stop(now + 0.12);
+  }
+
+  /** Drum-kick stinger on tier 3 combo — full stack low + bright transient. */
+  private playComboKicker(): void {
+    if (!this.ctx) return;
+    const t0 = this.now();
+    const gain = this.mkGain(0.0001);
+    if (!gain) return;
+    const sub = this.ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(110, t0);
+    sub.frequency.exponentialRampToValueAtTime(50, t0 + 0.18);
+    sub.connect(gain);
+    gain.gain.linearRampToValueAtTime(0.32, t0 + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.30);
+    sub.start(t0); sub.stop(t0 + 0.32);
+    this.scheduleNoise(t0, 0.10, "highpass", 4000, 0.4, 4);
+  }
+
+  /** Card combo named-pair stinger — bright synth chord. */
+  private playCardCombo(): void {
+    if (!this.ctx) return;
+    const t0 = this.now();
+    const gain = this.mkGain(0.0001);
+    if (!gain) return;
+    const freqs = [392, 587, 784]; // G4 D5 G5
+    for (let i = 0; i < freqs.length; i++) {
+      const o = this.ctx.createOscillator();
+      o.type = "triangle";
+      o.frequency.value = freqs[i];
+      o.connect(gain);
+      o.start(t0 + i * 0.02);
+      o.stop(t0 + 0.32);
+    }
+    gain.gain.linearRampToValueAtTime(0.16, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+  }
+
+  /** Phantom Decoy detonating — softer pop than HEAVY_HIT, low-mid impact. */
+  private playPhantomDetonate(): void {
+    if (!this.ctx) return;
+    const t0 = this.now();
+    const gain = this.mkGain(0.0001);
+    if (!gain) return;
+    const sub = this.ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(180, t0);
+    sub.frequency.exponentialRampToValueAtTime(60, t0 + 0.18);
+    sub.connect(gain);
+    gain.gain.linearRampToValueAtTime(0.22, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.28);
+    sub.start(t0); sub.stop(t0 + 0.30);
+    this.scheduleNoise(t0, 0.22, "lowpass", 600, 0.3, 4);
+  }
+
   private playArcSwing(): void {
     if (!this.ctx) return;
     const t0 = this.now();
@@ -663,24 +792,6 @@ export class SfxManager {
     sine.start(t0); sine.stop(t0 + 0.36);
     sq.start(t0); sq.stop(t0 + 0.36);
     this.scheduleNoise(t0, 0.1, "lowpass", 400, 0.32);
-  }
-
-  private playDrain(): void {
-    if (!this.ctx) return;
-    const t0 = this.now();
-    const gain = this.mkGain(0.0001);
-    if (!gain) return;
-    const saw = this.ctx.createOscillator();
-    saw.type = "sawtooth";
-    saw.frequency.setValueAtTime(200, t0);
-    saw.frequency.exponentialRampToValueAtTime(80, t0 + 0.4);
-    const lpf = this.ctx.createBiquadFilter();
-    lpf.type = "lowpass"; lpf.frequency.value = 400;
-    saw.connect(lpf); lpf.connect(gain);
-    gain.gain.exponentialRampToValueAtTime(0.3, t0 + 0.04);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.4);
-    saw.start(t0); saw.stop(t0 + 0.42);
-    this.scheduleNoise(t0 + 0.1, 0.2, "lowpass", 600, 0.12);
   }
 
   private playPlayerStep(): void {

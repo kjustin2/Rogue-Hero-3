@@ -17,8 +17,8 @@ export const STALKER: HeroDef = {
     perfectDodgeTempoGain: 10,
   },
   // Hit-and-run identity: damage dash to engage, phase blink to disengage,
-  // and a ranged bolt for finishing kited targets.
-  startingDeck: ["dashstrike", "phase_step", "bolt"],
+  // and a charged beam for finishing kited targets.
+  startingDeck: ["dashstrike", "phase_step", "charged_beam"],
   bodyTint: new Color3(0.35, 0.20, 0.55),
   capeTint: new Color3(0.20, 0.10, 0.35),
   swordTint: new Color3(0.85, 0.65, 1.0),
