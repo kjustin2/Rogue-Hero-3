@@ -12,7 +12,18 @@ interface PooledHostileProjectile {
   vel: Vector3;
   damage: number;
   ttl: number;
+  hitRadius: number;
+  jumpClearanceY: number | null;
   active: boolean;
+}
+
+export interface HostileProjectileOptions {
+  /** World Y for the projectile center. Low shots can be jumped over. */
+  height?: number;
+  /** Collision radius. Default matches the 0.4m visual sphere. */
+  hitRadius?: number;
+  /** If the player's feet are above this Y, treat overlap as a jump-clear. */
+  jumpClearanceY?: number;
 }
 
 /**
@@ -49,6 +60,8 @@ export class HostileProjectileSystem {
       vel: new Vector3(),
       damage: 0,
       ttl: 0,
+      hitRadius: 0.2,
+      jumpClearanceY: null,
       active: false,
     };
   }
@@ -58,17 +71,28 @@ export class HostileProjectileSystem {
     return null; // pool exhausted — silently drop the shot
   }
 
-  fire(origin: Vector3, dir: Vector3, speed: number, damage: number, ttl = 2.5): void {
+  fire(
+    origin: Vector3,
+    dir: Vector3,
+    speed: number,
+    damage: number,
+    ttl = 2.5,
+    opts: HostileProjectileOptions = {},
+  ): void {
     const len = Math.hypot(dir.x, dir.z);
     if (len < 1e-4) return;
     const p = this.acquire();
     if (!p) return;
     p.mesh.position.copyFrom(origin);
-    p.mesh.position.y = 1;
+    p.mesh.position.y = opts.height ?? 1;
     p.vel.set((dir.x / len) * speed, 0, (dir.z / len) * speed);
     p.damage = damage;
     p.ttl = ttl;
+    p.hitRadius = opts.hitRadius ?? 0.2;
+    p.jumpClearanceY = opts.jumpClearanceY ?? null;
     p.active = true;
+    const visualScale = p.hitRadius / 0.2;
+    p.mesh.scaling.setAll(visualScale);
     p.mesh.setEnabled(true);
   }
 
@@ -86,12 +110,23 @@ export class HostileProjectileSystem {
       let consumed = false;
       const dx = px - p.mesh.position.x;
       const dz = pz - p.mesh.position.z;
-      const r = playerR + 0.2;
+      const r = playerR + p.hitRadius;
       if (dx * dx + dz * dz <= r * r) {
-        if (!this.player.isDodging) {
-          events.emit("DAMAGE_TAKEN", { amount: p.damage, source: "projectile" });
-        } else if (this.player.tryConsumePerfectDodge()) {
+        const feetY = this.player.root.position.y;
+        const headY = feetY + 1.9;
+        const projectileY = p.mesh.position.y;
+        const verticalOverlap = projectileY + p.hitRadius >= feetY + 0.05
+          && projectileY - p.hitRadius <= headY;
+        const jumpedOver = p.jumpClearanceY !== null && feetY >= p.jumpClearanceY;
+        if (jumpedOver) {
           events.emit("PERFECT_DODGE", {});
+        } else if (verticalOverlap && !this.player.isDodging) {
+          events.emit("DAMAGE_TAKEN", { amount: p.damage, source: "projectile" });
+        } else if (verticalOverlap && this.player.tryConsumePerfectDodge()) {
+          events.emit("PERFECT_DODGE", {});
+        } else if (!verticalOverlap) {
+          consumed = false;
+          continue;
         }
         consumed = true;
       }

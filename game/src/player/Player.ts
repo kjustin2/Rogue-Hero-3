@@ -160,6 +160,7 @@ export class Player {
   pendingAerialCardId: string | null = null;
   /** Whether the pending aerial cast was CTRL-charged. Drives Fire Pillar count. */
   pendingAerialCharged = false;
+  pendingAerialDamage = 0;
   /** Cyan absorb-shield from utility cards (Aegis). Consumed before HP. */
   absorbHp = 0;
   absorbHpTimer = 0;
@@ -790,6 +791,9 @@ export class Player {
     this.swingTimer = 0;
     this.castTimer = 0;
     this.castKind = null;
+    this.pendingAerialCardId = null;
+    this.pendingAerialCharged = false;
+    this.pendingAerialDamage = 0;
     this.locoClock = 0;
     this.idleClock = 0;
     this.capeClock = 0;

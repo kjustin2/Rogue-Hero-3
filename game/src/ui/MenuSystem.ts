@@ -196,7 +196,7 @@ export class MenuSystem {
     title.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
     panel.addControl(title);
 
-    const subtitle = this.makeText("Vertical Slice — Blade vs Brawler", "#aaaaaa", 18);
+    const subtitle = this.makeText("Three-act roguelike run", "#aaaaaa", 18);
     subtitle.heightInPixels = SUBTITLE_H;
     subtitle.widthInPixels = PANEL_W - PANEL_PAD * 2;
     subtitle.topInPixels = 36 + TITLE_H + 4;
@@ -296,12 +296,12 @@ export class MenuSystem {
       "Mouse                 Aim",
       "Left Mouse            Use selected card",
       "Right Mouse           Cycle selected card",
-      "1 / 2 / 3             Select card slot",
+      "1 / 2 / 3 / 4 / 5     Select card slot",
       "Space                 Jump (mid-air cards become usable)",
       "Shift                 Dodge (i-frames)",
       "F                     Crash (Tempo ≥ 85)",
       "Q / Tab               Switch target",
-      "Hold RMB              Orbit camera",
+      "Middle Mouse          Orbit camera",
       "Mouse Wheel           Zoom",
       "G                     Cycle graphics tier",
       "R                     Restart on Defeat / Victory",

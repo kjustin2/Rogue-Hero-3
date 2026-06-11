@@ -4,6 +4,7 @@ import { Rectangle } from "@babylonjs/gui/2D/controls/rectangle";
 import { TextBlock } from "@babylonjs/gui/2D/controls/textBlock";
 import { Control } from "@babylonjs/gui/2D/controls/control";
 import { CardDef } from "../deck/CardDefinitions";
+import { MAX_HAND_SIZE, MIN_HAND_SIZE } from "../deck/DeckManager";
 
 const TYPE_COLOR: Record<string, string> = {
   melee: "#ffaa44",
@@ -12,14 +13,14 @@ const TYPE_COLOR: Record<string, string> = {
   aoe: "#66e0ff",
   aerial: "#ff7733",
   utility: "#a8ffd2",
+  mine_field: "#ff7022",
+  charged_beam: "#80c8ff",
 };
-
-const HAND_SIZE = 3;
 
 /**
  * Inter-room hand picker — surface the player's full collection in a wrap
- * grid, let them toggle up to 3 cards. Confirm enabled only when exactly 3
- * cards are selected. Returns the picked id list (length === HAND_SIZE).
+ * grid, let them toggle up to the current hand size. Confirm enabled only when
+ * exactly that many cards are selected.
  *
  * Differs from CardRewardPicker (single-pick reward) in that the user
  * actively builds a list and confirms via a button. Existing hand cards are
@@ -34,6 +35,7 @@ export class HandPicker {
   private titleText: TextBlock;
   private isOpen = false;
   private selected: string[] = [];
+  private handSize = MIN_HAND_SIZE;
   private cardRefs: { id: string; card: Rectangle; orderText: TextBlock }[] = [];
   private resolve: ((picks: string[]) => void) | null = null;
 
@@ -50,7 +52,7 @@ export class HandPicker {
     this.ui.addControl(this.container);
 
     this.titleText = new TextBlock("handPickerTitle");
-    this.titleText.text = "BUILD YOUR HAND — 0/3";
+    this.titleText.text = "BUILD YOUR HAND - 0/3";
     this.titleText.color = "#ffe066";
     this.titleText.fontSize = 40;
     this.titleText.fontFamily = "monospace";
@@ -64,7 +66,7 @@ export class HandPicker {
     this.container.addControl(this.titleText);
 
     const subtitle = new TextBlock("handPickerSubtitle");
-    subtitle.text = "Pick 3 cards from your deck. Click to toggle. Slots map to keys 1, 2, 3 in pick order.";
+    subtitle.text = "Pick your battle hand. Click to toggle. Slots map to number keys in pick order.";
     subtitle.color = "#aaaaaa";
     subtitle.fontSize = 16;
     subtitle.fontFamily = "monospace";
@@ -110,15 +112,16 @@ export class HandPicker {
     this.confirmBtn.addControl(this.confirmLabel);
 
     this.confirmBtn.onPointerClickObservable.add(() => {
-      if (this.selected.length === HAND_SIZE) this.close(this.selected.slice());
+      if (this.selected.length === this.handSize) this.close(this.selected.slice());
     });
   }
 
-  open(collection: CardDef[], current: (string | null)[]): Promise<string[]> {
+  open(collection: CardDef[], current: (string | null)[], handSize = MIN_HAND_SIZE): Promise<string[]> {
     if (this.isOpen) return Promise.resolve(this.selected.slice());
     this.isOpen = true;
+    this.handSize = Math.max(MIN_HAND_SIZE, Math.min(MAX_HAND_SIZE, Math.floor(handSize)));
     // Pre-fill selected from current hand (truncated to existing entries).
-    this.selected = current.filter((id): id is string => id !== null).slice(0, HAND_SIZE);
+    this.selected = current.filter((id): id is string => id !== null).slice(0, this.handSize);
     this.layoutGrid(collection);
     this.refreshUi();
     this.container.isVisible = true;
@@ -272,7 +275,7 @@ export class HandPicker {
     if (idx >= 0) {
       this.selected.splice(idx, 1);
     } else {
-      if (this.selected.length >= HAND_SIZE) {
+      if (this.selected.length >= this.handSize) {
         // Ring out the oldest pick — simplest UX, the player doesn't have to
         // deselect first to swap a card.
         this.selected.shift();
@@ -284,7 +287,7 @@ export class HandPicker {
 
   private refreshUi(): void {
     const n = this.selected.length;
-    this.titleText.text = `BUILD YOUR HAND — ${n}/${HAND_SIZE}`;
+    this.titleText.text = `BUILD YOUR HAND - ${n}/${this.handSize}`;
     for (const ref of this.cardRefs) {
       const idx = this.selected.indexOf(ref.id);
       if (idx >= 0) {
@@ -299,7 +302,7 @@ export class HandPicker {
         ref.orderText.text = "";
       }
     }
-    if (n === HAND_SIZE) {
+    if (n === this.handSize) {
       this.confirmBtn.alpha = 1;
       this.confirmBtn.hoverCursor = "pointer";
       this.confirmLabel.color = "#88ffaa";
@@ -324,12 +327,12 @@ export class HandPicker {
   isVisible(): boolean { return this.isOpen; }
 
   /**
-   * Test-only: pick the first `n` cards from the collection (where n = HAND_SIZE)
+   * Test-only: pick the first cards from the collection for the current hand size
    * and confirm the selection, resolving the open() promise.
    */
   pickFirstNForTest(): void {
     if (!this.isOpen) return;
-    const slotIds = this.cardRefs.slice(0, HAND_SIZE).map((r) => r.id);
+    const slotIds = this.cardRefs.slice(0, this.handSize).map((r) => r.id);
     this.close(slotIds);
   }
 }

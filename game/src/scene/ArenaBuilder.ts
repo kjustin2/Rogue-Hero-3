@@ -95,6 +95,7 @@ export const VERDANT_ENV_PALETTE: EnvPalette = {
   rock: new Color3(0.42, 0.40, 0.36),
   mushroomCap: new Color3(0.85, 0.25, 0.2),
   mushroomStem: new Color3(0.92, 0.88, 0.72),
+  accent: new Color3(0.72, 0.55, 0.28),
   mountain: new Color3(0.22, 0.28, 0.35),
   skyTop: new Color3(0.38, 0.56, 0.82),
   skyBottom: new Color3(0.78, 0.72, 0.55),
@@ -102,6 +103,8 @@ export const VERDANT_ENV_PALETTE: EnvPalette = {
   grassCount: 220,
   rockCount: 18,
   mushroomCount: 14,
+  tallPropCount: 10,
+  hangingCount: 8,
 };
 
 export const PIT_ENV_PALETTE: EnvPalette = {
@@ -110,6 +113,7 @@ export const PIT_ENV_PALETTE: EnvPalette = {
   rock: new Color3(0.14, 0.10, 0.08),
   mushroomCap: new Color3(0.35, 0.08, 0.04),
   mushroomStem: new Color3(0.22, 0.16, 0.12),
+  accent: new Color3(0.95, 0.28, 0.10),
   mountain: new Color3(0.14, 0.08, 0.08),
   skyTop: new Color3(0.18, 0.08, 0.10),
   skyBottom: new Color3(0.42, 0.18, 0.08),
@@ -117,6 +121,8 @@ export const PIT_ENV_PALETTE: EnvPalette = {
   grassCount: 90,
   rockCount: 34,
   mushroomCount: 2,
+  tallPropCount: 14,
+  hangingCount: 6,
 };
 
 // Doorway opening dimensions on the -Z wall — kept as constants so PlayerController

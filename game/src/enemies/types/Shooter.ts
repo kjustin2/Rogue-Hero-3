@@ -31,6 +31,8 @@ export class Shooter extends Enemy {
   private bowPivot: Mesh;
   /** Reused fire-direction buffer so each shot doesn't allocate a Vector3. */
   private fireDirBuf = new Vector3();
+  /** Alternates normal arrows with low sweep shots that the player can jump. */
+  private lowVolleyNext = true;
 
   constructor(
     scene: Scene,
@@ -131,7 +133,16 @@ export class Shooter extends Enemy {
       this.fireTimer = 1.8;
       const origin = this.root.position;
       this.fireDirBuf.set(dx, 0, dz);
-      this.projectiles.fire(origin, this.fireDirBuf, 11, 7, 2.5);
+      if (this.lowVolleyNext) {
+        this.projectiles.fire(origin, this.fireDirBuf, 9, 8, 3.0, {
+          height: 0.35,
+          hitRadius: 0.28,
+          jumpClearanceY: 0.55,
+        });
+      } else {
+        this.projectiles.fire(origin, this.fireDirBuf, 11, 7, 2.5);
+      }
+      this.lowVolleyNext = !this.lowVolleyNext;
     }
   }
 }

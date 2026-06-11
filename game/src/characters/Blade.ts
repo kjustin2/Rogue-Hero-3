@@ -17,8 +17,8 @@ export const BLADE: HeroDef = {
   },
   // 3 distinct cards — a wide-arc melee, an opening dash, and a defensive
   // shield. Together they teach close combat, gap-closing, and survival.
-  // New cards are earned per boss; deck capped at 5 so the third boss reward
-  // requires swapping out an older card.
+  // New cards are earned from bosses and occasional level rewards. The wider
+  // collection gives choices, while the active hand stays small.
   startingDeck: ["cleave", "dashstrike", "aegis"],
   bodyTint: new Color3(0.78, 0.74, 0.70),
   capeTint: new Color3(0.78, 0.18, 0.18),

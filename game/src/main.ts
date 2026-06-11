@@ -17,7 +17,7 @@ import { ArenaHazards } from "./scene/ArenaHazards";
 import { HazardTiles } from "./scene/HazardTiles";
 import { createFollowCamera } from "./scene/FollowCamera";
 import { InputController } from "./input/InputController";
-import { Player } from "./player/Player";
+import { DEFAULT_PLAYER_STATS, Player } from "./player/Player";
 import { PlayerController } from "./player/PlayerController";
 import { EnemyManager, EnemyKind } from "./enemies/EnemyManager";
 import type { BossPhasePayload } from "./enemies/types/BossBase";
@@ -25,7 +25,7 @@ import { setBossArchAccessor } from "./enemies/types/BossBase";
 import { CombatManager } from "./combat/CombatManager";
 import { Hud } from "./ui/Hud";
 import { TempoSystem } from "./tempo/TempoSystem";
-import { DeckManager } from "./deck/DeckManager";
+import { DeckManager, MIN_HAND_SIZE } from "./deck/DeckManager";
 import { ProjectileSystem } from "./combat/handlers/projectile";
 import { HostileProjectileSystem } from "./combat/handlers/hostileProjectile";
 import { CardCaster, CardArcFx } from "./combat/CardCaster";
@@ -38,7 +38,7 @@ import { OptionPicker } from "./ui/OptionPicker";
 import { setActiveAnomaly, isAnomaly } from "./run/Anomalies";
 import { SHRINE_DEFS, ShrineId, rollShrineOptions } from "./run/Shrines";
 import { rollShopOffers, ShopOffer } from "./run/Shops";
-import { CardUpgrades } from "./deck/CardUpgrades";
+import { CardUpgrades, MUTATOR_DEFS, UPGRADE_TIERS } from "./deck/CardUpgrades";
 import { ArchetypeSynergy } from "./items/ArchetypeSynergy";
 import { ComboChains } from "./combat/ComboChains";
 import { ComboMeter } from "./combat/ComboMeter";
@@ -96,6 +96,13 @@ interface EnemyHitPayload {
   isBoss: boolean;
 }
 
+interface BossIntroPayload {
+  bossId: string;
+  duration: number;
+  name: string;
+  pos: Vector3;
+}
+
 async function boot() {
   const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("renderCanvas not found");
@@ -132,28 +139,33 @@ async function boot() {
   // and dev shortcuts; main flow drives `loadNode(node)`.
   const run = new RunManager(scene, shadow, enemies, VERTICAL_SLICE_ROOMS);
   let runMap = generateRunMap((Date.now() & 0xffffffff) >>> 0);
+  const routeRng = mulberry32(((Date.now() & 0xffffffff) ^ 0x51adf00d) >>> 0);
+  let pendingDoorTarget: RunNode | null = null;
   run.setMap(runMap);
   const startNode0 = runMap.byId.get(runMap.startId)!;
   const arena0 = run.loadNode(startNode0);
   input.setFloorReference(arena0.floor);
   enemies.setPillars(arena0.pillars);
   const doorChoiceHud = new DoorChoiceHud(scene);
+  function chooseSingleDoorTarget(choices: RunNode[]): RunNode | null {
+    if (choices.length === 0) return null;
+    return choices[Math.floor(routeRng() * choices.length) % choices.length];
+  }
+
   // The start lobby has no enemies — pre-unlock the doors so the player can
-  // immediately pick their first room. Banner reminds them what they're
+  // immediately enter their first room. Banner reminds them what they're
   // looking at. ROOM_CLEARED won't fire here (no enemies to kill), so this
-  // boot-time wiring is the only path that opens the start-lobby doors.
+  // boot-time wiring is the only path that opens the start-lobby door.
   function openLobbyDoorsForStart(): void {
     const choices = run.currentChoices();
     const ar = run.arena;
     if (!ar) return;
+    pendingDoorTarget = chooseSingleDoorTarget(choices);
     for (let i = 0; i < ar.doors.length; i++) {
       ar.doors[i].setLocked(false);
       ar.doorPasses[i].active = true;
     }
-    if (run.map && choices.length === ar.doors.length) {
-      const xCenters = ar.doors.map((d) => (d.xMin + d.xMax) / 2);
-      doorChoiceHud.setChoices(xCenters, choices, ar.doors[0].zPlane);
-    }
+    doorChoiceHud.clear();
   }
 
   // Tempo first — PlayerController reads tempo.speedMultiplier() each frame
@@ -220,6 +232,7 @@ async function boot() {
   const hazards = new HazardZones(scene, enemies, telegraph);
   hazards.setPlayer(player);
   const caster = new CardCaster(player, enemies, tempo, projectiles);
+  caster.setMovementResolver((x, z) => controller.resolvePosition(x, z));
   caster.setHazards(hazards);
   // Run-scoped card upgrade + mutator overrides. Composed at cast time inside
   // CardCaster.cast() so neither the deck nor the picker UIs need to know
@@ -237,6 +250,7 @@ async function boot() {
   // per room. Award is computed and shards added on ROOM_CLEARED.
   const perfectClear = new PerfectClear();
   events.on("ROOM_CLEARED", () => {
+    if (!isCombatClearEligible()) return;
     const { flags, shards } = perfectClear.evaluate();
     if (shards > 0) {
       gs.shards += shards;
@@ -478,7 +492,7 @@ async function boot() {
       hazardTiles.dispose();
       hazardTiles = null;
     }
-    const desc = run.rooms[run.currentIndex];
+    const desc = run.currentDescriptor();
     if (desc?.hazards && desc.hazards.length > 0) {
       hazardTiles = new HazardTiles(scene, desc.hazards);
     }
@@ -651,6 +665,7 @@ async function boot() {
   // Banner clears itself when ROOM_CLEARED fires shortly after (or after a
   // hard timeout in case ROOM_CLEARED is delayed).
   let bossDefeatedBannerTimer = 0;
+  let bossRegenTimer = 0;
   events.on<{ bossId: string; name: string; pos: Vector3 }>("BOSS_DEFEATED", ({ bossId, name }) => {
     hud.setBanner(`${name} — DEFEATED`);
     bossDefeatedBannerTimer = 2.6;
@@ -660,6 +675,8 @@ async function boot() {
       player.stats.maxHp = gs.preBossMaxHp;
       gs.preBossMaxHp = 0;
     }
+    items.clearBossDisabled();
+    bossRegenTimer = 0;
     // Grant +1 reward roll if a curse was taken (consumed by next openCardRewardPicker via gs.bossCurseRewardBonus).
     if (gs.bossCurseId !== null) {
       gs.bossCurseRewardBonus = true;
@@ -1201,7 +1218,7 @@ async function boot() {
 
   // ---------- Selected-card state ----------
   // LMB plays the card at selectedSlot; RMB cycles selectedSlot to the next populated slot.
-  // 1–3 keys select a slot directly without playing (handy for experienced players).
+  // 1-5 keys select a slot directly without playing (handy for experienced players).
   const selection = { slot: 0 };
 
   function ensureValidSelection(): void {
@@ -1313,11 +1330,7 @@ async function boot() {
   // is added to ColorGrading.ts they slot in here.
   /** Resolve the active room descriptor for the current load — map or linear. */
   function currentRoomDescriptor(): RoomDescriptor | undefined {
-    if (run.map) {
-      const node = run.map.byId.get(run.map.currentId);
-      return node?.descriptor ?? undefined;
-    }
-    return run.rooms[gs.roomIndex];
+    return run.currentDescriptor();
   }
   function presetForRoom(_idx: number): GradingPreset {
     const desc = currentRoomDescriptor();
@@ -1326,6 +1339,16 @@ async function boot() {
   }
   function isBossRoom(_idx: number): boolean {
     return currentRoomDescriptor()?.isBoss === true;
+  }
+  function currentNodeKind(): RunNode["kind"] | null {
+    return run.currentNode()?.kind ?? null;
+  }
+  function isCombatClearEligible(): boolean {
+    if (gs.phase !== "playing") return false;
+    const kind = currentNodeKind();
+    if (kind) return kind === "combat" || kind === "elite" || kind === "boss";
+    const desc = currentRoomDescriptor();
+    return !!desc && (desc.isBoss === true || desc.spawns.length > 0);
   }
   applyGradingPreset(pipeline, presetForRoom(0));
   applyBossLighting(sceneBundle, isBossRoom(0));
@@ -1370,13 +1393,16 @@ async function boot() {
   updateBiomeHazards();
 
   const rewardRng = mulberry32(0xfeed);
+  const LEVEL_MOVE_CHANCE = 0.28;
+  const ELITE_MOVE_CHANCE = 0.45;
 
-  function pickRewardOptions(): ItemDef[] {
+  function pickRewardOptions(rarity?: ItemDef["rarity"]): ItemDef[] {
     const owned = items.equipped;
     const available = ALL_ITEM_IDS.filter((id) => {
       const def = ItemDefinitions[id];
       if (owned.has(id)) return false;
-      if (def.charSpecific && def.charSpecific !== BLADE.id) return false;
+      if (rarity && def.rarity !== rarity) return false;
+      if (def.charSpecific && def.charSpecific !== activeHero.id) return false;
       return true;
     });
     const out: ItemDef[] = [];
@@ -1389,8 +1415,51 @@ async function boot() {
     return out;
   }
 
-  function handleRoomCleared(): void {
+  function equipReward(id: string): ItemDef | null {
+    const def = items.equip(id);
+    if (def) events.emit("RELIC_EQUIPPED", { id: def.id, name: def.name, color: def.color });
+    return def;
+  }
+
+  function pickSingleReward(rarity?: ItemDef["rarity"]): ItemDef | null {
+    return pickRewardOptions(rarity)[0] ?? null;
+  }
+
+  function upgradeRandomOwnedCard(): string | null {
+    const candidates = deck.collection.filter((id) => UPGRADE_TIERS[id] && !cardUpgrades.isUpgraded(id));
+    if (candidates.length === 0) return null;
+    const id = candidates[Math.floor(rewardRng() * candidates.length)];
+    cardUpgrades.upgrade(id);
+    return id;
+  }
+
+  function attachRandomMutator(): string | null {
+    const candidates = MUTATOR_DEFS.filter((m) => m.targetCardId === null || deck.collection.includes(m.targetCardId));
+    if (candidates.length === 0) return null;
+    const def = candidates[Math.floor(rewardRng() * candidates.length)];
+    cardUpgrades.attachMutator(def);
+    return def.label;
+  }
+
+  function openCurrentDoors(): void {
+    const choices = run.currentChoices();
+    pendingDoorTarget = chooseSingleDoorTarget(choices);
+    hud.setBanner("EXIT THROUGH THE DOOR");
+    const arena = run.arena!;
+    if (arena.doors.length > 0) {
+      for (let i = 0; i < arena.doors.length; i++) {
+        arena.doors[i].setLocked(false);
+        arena.doorPasses[i].active = true;
+      }
+      doorChoiceHud.clear();
+    } else {
+      void runDoorTransition(null);
+    }
+  }
+
+  async function handleRoomCleared(): Promise<void> {
     if (gs.phase !== "playing") return;
+    const clearedKind = currentNodeKind() ?? (isBossRoom(gs.roomIndex) ? "boss" : "combat");
     // Last room → straight to victory. The boss arena has no exit door, so
     // there's nothing to walk through; clearing it ends the run.
     if (run.isLastRoom()) {
@@ -1410,43 +1479,33 @@ async function boot() {
       addShards(3);
       return;
     }
-    // Otherwise: open ALL doors and let the player walk through whichever
-    // they choose. In map mode the choice routes to a specific next-node;
-    // in legacy single-door mode the lone door advances linearly.
-    gs.setPhase("door_open");
-    const choices = run.currentChoices();
-    hud.setBanner(choices.length > 1 ? "CHOOSE A DOOR" : "EXIT THROUGH THE DOOR");
-    const arena = run.arena;
-    if (arena && arena.doors.length > 0) {
-      for (let i = 0; i < arena.doors.length; i++) {
-        arena.doors[i].setLocked(false);
-        arena.doorPasses[i].active = true;
-      }
-      // Wire door-choice preview labels — only when we have a multi-choice
-      // (start + non-boss layers). For single-door rooms (boss / pre-boss
-      // convergent) we skip labels since the choice is unambiguous.
-      if (run.map && choices.length === arena.doors.length) {
-        const xCenters = arena.doors.map((d) => (d.xMin + d.xMax) / 2);
-        doorChoiceHud.setChoices(xCenters, choices, arena.doors[0].zPlane);
-      } else {
-        doorChoiceHud.clear();
-      }
-    } else {
-      // Defensive fallback — if the room has no doors, skip straight to
-      // transition (the final boss case).
-      void runDoorTransition(null);
+    gs.setPhase("reward");
+    if (clearedKind === "boss") {
+      await openCardRewardPicker("boss");
+    } else if (clearedKind === "combat" || clearedKind === "elite") {
+      const moveChance = clearedKind === "elite" ? ELITE_MOVE_CHANCE : LEVEL_MOVE_CHANCE;
+      if (rewardRng() < moveChance) await openCardRewardPicker("level");
+      const rewardCount = run.currentNode()?.riskTier === "elite_dense" ? 2 : 1;
+      for (let i = 0; i < rewardCount; i++) await openRewardPicker();
     }
+    // Otherwise: open the single exit. In map mode the route has already been
+    // selected internally; in legacy single-door mode the lone door advances
+    // linearly.
+    gs.setPhase("door_open");
+    openCurrentDoors();
+    return;
   }
 
   /**
    * Player has crossed a door (or no door exists for the final room). Fade
-   * with a brief flash, swap the arena under cover, then surface the reward
-   * picker as the player "enters" the new room. `targetNode` is the map
-   * node the player chose (which door); pass null in linear mode or for
-   * the no-door final-boss fallback.
+   * with a brief flash, swap the arena under cover, then run entry interactions
+   * for the room the player enters. `targetNode` is the map node chosen for the
+   * single visible door; pass null in linear mode or for the no-door fallback.
    */
   async function runDoorTransition(targetNode: RunNode | null): Promise<void> {
     if (gs.phase !== "door_open" && gs.phase !== "playing") return;
+    const routeTarget = run.map ? (targetNode ?? pendingDoorTarget) : targetNode;
+    pendingDoorTarget = null;
     gs.setPhase("transitioning");
     hud.setBanner(null);
     doorChoiceHud.clear();
@@ -1455,9 +1514,9 @@ async function boot() {
     const enteredRef: { desc: RoomDescriptor | null } = { desc: null };
     setTimeout(() => {
       let nextArena: ReturnType<typeof run.loadNode>;
-      if (run.map && targetNode) {
-        nextArena = run.loadNode(targetNode);
-        enteredRef.desc = targetNode.descriptor;
+      if (run.map && routeTarget) {
+        nextArena = run.loadNode(routeTarget);
+        enteredRef.desc = routeTarget.descriptor;
       } else {
         // Legacy linear path
         nextArena = run.nextRoom();
@@ -1473,7 +1532,7 @@ async function boot() {
       });
       placePlayerAtSpawn(nextArena.bounds);
       const label = enteredRef.desc?.name ?? "ROOM";
-      hud.setRoomIndicator(targetNode ? `${label} · L${targetNode.layer}` : `${label} (${gs.roomIndex + 1}/${run.rooms.length})`);
+      hud.setRoomIndicator(routeTarget ? `${label} · L${routeTarget.layer}` : `${label} (${gs.roomIndex + 1}/${run.rooms.length})`);
       applyGradingPreset(pipeline, presetForRoom(gs.roomIndex));
       applyBossLighting(sceneBundle, isBossRoom(gs.roomIndex));
       fireflies.setEnabled(!isBossRoom(gs.roomIndex));
@@ -1484,7 +1543,7 @@ async function boot() {
     }, 90);
     await flashPromise;
     // Apply per-node entry effects (anomaly, risk-tier HP scaling, elite spawns).
-    if (targetNode) applyNodeEntry(targetNode);
+    if (routeTarget) applyNodeEntry(routeTarget);
     perfectClear.beginRoom();
     // Reward stage depends on node kind.
     //   boss            → card reward
@@ -1492,12 +1551,9 @@ async function boot() {
     //   shop            → ShopPicker (shard offers)
     //   combat / elite  → relic reward (deferred until ROOM_CLEARED)
     //   start (lobby)   → no reward, just open doors
-    const kind = targetNode?.kind ?? "combat";
+    const kind = routeTarget?.kind ?? "combat";
     if (kind === "boss") {
-      // Card reward for the previous room's clear, then the boss-curse picker
-      // (player chooses an optional curse for +1 reward roll on the kill).
-      // Both must complete before the boss-intro phase begins.
-      await openCardRewardPicker();
+      // Optional curse for +1 boss reward roll. Must complete before boss intro.
       await openBossCursePicker();
     } else if (kind === "shrine") {
       await openShrinePicker();
@@ -1506,46 +1562,21 @@ async function boot() {
     } else if (kind === "start") {
       // Lobby — no reward, no enemies, doors open immediately.
       gs.setPhase("door_open");
-      hud.setBanner("CHOOSE A DOOR");
-      const choices = run.currentChoices();
-      const ar = run.arena;
-      if (ar) {
-        for (let i = 0; i < ar.doors.length; i++) {
-          ar.doors[i].setLocked(false);
-          ar.doorPasses[i].active = true;
-        }
-        if (run.map && choices.length === ar.doors.length) {
-          const xCenters = ar.doors.map((d) => (d.xMin + d.xMax) / 2);
-          doorChoiceHud.setChoices(xCenters, choices, ar.doors[0].zPlane);
-        }
-      }
+      openCurrentDoors();
       return;
     } else {
-      // Combat / elite — relic reward like before.
-      await openRewardPicker();
     }
     // Shrines and shops auto-open their doors (no combat). Combat/elite/boss
     // rooms reach door_open via ROOM_CLEARED → handleRoomCleared() instead.
     if (kind === "shrine" || kind === "shop") {
       gs.setPhase("door_open");
-      hud.setBanner("CHOOSE A DOOR");
-      const choices = run.currentChoices();
-      const ar = run.arena;
-      if (ar) {
-        for (let i = 0; i < ar.doors.length; i++) {
-          ar.doors[i].setLocked(false);
-          ar.doorPasses[i].active = true;
-        }
-        if (run.map && choices.length === ar.doors.length) {
-          const xCenters = ar.doors.map((d) => (d.xMin + d.xMax) / 2);
-          doorChoiceHud.setChoices(xCenters, choices, ar.doors[0].zPlane);
-        }
-      }
+      openCurrentDoors();
       return;
     }
     gs.setPhase("hand_pick");
     await openHandPicker();
     gs.setPhase("playing");
+    if (kind === "boss") flushPendingBossIntro();
   }
 
   /** Per-node entry effects — anomaly, risk tier, Pyre carryover, elite spawn boost. */
@@ -1613,10 +1644,11 @@ async function boot() {
     player.stats.maxHp = Math.max(10, before - reduce);
     if (player.hp > player.stats.maxHp) player.hp = player.stats.maxHp;
     if (id === "forge") {
-      // Forge bias hook lands later; only the HP cost takes effect for now.
+      const relic = pickSingleReward("rare") ?? pickSingleReward();
+      if (relic) equipReward(relic.id);
     } else if (id === "anvil") {
       // Extend hand size by 1.
-      deck.handSize = Math.min(deck.handSize + 1, 5);
+      deck.setHandSize(deck.handSize + 1);
     } else if (id === "echo_stone") {
       // Re-roll starting deck (replace the player's full deck collection).
       const all = ALL_CARD_IDS;
@@ -1630,8 +1662,8 @@ async function boot() {
     } else if (id === "pyre") {
       gs.pyreActive = true;
     } else if (id === "crucible") {
-      // Drop a random Mutator. Wired with CardUpgrades in Phase 3 — for now
-      // no-op so the shrine still costs HP and the door opens.
+      const label = attachRandomMutator();
+      if (label) hud.setBanner(`MUTATOR: ${label.toUpperCase()}`);
     }
   }
 
@@ -1680,6 +1712,14 @@ async function boot() {
       gs.preBossMaxHp = player.stats.maxHp;
       player.stats.maxHp = Math.floor(player.stats.maxHp * 0.5);
       if (player.hp > player.stats.maxHp) player.hp = player.stats.maxHp;
+    } else if (picked === "no_relics") {
+      const equipped = Array.from(items.equipped);
+      if (equipped.length > 0) {
+        const id = equipped[Math.floor(rewardRng() * equipped.length)];
+        items.disableForBoss(id);
+        const def = ItemDefinitions[id];
+        if (def) hud.setBanner(`${def.name.toUpperCase()} DISABLED`);
+      }
     }
   }
 
@@ -1690,10 +1730,15 @@ async function boot() {
       gs.anomalyScrollCharges++;
     } else if (o.kind === "relic_uncommon") {
       // Force a single uncommon relic offer right away.
-      const opts = pickRewardOptions();
-      if (opts.length > 0) items.equip(opts[0].id);
+      const relic = pickSingleReward("uncommon") ?? pickSingleReward();
+      if (relic) equipReward(relic.id);
+    } else if (o.kind === "card_upgrade") {
+      const id = upgradeRandomOwnedCard();
+      if (id) hud.setBanner(`${CardDefinitions[id].name.toUpperCase()}+`);
+    } else if (o.kind === "mutator") {
+      const label = attachRandomMutator();
+      if (label) hud.setBanner(`MUTATOR: ${label.toUpperCase()}`);
     }
-    // card_upgrade and mutator wire into Phase 3's CardUpgrades — no-op for now.
   }
 
   async function openRewardPicker(): Promise<void> {
@@ -1708,8 +1753,7 @@ async function boot() {
     try {
       const picked = await rewardPicker.open(options);
       if (picked) {
-        items.equip(picked.id);
-        events.emit("RELIC_EQUIPPED", { id: picked.id, name: picked.name, color: picked.color });
+        equipReward(picked.id);
       }
     } finally {
       pipeline.depthOfFieldEnabled = false;
@@ -1732,11 +1776,11 @@ async function boot() {
     return arr.slice(0, count).map((id) => CardDefinitions[id]);
   }
 
-  async function openCardRewardPicker(): Promise<void> {
+  async function openCardRewardPicker(reason: "boss" | "level" = "boss"): Promise<void> {
     // Boss-curse +1 reward roll — consume here so it only applies to one
     // picker session.
-    const count = gs.bossCurseRewardBonus ? 4 : 3;
-    if (gs.bossCurseRewardBonus) gs.bossCurseRewardBonus = false;
+    const count = reason === "boss" && gs.bossCurseRewardBonus ? 4 : 3;
+    if (reason === "boss" && gs.bossCurseRewardBonus) gs.bossCurseRewardBonus = false;
     const options = pickCardRewards(count);
     if (options.length === 0) return;
     // Relabel when the deck is at MAX_COLLECTION_SIZE so the player understands
@@ -1746,8 +1790,8 @@ async function boot() {
       hud.setBanner("DECK FULL — SWAP A CARD");
       cardRewardPicker.setTitle("Swap In a New Card  (your oldest will be replaced)", "#ff9966");
     } else {
-      hud.setBanner("CHOOSE A NEW CARD");
-      cardRewardPicker.setTitle("Add a New Card to your Deck");
+      hud.setBanner(reason === "level" ? "NEW MOVE AVAILABLE" : "CHOOSE A NEW CARD");
+      cardRewardPicker.setTitle(reason === "level" ? "Learn a New Move" : "Add a New Card to your Deck");
     }
     pipeline.depthOfFieldEnabled = true;
     pipeline.depthOfField.focalLength = 50;
@@ -1780,7 +1824,7 @@ async function boot() {
     pipeline.depthOfField.focusDistance = 8000;
     pipeline.depthOfField.lensSize = 50;
     try {
-      const picks = await handPicker.open(collection, deck.hand.slice());
+      const picks = await handPicker.open(collection, deck.hand.slice(), deck.handSize);
       // Pad to handSize so DeckManager.setHand fills slots cleanly.
       while (picks.length < deck.handSize) picks.push("");
       deck.setHand(picks.map((p) => (p === "" ? null : p)));
@@ -1799,6 +1843,7 @@ async function boot() {
     clearDeferred();
     player.reset();
     tempo.reset();
+    deck.setHandSize(MIN_HAND_SIZE);
     // Re-apply the active hero's tints, stats, passives, and starting deck.
     // applyHero handles the deck reset itself (via deck.setStartingDeck), so
     // the explicit deck.reset() below would just thrash the already-fresh state.
@@ -1845,6 +1890,12 @@ async function boot() {
     gs.roomIndex = 0;
     gs.shards = 0;
     gs.bossElapsed = 0;
+    gs.bossCurseId = null;
+    gs.preBossMaxHp = 0;
+    gs.bossCurseRewardBonus = false;
+    bossRegenTimer = 0;
+    pendingBossIntro = null;
+    items.clearBossDisabled();
     gs.pyreActive = false;
     gs.anomalyScrollCharges = 0;
     gs.skullDebt = 0;
@@ -1866,7 +1917,7 @@ async function boot() {
     });
     placePlayerAtSpawn(arena.bounds);
     openLobbyDoorsForStart();
-    hud.setBanner("CHOOSE A DOOR");
+    hud.setBanner("EXIT THROUGH THE DOOR");
     hud.setRoomIndicator(`${startNode.descriptor?.name ?? "ROOM"} · L0`);
     applyGradingPreset(pipeline, presetForRoom(0));
     applyBossLighting(sceneBundle, isBossRoom(0));
@@ -1889,13 +1940,15 @@ async function boot() {
     if (!aerial) return;
     const cardId = player.pendingAerialCardId;
     const wasCharged = player.pendingAerialCharged;
+    const pendingDamage = player.pendingAerialDamage;
     player.pendingAerialCardId = null;
     player.pendingAerialCharged = false;
+    player.pendingAerialDamage = 0;
     if (!cardId) return;
     const card = CardDefinitions[cardId];
     if (!card) return;
     const radius = card.aoeRadius ?? card.range;
-    const dmg = Math.round(card.damage * tempo.damageMultiplier());
+    const dmg = pendingDamage > 0 ? pendingDamage : Math.round(card.damage * tempo.damageMultiplier());
     const px = player.root.position.x;
     const pz = player.root.position.z;
     let hits = 0;
@@ -1908,6 +1961,9 @@ async function boot() {
       e.takeDamage(dmg);
       const d = Math.hypot(dx, dz) || 1;
       e.knockback(dx / d, dz / d, 6);
+      items.onEnemyHit(e, dmg, card);
+      damageLog.record(e, dmg, card);
+      if (!e.alive) items.onKill(e, card);
       hits++;
     }
     if (hits > 0) {
@@ -1969,8 +2025,8 @@ async function boot() {
   // Boss intro — locks input for `duration` seconds, orbits the camera around
   // the boss spawn position, shows a banner with the boss display name, then
   // returns to "playing". Hard timeout safety guards against a missed end.
-  events.on<{ bossId: string; duration: number; name: string; pos: Vector3 }>("BOSS_INTRO_START", ({ duration, name, pos }) => {
-    if (gs.phase !== "playing") return;
+  let pendingBossIntro: BossIntroPayload | null = null;
+  function beginBossIntro({ duration, name, pos }: BossIntroPayload): void {
     gs.setPhase("boss_intro");
     items.coAggroBossActive = true;
     hud.setBanner(name);
@@ -1984,6 +2040,20 @@ async function boot() {
         gs.setPhase("playing");
       }
     }, safetyMs);
+  }
+
+  function flushPendingBossIntro(): void {
+    const payload = pendingBossIntro;
+    pendingBossIntro = null;
+    if (payload) beginBossIntro(payload);
+  }
+
+  events.on<BossIntroPayload>("BOSS_INTRO_START", (payload) => {
+    if (gs.phase !== "playing") {
+      pendingBossIntro = payload;
+      return;
+    }
+    beginBossIntro(payload);
   });
 
   // Inspector toggle + restart on R + quality cycle on G
@@ -2078,8 +2148,12 @@ async function boot() {
     // Stats — base def + persistent shard buffs.
     const buffs = shardBuffsFor(def.id);
     player.stats.maxHp = def.hp + buffs.hp;
+    player.stats.maxAp = DEFAULT_PLAYER_STATS.maxAp + buffs.ap;
+    player.stats.ap = player.stats.maxAp;
     player.stats.moveSpeed = def.moveSpeed;
+    player.stats.dodgeDuration = DEFAULT_PLAYER_STATS.dodgeDuration + buffs.iframes;
     player.hp = player.stats.maxHp;
+    player.ap = player.stats.maxAp;
     // Tempo passives
     tempo.setClassPassives(def.passives);
     // Visual tints
@@ -2116,9 +2190,9 @@ async function boot() {
     applyHero(def);
     menus.hide();
     gs.setPhase("door_open");
-    // Lobby is the start node — pre-open its doors so the player can pick.
+    // Lobby is the start node — pre-open its single exit.
     openLobbyDoorsForStart();
-    hud.setBanner("CHOOSE A DOOR");
+    hud.setBanner("EXIT THROUGH THE DOOR");
   }
   await runStartMenu();
 
@@ -2163,6 +2237,14 @@ async function boot() {
 
     if (gs.isInteractive()) {
       enemies.update(dt, player);
+      if (gs.bossCurseId === "boss_regen") {
+        bossRegenTimer += dt;
+        if (bossRegenTimer >= 10) {
+          bossRegenTimer = 0;
+          const boss = enemies.enemies.find((e) => e.alive && e.def.name.startsWith("boss_"));
+          if (boss) boss.hp = Math.min(boss.def.hp, boss.hp + boss.def.hp * 0.05);
+        }
+      }
       combat.update(dt);
       projectiles.update(dt);
       hostileProjectiles.update(dt);
@@ -2183,7 +2265,7 @@ async function boot() {
       cam.setFocus(lock.enemy ? lock.enemy.root : null);
       applyLockOutline(lock.enemy);
 
-      // 1–3: direct-select a slot (does NOT play — that's LMB now).
+      // 1-5: direct-select a slot (does NOT play; that's LMB now).
       for (const slot1 of frame.selectSlotPressed) {
         const idx = slot1 - 1;
         if (idx >= 0 && idx < deck.handSize && deck.peek(idx)) selection.slot = idx;
@@ -2471,6 +2553,9 @@ async function boot() {
       && player.root.position.x < dpSafety.xMax - r;
     if (!inDoorSafety && player.root.position.z < a.bounds.minZ + r) player.root.position.z = a.bounds.minZ + r;
     if (player.root.position.z > a.bounds.maxZ - r) player.root.position.z = a.bounds.maxZ - r;
+    const safePos = controller.resolvePosition(player.root.position.x, player.root.position.z);
+    player.root.position.x = safePos.x;
+    player.root.position.z = safePos.z;
 
     // Door tick + threshold trigger. Each arena door animates open after
     // unlock; once the player crosses any doorway plane while in that door's
@@ -2484,13 +2569,10 @@ async function boot() {
       const pz = player.root.position.z;
       const doors = run.arena.doors;
       const choices = run.currentChoices();
-      // Doors are built in the same x-order as `doorXCenters` (left-to-right).
-      // currentChoices() preserves the map's edge order; both arrays sized N.
-      // For boss / pre-boss convergent rooms there's only one door.
       for (let i = 0; i < doors.length; i++) {
         const door = doors[i];
         if (pz < door.zPlane - DOOR_PASS_Z_TOLERANCE && px > door.xMin && px < door.xMax) {
-          const target = (run.map && choices.length === doors.length) ? choices[i] : null;
+          const target = run.map ? (pendingDoorTarget ?? chooseSingleDoorTarget(choices)) : null;
           void runDoorTransition(target);
           break;
         }

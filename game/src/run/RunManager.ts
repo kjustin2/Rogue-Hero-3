@@ -35,12 +35,15 @@ const SPIRE_ENV = {
   rock: new Color3(0.55, 0.58, 0.65),
   mushroomCap: new Color3(0.40, 0.55, 0.85),
   mushroomStem: new Color3(0.62, 0.66, 0.74),
+  accent: new Color3(0.52, 0.78, 1.0),
   skyTop: new Color3(0.18, 0.24, 0.38),
   skyBottom: new Color3(0.55, 0.60, 0.75),
   moteColor: new Color3(0.65, 0.85, 1.0),
   grassCount: 140,
   rockCount: 22,
   mushroomCount: 4,
+  tallPropCount: 16,
+  hangingCount: 12,
 };
 
 // Magma — black basalt floor, red glowing veins via env mote color.
@@ -54,12 +57,15 @@ const MAGMA_ENV = {
   rock: new Color3(0.10, 0.06, 0.05),
   mushroomCap: new Color3(0.85, 0.20, 0.05),
   mushroomStem: new Color3(0.30, 0.10, 0.05),
+  accent: new Color3(1.0, 0.32, 0.08),
   skyTop: new Color3(0.12, 0.04, 0.04),
   skyBottom: new Color3(0.55, 0.18, 0.05),
   moteColor: new Color3(1.0, 0.55, 0.20),
   grassCount: 60,
   rockCount: 38,
   mushroomCount: 1,
+  tallPropCount: 18,
+  hangingCount: 7,
 };
 
 /**
@@ -235,10 +241,9 @@ export class RunManager {
   arena: Arena | null = null;
   currentIndex = -1;
   /**
-   * Active run-map. When set, room loads route through `loadNode` and the
-   * 3-door branching flow is active. When null, RunManager operates in
-   * legacy linear mode against `rooms[]` (used by the smoke + integration
-   * tests until they migrate, and by any caller that opts out of branching).
+   * Active run-map. When set, room loads route through `loadNode`, but the
+   * physical arena currently stays single-door; the next node is selected by
+   * the run flow rather than by separate doorway meshes.
    */
   map: RunMap | null = null;
 
@@ -275,9 +280,9 @@ export class RunManager {
   }
 
   /**
-   * Load the descriptor at the given map node. Sets the right number of doors
-   * (3 for non-boss nodes that have multi-choice exits; 1 for boss / pre-boss
-   * convergent nodes). Updates `map.currentId` for downstream readers.
+   * Load the descriptor at the given map node. Map mode still uses one visible
+   * exit door for now; branching can return later once the routing UI is solid.
+   * Updates `map.currentId` for downstream readers.
    */
   loadNode(node: RunNode): Arena {
     if (!this.map) throw new Error("RunManager.loadNode called without setMap()");
@@ -290,18 +295,12 @@ export class RunManager {
     }
     this.enemies.clear();
 
-    // Choice count for this node — it's the number of next-choices the player
-    // will get when this room is cleared. Boss / final rooms collapse to 1
-    // door, branching rooms get 3.
-    const nextCount = (this.map.edges.get(node.id) ?? []).length;
-    const exitDoorCount: 1 | 3 = nextCount >= 2 ? 3 : 1;
-
     const arenaOpts: ArenaOptions = {
       ...node.descriptor.arena,
-      // Final boss has no exit door (exitDoor: false). Otherwise build the
-      // matching number of doors.
+      // Final boss has no exit door (exitDoor: false). Otherwise force one
+      // reliable physical exit, even when the map has multiple possible edges.
       exitDoor: node.descriptor.arena.exitDoor !== false,
-      exitDoorCount,
+      exitDoorCount: 1,
     };
     this.arena = buildArena(this.scene, this.shadow, arenaOpts);
     this.enemies.spawnAll(node.descriptor.spawns);
@@ -316,6 +315,15 @@ export class RunManager {
   currentChoices(): RunNode[] {
     if (!this.map) return [];
     return nextChoices(this.map);
+  }
+
+  currentNode(): RunNode | null {
+    if (!this.map) return null;
+    return this.map.byId.get(this.map.currentId) ?? null;
+  }
+
+  currentDescriptor(): RoomDescriptor | undefined {
+    return this.currentNode()?.descriptor ?? this.rooms[this.currentIndex];
   }
 
   isLastRoom(): boolean {

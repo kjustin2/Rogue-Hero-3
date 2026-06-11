@@ -8,7 +8,10 @@ import { ParticleSystem } from "@babylonjs/core/Particles/particleSystem";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { EnemyManager } from "../../enemies/EnemyManager";
+import { Enemy } from "../../enemies/Enemy";
 import { events } from "../../engine/EventBus";
+
+export type ProjectileHitHandler = (enemy: Enemy, damage: number) => void;
 
 interface PooledProjectile {
   mesh: Mesh;
@@ -20,6 +23,7 @@ interface PooledProjectile {
   ttl: number;
   elapsed: number;
   alreadyHit: Set<string>;
+  onHit: ProjectileHitHandler | null;
   active: boolean;
 }
 
@@ -114,6 +118,7 @@ export class ProjectileSystem {
       ttl: 0,
       elapsed: 0,
       alreadyHit: new Set(),
+      onHit: null,
       active: false,
     };
   }
@@ -127,7 +132,14 @@ export class ProjectileSystem {
     return null;
   }
 
-  fire(origin: Vector3, dir: Vector3, speed: number, damage: number, ttl = 1.6): void {
+  fire(
+    origin: Vector3,
+    dir: Vector3,
+    speed: number,
+    damage: number,
+    ttl = 1.6,
+    onHit: ProjectileHitHandler | null = null,
+  ): void {
     const v = dir.clone();
     v.y = 0;
     const len = Math.hypot(v.x, v.z);
@@ -145,6 +157,7 @@ export class ProjectileSystem {
     p.ttl = ttl;
     p.elapsed = 0;
     p.alreadyHit.clear();
+    p.onHit = onHit;
     p.active = true;
     p.mesh.setEnabled(true);
     p.halo.scaling.setAll(1);
@@ -176,6 +189,7 @@ export class ProjectileSystem {
           // Light knockback along the projectile's travel direction — sells the "bolt" read.
           const vl = Math.hypot(p.vel.x, p.vel.z);
           if (vl > 1e-4) e.knockback(p.vel.x / vl, p.vel.z / vl, 3.2);
+          p.onHit?.(e, p.damage);
           events.emit("COMBO_HIT", { hitNum: 1, count: 1 });
           consumed = true;
           break;
@@ -191,6 +205,7 @@ export class ProjectileSystem {
     // The mesh is hidden immediately so the bolt vanishes cleanly at impact.
     p.trail.stop();
     p.mesh.setEnabled(false);
+    p.onHit = null;
     p.active = false;
   }
 

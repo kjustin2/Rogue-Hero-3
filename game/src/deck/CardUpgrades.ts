@@ -26,7 +26,7 @@ export const UPGRADE_TIERS: Record<string, CardUpgradeDef> = {
   dashstrike:     { label: "Dash Strike+",     partial: { damage: 22 } },
   phase_step:     { label: "Phase Step+",      partial: { range: 8 } },
   meteor_slam:    { label: "Meteor Slam+",     partial: { damage: 44 } },
-  aegis:          { label: "Aegis+",           partial: {} }, // handled in CardCaster (longer shield)
+  aegis:          { label: "Aegis+",           partial: { shieldAmount: 35, shieldDuration: 5, detonateDamage: 22 } },
 };
 
 export interface MutatorDef {
@@ -42,11 +42,11 @@ export interface MutatorDef {
 }
 
 export const MUTATOR_DEFS: MutatorDef[] = [
-  { id: "mut_cleave_chain",   label: "Cleave Chains",        description: "Next 5 Cleaves chain to a second target.",   charges: 5, partial: { range: 5.0 }, targetCardId: "cleave" },
-  { id: "mut_beam_pierce",    label: "Beam Pierces Walls",   description: "Next 3 Charged Beams pierce walls.",          charges: 3, partial: {}, targetCardId: "charged_beam" },
+  { id: "mut_cleave_chain",   label: "Long Cleave",          description: "Next 5 Cleaves reach farther.",              charges: 5, partial: { range: 5.0 }, targetCardId: "cleave" },
+  { id: "mut_beam_pierce",    label: "Quick Charge Beam",    description: "Next 3 Charged Beams reach max charge faster.", charges: 3, partial: { chargeMin: 0.25, chargeMax: 0.65 }, targetCardId: "charged_beam" },
   { id: "mut_meteor_free",    label: "Free Meteor",          description: "Next Meteor Slam costs 0 AP.",                charges: 1, partial: { cost: 0 }, targetCardId: "meteor_slam" },
-  { id: "mut_aegis_50",       label: "Aegis 50 HP",          description: "Next Aegis grants 50 HP shield instead of 25.", charges: 1, partial: {}, targetCardId: "aegis" },
-  { id: "mut_frost_chill",    label: "Frost Field Chill",    description: "Next 3 Frost Novas chill for 3s instead of 1.2s.", charges: 3, partial: {}, targetCardId: "frost_nova" },
+  { id: "mut_aegis_50",       label: "Aegis 50 HP",          description: "Next Aegis grants 50 HP shield instead of 25.", charges: 1, partial: { shieldAmount: 50 }, targetCardId: "aegis" },
+  { id: "mut_frost_chill",    label: "Frost Field Chill",    description: "Next 3 Frost Novas freeze for 3s instead of 1.2s.", charges: 3, partial: { freezeDuration: 3 }, targetCardId: "frost_nova" },
   { id: "mut_dash_double",    label: "Dash Double Strike",   description: "Next 3 Dash Strikes hit twice.",              charges: 3, partial: { damage: 32 }, targetCardId: "dashstrike" },
   { id: "mut_phase_far",      label: "Long Phase",           description: "Next 5 Phase Steps go 50% farther.",          charges: 5, partial: { range: 9 }, targetCardId: "phase_step" },
   { id: "mut_crash_shockwave",label: "Crashing Shockwave",   description: "Next Crashing Blow's arc widens to 120°.",    charges: 1, partial: { arcDegrees: 120 }, targetCardId: "crashing_blow" },

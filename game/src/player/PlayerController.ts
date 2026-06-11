@@ -21,6 +21,55 @@ export interface ArenaCollision {
   doorPass?: { active: boolean; xMin: number; xMax: number };
 }
 
+export interface ResolvedArenaPosition {
+  x: number;
+  z: number;
+  inDoorPass: boolean;
+}
+
+export function resolveArenaPosition(
+  arena: ArenaCollision,
+  x: number,
+  z: number,
+  radius: number,
+): ResolvedArenaPosition {
+  const clampBounds = (px: number, pz: number): ResolvedArenaPosition => {
+    let nx = px;
+    let nz = pz;
+    if (nx < arena.bounds.minX + radius) nx = arena.bounds.minX + radius;
+    if (nx > arena.bounds.maxX - radius) nx = arena.bounds.maxX - radius;
+    const dp = arena.doorPass;
+    const inDoorPass = !!dp && dp.active && nx > dp.xMin + radius && nx < dp.xMax - radius;
+    if (!inDoorPass && nz < arena.bounds.minZ + radius) nz = arena.bounds.minZ + radius;
+    if (nz > arena.bounds.maxZ - radius) nz = arena.bounds.maxZ - radius;
+    return { x: nx, z: nz, inDoorPass };
+  };
+
+  let resolved = clampBounds(x, z);
+  let nx = resolved.x;
+  let nz = resolved.z;
+
+  for (const pillar of arena.pillars) {
+    const px = pillar.position.x;
+    const pz = pillar.position.z;
+    const ddx = nx - px;
+    const ddz = nz - pz;
+    const minDist = 0.8 + radius;
+    const distSq = ddx * ddx + ddz * ddz;
+    if (distSq < minDist * minDist && distSq <= 1e-6) {
+      nx = px + minDist;
+      nz = pz;
+    } else if (distSq < minDist * minDist) {
+      const dist = Math.sqrt(distSq);
+      nx = px + (ddx / dist) * minDist;
+      nz = pz + (ddz / dist) * minDist;
+    }
+  }
+
+  resolved = clampBounds(nx, nz);
+  return resolved;
+}
+
 /**
  * Kinematic controller — directly translates the player transform.
  * Havok CharacterController upgrade slated for M2 (alongside enemy collision).
@@ -42,6 +91,10 @@ export class PlayerController {
 
   setArena(arena: ArenaCollision): void {
     this.arena = arena;
+  }
+
+  resolvePosition(x: number, z: number): ResolvedArenaPosition {
+    return resolveArenaPosition(this.arena, x, z, this.player.stats.radius);
   }
 
   update(dt: number, input: FrameInput): void {
@@ -170,6 +223,10 @@ export class PlayerController {
         nz = pz + nzn * minDist;
       }
     }
+
+    const resolved = this.resolvePosition(nx, nz);
+    nx = resolved.x;
+    nz = resolved.z;
 
     p.root.position.x = nx;
     p.root.position.z = nz;

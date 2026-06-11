@@ -10,7 +10,7 @@
  * Type-specific extensions live in the optional fields:
  *   aoeRadius      — radial cards ("aoe", "aerial") use this for hit + FX
  *   chainCount     — chain-style projectiles ("chain_lightning")
- *   effect         — utility branch dispatch ("freeze", "shield")
+ *   effect         — utility branch dispatch ("freeze", "shield", "vault")
  *   requiresAirborne — aerial cards: castable only while player.y > 0
  */
 
@@ -40,7 +40,11 @@ export interface CardDef {
   /** Chain projectiles — total targets including the primary. */
   chainCount?: number;
   /** Utility-branch dispatch. */
-  effect?: "freeze" | "shield";
+  effect?: "freeze" | "shield" | "vault";
+  shieldAmount?: number;
+  shieldDuration?: number;
+  detonateDamage?: number;
+  freezeDuration?: number;
   /** Aerial cards: cast fails (CARD_FAIL "not_airborne") if player is grounded. */
   requiresAirborne?: boolean;
   /** Melee cards: explicit arc width override (defaults to 140°). */
@@ -94,6 +98,21 @@ export const CardDefinitions: Record<string, CardDef> = {
     heavy: true,
     signatureMechanic: "Hyperarmor wind-up. Charged: launches enemies airborne.",
     archetype: "fire",
+  },
+  rising_uppercut: {
+    id: "rising_uppercut",
+    name: "Rising Uppercut",
+    cost: 1,
+    tempoShift: 7,
+    damage: 16,
+    range: 2.8,
+    type: "melee",
+    rarity: "common",
+    desc: "Tight rising slash. On hit, vault upward to dodge lows or chain Meteor Slam.",
+    glyph: "↟",
+    arcDegrees: 70,
+    signatureMechanic: "Launches you upward on hit. Charged: higher launch + harder knockback.",
+    archetype: "storm",
   },
   // Mine Field (replaces Whirlwind) — drops a ring of mines around the player.
   mine_field: {
@@ -159,6 +178,7 @@ export const CardDefinitions: Record<string, CardDef> = {
     glyph: "❄",
     aoeRadius: 5.5,
     effect: "freeze",
+    freezeDuration: 1.2,
     signatureMechanic: "Leaves a 3m Frost Field for 4s. You move 20% faster inside.",
     archetype: "frost",
   },
@@ -192,6 +212,21 @@ export const CardDefinitions: Record<string, CardDef> = {
     signatureMechanic: "Leaves a Phantom Decoy that detonates after 0.8s for 12 AoE.",
     archetype: "frost",
   },
+  wind_vault: {
+    id: "wind_vault",
+    name: "Wind Vault",
+    cost: 1,
+    tempoShift: 4,
+    damage: 0,
+    range: 1,
+    type: "utility",
+    rarity: "uncommon",
+    desc: "Spring upward with brief i-frames. Clears low attacks and sets up aerial cards.",
+    glyph: "↑",
+    effect: "vault",
+    signatureMechanic: "Can be cast mid-air as a small second lift.",
+    archetype: "storm",
+  },
   // --- Aerial ---
   meteor_slam: {
     id: "meteor_slam",
@@ -223,6 +258,10 @@ export const CardDefinitions: Record<string, CardDef> = {
     desc: "Surround yourself with a 25-HP shield for 4s. A blue ring shows it's active.",
     glyph: "🛡",
     effect: "shield",
+    shieldAmount: 25,
+    shieldDuration: 4,
+    detonateDamage: 15,
+    aoeRadius: 3,
     signatureMechanic: "Re-press 1/2/3 mid-shield to detonate (15 dmg + knockback).",
     archetype: "frost",
   },

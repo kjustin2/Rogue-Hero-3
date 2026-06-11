@@ -130,6 +130,7 @@ export class EnemyManager {
 
   spawnAll(reqs: SpawnRequest[]): void {
     for (const r of reqs) this.spawn(r.kind, r.pos);
+    if (reqs.length === 0) this.roomClearedEmitted = true;
   }
 
   update(dt: number, player: Player): void {

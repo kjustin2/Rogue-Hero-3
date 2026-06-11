@@ -92,7 +92,7 @@ export class InputController {
             // Tab would otherwise move browser focus off the canvas.
             if (key === "tab") kb.event.preventDefault();
           }
-          if (key === "1" || key === "2" || key === "3") {
+          if (key === "1" || key === "2" || key === "3" || key === "4" || key === "5") {
             this.cardQueue.push(parseInt(key, 10));
           }
         }

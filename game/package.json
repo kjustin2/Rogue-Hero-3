@@ -16,9 +16,11 @@
     "test:smoke": "tsx scripts/test-smoke.ts",
     "test:startup": "tsx scripts/test-startup.ts",
     "test:integration": "tsx scripts/test-integration-run.ts",
+    "test:arena": "tsx scripts/test-arena-integrity.ts",
+    "test:collision": "tsx scripts/test-player-collision.ts",
     "test:sideeffects": "tsx scripts/test-side-effects-sync.ts",
-    "test": "tsx scripts/test-side-effects-sync.ts && tsx scripts/test-smoke.ts && tsx scripts/test-startup.ts && tsx scripts/test-integration-run.ts",
-    "verify": "tsc --noEmit && tsx scripts/test-side-effects-sync.ts && tsx scripts/verify-babylon-runtime.ts && tsx scripts/test-smoke.ts && tsx scripts/test-startup.ts && tsx scripts/test-integration-run.ts && vite build"
+    "test": "tsx scripts/test-side-effects-sync.ts && tsx scripts/test-smoke.ts && tsx scripts/test-startup.ts && tsx scripts/test-arena-integrity.ts && tsx scripts/test-player-collision.ts && tsx scripts/test-integration-run.ts",
+    "verify": "tsc --noEmit && tsx scripts/test-side-effects-sync.ts && tsx scripts/verify-babylon-runtime.ts && tsx scripts/test-smoke.ts && tsx scripts/test-startup.ts && tsx scripts/test-arena-integrity.ts && tsx scripts/test-player-collision.ts && tsx scripts/test-integration-run.ts && vite build"
   },
   "dependencies": {
     "@babylonjs/core": "^9.3.4",

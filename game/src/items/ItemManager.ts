@@ -14,13 +14,14 @@ import { Player } from "../player/Player";
  */
 export class ItemManager {
   equipped: Set<string> = new Set();
+  private disabled = new Set<string>();
   /** Wired by main.ts so onPlayerDamaged / onKill can dispatch their effects. */
   player: Player | null = null;
 
   constructor(private tempo: TempoSystem) {}
 
   has(id: string): boolean {
-    return this.equipped.has(id);
+    return this.equipped.has(id) && !this.disabled.has(id);
   }
 
   equip(id: string): ItemDef | null {
@@ -33,6 +34,20 @@ export class ItemManager {
 
   reset(): void {
     this.equipped.clear();
+    this.disabled.clear();
+    this.recomputeTempoMods();
+  }
+
+  disableForBoss(id: string): boolean {
+    if (!this.equipped.has(id)) return false;
+    this.disabled.add(id);
+    this.recomputeTempoMods();
+    return true;
+  }
+
+  clearBossDisabled(): void {
+    if (this.disabled.size === 0) return;
+    this.disabled.clear();
     this.recomputeTempoMods();
   }
 

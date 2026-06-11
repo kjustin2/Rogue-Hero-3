@@ -108,8 +108,8 @@ export function generateRunMap(seed: number): RunMap {
   const edges = new Map<string, string[]>();
 
   // ---- Layer 0: START ----
-  // Lobby arena — reuses the first Act I template but strips spawns and forces
-  // 3 doors so the player picks their first layer-1 destination on entry.
+  // Lobby arena — reuses the first Act I template but strips spawns. The run
+  // map may branch internally, but the visible route is currently one door.
   const startId = nodeIdFor(0, 0);
   const startTemplate = ACT_ROOMS[0];
   const start: RunNode = {

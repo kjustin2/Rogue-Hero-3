@@ -6,7 +6,7 @@ import { Control } from "@babylonjs/gui/2D/controls/control";
 import { Player } from "../player/Player";
 import { EnemyManager } from "../enemies/EnemyManager";
 import { TempoSystem } from "../tempo/TempoSystem";
-import { DeckManager } from "../deck/DeckManager";
+import { DeckManager, MAX_HAND_SIZE } from "../deck/DeckManager";
 import { CardType } from "../deck/CardDefinitions";
 import { events } from "../engine/EventBus";
 import { dampCoeff } from "../util/Smoothing";
@@ -239,13 +239,12 @@ export class Hud {
     // ---- Hand: 3 slots along the bottom ----
     // Taller slots + wider so every chunk of text has a guaranteed y-band
     // that can't collide with its neighbors.
-    const slotW = 240;
+    const slotW = 206;
     const slotH = 148;
-    const spacing = 18;
-    const HAND_SLOTS = 3;
-    const totalW = slotW * HAND_SLOTS + spacing * (HAND_SLOTS - 1);
+    const spacing = 14;
+    const totalW = slotW * MAX_HAND_SIZE + spacing * (MAX_HAND_SIZE - 1);
     const startX = -totalW / 2 + slotW / 2;
-    for (let i = 0; i < HAND_SLOTS; i++) {
+    for (let i = 0; i < MAX_HAND_SIZE; i++) {
       const slot = this.makeHandSlot(i, startX + i * (slotW + spacing), slotW, slotH);
       this.hand.push(slot);
     }
@@ -254,7 +253,7 @@ export class Hud {
     // from the bottom, so anything at -150 would bake into them). Placed at
     // -190 with its own explicit height so the text has a guaranteed band.
     this.controlHint = this.makeText(
-      "LMB: use   Ctrl+LMB: charged   R: ult   RMB: next card   1–3: slot   Space: jump   Shift: dodge   Q/Tab: target",
+      "LMB: use   Ctrl+LMB: charged   R: ult   RMB: next card   1-5: slot   Space: jump   Shift: dodge   Q/Tab: target",
       0,
       -192,
       "#bbbbbb",
@@ -1255,6 +1254,8 @@ export class Hud {
     const selectedBreath = 0.55 + 0.45 * Math.abs(Math.sin(this.selectedPulse));
     for (let i = 0; i < this.hand.length; i++) {
       const slot = this.hand[i];
+      slot.bg.isVisible = i < this.deck.handSize;
+      if (!slot.bg.isVisible) continue;
       const isSelected = i === this.selectedSlot;
       const card = this.deck.peek(i);
       if (card) {

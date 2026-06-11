@@ -52,6 +52,8 @@ export interface ItemHooks {
   onKill(enemy: Enemy, card: CardDef): void;
 }
 
+type MovementResolver = (x: number, z: number) => { x: number; z: number };
+
 const NULL_HOOKS: ItemHooks = {
   cardCostOverride: () => null,
   damageMultiplier: () => 1.0,
@@ -77,6 +79,7 @@ export class CardCaster {
   private hazards: HazardZones | null = null;
   /** Run-scoped card upgrades + mutators. When set, resolve overrides at cast. */
   private upgrades: CardUpgrades | null = null;
+  private movementResolver: MovementResolver | null = null;
 
   constructor(
     private player: Player,
@@ -95,6 +98,10 @@ export class CardCaster {
 
   setUpgrades(u: CardUpgrades): void {
     this.upgrades = u;
+  }
+
+  setMovementResolver(fn: MovementResolver): void {
+    this.movementResolver = fn;
   }
 
   /**
@@ -237,6 +244,14 @@ export class CardCaster {
       if (!e.alive) this.hooks.onKill(e, card);
       out.push(e); hits++;
     }
+    if (card.id === "rising_uppercut" && hits > 0 && !this.player.aerialSlamming) {
+      this.player.root.position.y = Math.max(this.player.root.position.y, 0.04);
+      this.player.verticalVelocity = Math.max(this.player.verticalVelocity, isCharged ? 14 : 11);
+      this.player.isDodging = true;
+      this.player.dodgeTimer = isCharged ? 0.22 : 0.16;
+      this.player.dodgeDir.set(0, 0, 0);
+      this.player.perfectDodgeConsumed = false;
+    }
     if (hits > 0) events.emit("COMBO_HIT", { hitNum: hits, count: hits });
     if (card.heavy) {
       events.emit(hits > 0 ? "HEAVY_HIT" : "HEAVY_MISS", {});
@@ -282,7 +297,10 @@ export class CardCaster {
       return out;
     }
 
-    this.projectiles.fire(spawn, dir, 28, dmg, card.range / 28 + 0.1);
+    this.projectiles.fire(spawn, dir, 28, dmg, card.range / 28 + 0.1, (enemy, amount) => {
+      this.hooks.onEnemyHit(enemy, amount, card);
+      if (!enemy.alive) this.hooks.onKill(enemy, card);
+    });
     this.player.triggerCast("bolt");
     events.emit("CAST_FX", { kind: "bolt", x: spawn.x, y: 1.2, z: spawn.z });
     // Real hits resolved by ProjectileSystem on contact — return empty for now;
@@ -409,11 +427,17 @@ export class CardCaster {
     const dist = card.range;
     const startX = this.player.root.position.x;
     const startZ = this.player.root.position.z;
-    const endX = startX + dir.x * dist;
-    const endZ = startZ + dir.z * dist;
+    let endX = startX + dir.x * dist;
+    let endZ = startZ + dir.z * dist;
+    if (this.movementResolver) {
+      const resolved = this.movementResolver(endX, endZ);
+      endX = resolved.x;
+      endZ = resolved.z;
+    }
 
     const dxLine = endX - startX;
     const dzLine = endZ - startZ;
+    const actualDist = Math.hypot(dxLine, dzLine);
     const lenSq = dxLine * dxLine + dzLine * dzLine;
     const out: Enemy[] = [];
     let hits = 0;
@@ -445,7 +469,7 @@ export class CardCaster {
     }
 
     events.emit<CardArcFx>("CARD_FX", {
-      kind: "dash", range: dist, x: startX, z: startZ, fx: dir.x, fz: dir.z,
+      kind: "dash", range: actualDist, x: startX, z: startZ, fx: dir.x, fz: dir.z,
     });
 
     this.player.root.position.x = endX;
@@ -522,7 +546,7 @@ export class CardCaster {
       e.takeDamage(dmg);
       const d = Math.hypot(dx, dz) || 1;
       e.knockback(dx / d, dz / d, 2.5);
-      if (card.effect === "freeze") e.applyFreeze?.(1.2);
+      if (card.effect === "freeze") e.applyFreeze?.(card.freezeDuration ?? 1.2);
       this.hooks.onEnemyHit(e, dmg, card);
       if (!e.alive) this.hooks.onKill(e, card);
       out.push(e); hits++;
@@ -567,6 +591,7 @@ export class CardCaster {
     this.player.aerialSlamming = true;
     this.player.pendingAerialCardId = card.id;
     this.player.pendingAerialCharged = isCharged;
+    this.player.pendingAerialDamage = _dmg;
     this.player.verticalVelocity = -22;
     this.player.triggerCast("dash");
     return [];
@@ -575,10 +600,62 @@ export class CardCaster {
   /** Utility cards apply a non-damage effect to the player or party. */
   private castUtility(card: CardDef, _dmg: number): Enemy[] {
     if (card.effect === "shield") {
-      this.player.grantShield(25, 4);
+      const px = this.player.root.position.x;
+      const pz = this.player.root.position.z;
+      if (this.player.absorbHp > 0 && this.player.absorbHpTimer > 0) {
+        const radius = card.aoeRadius ?? 3;
+        const dmg = card.detonateDamage ?? 15;
+        const out: Enemy[] = [];
+        let hits = 0;
+        for (const e of this.enemies.enemies) {
+          if (!e.alive) continue;
+          const dx = e.root.position.x - px;
+          const dz = e.root.position.z - pz;
+          const reach = radius + e.def.radius;
+          if (dx * dx + dz * dz > reach * reach) continue;
+          e.takeDamage(dmg);
+          const d = Math.hypot(dx, dz) || 1;
+          e.knockback(dx / d, dz / d, 7);
+          this.hooks.onEnemyHit(e, dmg, card);
+          if (!e.alive) this.hooks.onKill(e, card);
+          out.push(e);
+          hits++;
+        }
+        this.player.absorbHp = 0;
+        this.player.absorbHpTimer = 0;
+        if (hits > 0) events.emit("COMBO_HIT", { hitNum: hits, count: hits });
+        events.emit<CardArcFx>("CARD_FX", {
+          kind: "aoe",
+          range: radius,
+          x: px,
+          z: pz,
+          fx: this.player.facing.x,
+          fz: this.player.facing.z,
+        });
+        return out;
+      }
+      this.player.grantShield(card.shieldAmount ?? 25, card.shieldDuration ?? 4);
       events.emit<CardArcFx>("CARD_FX", {
         kind: "shield",
         range: 1,
+        x: px,
+        z: pz,
+        fx: this.player.facing.x,
+        fz: this.player.facing.z,
+      });
+    }
+    if (card.effect === "vault") {
+      const airborne = this.player.isAirborne();
+      this.player.root.position.y = Math.max(this.player.root.position.y, airborne ? this.player.root.position.y : 0.04);
+      this.player.verticalVelocity = Math.max(this.player.verticalVelocity, airborne ? 8.5 : 13.5);
+      this.player.isDodging = true;
+      this.player.dodgeTimer = airborne ? 0.16 : 0.24;
+      this.player.dodgeDir.set(0, 0, 0);
+      this.player.perfectDodgeConsumed = false;
+      this.player.triggerCast("dash");
+      events.emit<CardArcFx>("CARD_FX", {
+        kind: "aoe",
+        range: 1.8,
         x: this.player.root.position.x,
         z: this.player.root.position.z,
         fx: this.player.facing.x,
@@ -671,7 +748,10 @@ export class CardCaster {
         origin.z + dirZ * offsetDist,
       );
       this.dirBuf.set(dirX, 0, dirZ);
-      this.projectiles.fire(this.spawnBuf, this.dirBuf, 28, dmg, card.range / 28 + 0.1);
+      this.projectiles.fire(this.spawnBuf, this.dirBuf, 28, dmg, card.range / 28 + 0.1, (enemy, amount) => {
+        this.hooks.onEnemyHit(enemy, amount, card);
+        if (!enemy.alive) this.hooks.onKill(enemy, card);
+      });
       this.player.triggerCast("bolt");
       events.emit("CAST_FX", { kind: "bolt", x: this.spawnBuf.x, y: 1.2, z: this.spawnBuf.z });
       return [];

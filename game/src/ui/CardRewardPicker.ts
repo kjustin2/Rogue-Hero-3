@@ -21,6 +21,8 @@ const TYPE_COLOR: Record<string, string> = {
   aoe: "#66e0ff",
   aerial: "#ff7733",
   utility: "#a8ffd2",
+  mine_field: "#ff7022",
+  charged_beam: "#80c8ff",
 };
 
 /**

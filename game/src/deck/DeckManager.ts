@@ -9,17 +9,19 @@ import { CardDef, CardDefinitions } from "./CardDefinitions";
  * the HandPicker UI.
  */
 /** Hard cap on the persistent collection. New picks past this limit replace
- *  the oldest card (FIFO). Tuned to keep deckbuilding decisions punchy:
- *  start with 3, earn 1 per boss reward, hit the cap on the third boss and
- *  trade. */
-export const MAX_COLLECTION_SIZE = 5;
+ *  the oldest card (FIFO). The active hand is still capped at 5, but the
+ *  collection can now hold enough unlocked moves to make inter-room hand
+ *  building matter before swaps begin. */
+export const MAX_COLLECTION_SIZE = 8;
+export const MIN_HAND_SIZE = 3;
+export const MAX_HAND_SIZE = 5;
 
 export class DeckManager {
   /** Permanent pool of card ids the player owns. Boss rewards append here. */
   collection: string[] = [];
   /** Active hand — slots 0/1/2 mapped to keys 1/2/3. */
   hand: (string | null)[] = [];
-  handSize = 3;
+  handSize = MIN_HAND_SIZE;
   rng: RngFn;
   private startingDeck: string[];
 
@@ -44,6 +46,15 @@ export class DeckManager {
   setStartingDeck(ids: string[]): void {
     this.startingDeck = ids.slice();
     this.reset();
+  }
+
+  setHandSize(size: number): void {
+    const nextSize = Math.max(MIN_HAND_SIZE, Math.min(MAX_HAND_SIZE, Math.floor(size)));
+    if (nextSize === this.handSize) return;
+    this.handSize = nextSize;
+    while (this.hand.length < this.handSize) this.hand.push(null);
+    if (this.hand.length > this.handSize) this.hand.length = this.handSize;
+    this.autoFillHand();
   }
 
   shuffle(arr: string[]): void {

@@ -47,6 +47,7 @@ export interface EnvPalette {
   rock: Color3;
   mushroomCap: Color3;
   mushroomStem: Color3;
+  accent: Color3;
   mountain: Color3;
   skyTop: Color3;
   skyBottom: Color3;
@@ -56,6 +57,8 @@ export interface EnvPalette {
   grassCount: number;
   rockCount: number;
   mushroomCount: number;
+  tallPropCount: number;
+  hangingCount: number;
 }
 
 /** Deterministic RNG so props lay out the same for a given seed. */
@@ -104,6 +107,8 @@ export function buildEnvironment(
   const grassCount = Math.floor(palette.grassCount * q.envDensity);
   const rockCount = Math.floor(palette.rockCount * q.envDensity);
   const mushroomCount = Math.floor(palette.mushroomCount * q.envDensity);
+  const tallPropCount = Math.floor(palette.tallPropCount * q.envDensity);
+  const hangingCount = Math.floor(palette.hangingCount * q.envDensity);
 
   // ---------- Skybox ----------
   // Large inverted sphere with per-vertex colour — a cheap gradient sky without
@@ -182,6 +187,14 @@ export function buildEnvironment(
   mushroomMaster.parent = root;
   mushroomMaster.isVisible = false;
 
+  const tallPropMaster = makeTallProp(scene, palette.accent);
+  tallPropMaster.parent = root;
+  tallPropMaster.isVisible = false;
+
+  const hangingMaster = makeHangingBanner(scene, palette.accent);
+  hangingMaster.parent = root;
+  hangingMaster.isVisible = false;
+
   // ---------- Place instances ----------
   // Avoid the center (player's main fighting area) and anywhere that overlaps a
   // pillar or the walls. Props live in a band roughly from r=3 to r=half-1.
@@ -256,10 +269,55 @@ export function buildEnvironment(
     inst.parent = root;
   }
 
+  for (let i = 0; i < tallPropCount; i++) {
+    const spot = pickSpot();
+    if (!spot) continue;
+    const inst = tallPropMaster.createInstance(`accentSpire_i${i}`);
+    inst.position.copyFrom(spot);
+    inst.rotation.y = rng() * Math.PI * 2;
+    const s = 0.75 + rng() * 0.7;
+    inst.scaling.set(s, 0.8 + rng() * 0.9, s);
+    inst.isPickable = false;
+    inst.doNotSyncBoundingInfo = true;
+    inst.freezeWorldMatrix();
+    inst.parent = root;
+  }
+
+  if (envOpts?.enclosed) {
+    const wallInset = half - 0.72;
+    for (let i = 0; i < hangingCount; i++) {
+      const side = Math.floor(rng() * 4);
+      const along = -half * 0.72 + rng() * half * 1.44;
+      const inst = hangingMaster.createInstance(`hangingAccent_i${i}`);
+      if (side === 0) {
+        inst.position.set(along, envOpts.wallHeight - 2.1 - rng() * 1.2, wallInset);
+        inst.rotation.y = Math.PI;
+      } else if (side === 1) {
+        inst.position.set(along, envOpts.wallHeight - 2.1 - rng() * 1.2, -wallInset);
+        inst.rotation.y = 0;
+      } else if (side === 2) {
+        inst.position.set(wallInset, envOpts.wallHeight - 2.1 - rng() * 1.2, along);
+        inst.rotation.y = -Math.PI / 2;
+      } else {
+        inst.position.set(-wallInset, envOpts.wallHeight - 2.1 - rng() * 1.2, along);
+        inst.rotation.y = Math.PI / 2;
+      }
+      const sx = 0.8 + rng() * 0.6;
+      const sy = 0.75 + rng() * 0.9;
+      inst.scaling.set(sx, sy, 1);
+      inst.isPickable = false;
+      inst.doNotSyncBoundingInfo = true;
+      inst.freezeWorldMatrix();
+      inst.parent = root;
+    }
+  }
+
   // Freeze the masters (rock + mushroom stay frozen). The grass master is
   // animated by the `tick` hook below for a gentle wind effect.
   rockMaster.freezeWorldMatrix();
   mushroomMaster.freezeWorldMatrix();
+  tallPropMaster.freezeWorldMatrix();
+  hangingMaster.freezeWorldMatrix();
 
   // ---------- Ambient motes ----------
   // Try GPU particles first; some WebGL contexts (older mobile) will fall back.
@@ -403,6 +461,45 @@ function makeMushroom(scene: Scene, cap: Color3, stem: Color3): Mesh {
   merged.material = mat;
   merged.useVertexColors = true;
   return merged;
+}
+
+function makeTallProp(scene: Scene, accent: Color3): Mesh {
+  const stem = MeshBuilder.CreateCylinder(
+    "accentSpireStem",
+    { diameter: 0.28, height: 1.6, tessellation: 7 },
+    scene,
+  );
+  stem.position.set(0, 0.8, 0);
+  const shard = MeshBuilder.CreateCylinder(
+    "accentSpireShard",
+    { diameterTop: 0, diameterBottom: 0.72, height: 0.9, tessellation: 7 },
+    scene,
+  );
+  shard.position.set(0, 1.95, 0);
+  const merged = Mesh.MergeMeshes([stem, shard], true, true, undefined, false, true);
+  if (!merged) return stem;
+  merged.name = "accentSpireMaster";
+  const mat = new StandardMaterial("accentSpireMat", scene);
+  mat.diffuseColor = accent.clone();
+  mat.emissiveColor = accent.clone().scale(0.24);
+  mat.specularColor = accent.clone().scale(0.18);
+  merged.material = mat;
+  return merged;
+}
+
+function makeHangingBanner(scene: Scene, accent: Color3): Mesh {
+  const banner = MeshBuilder.CreatePlane(
+    "hangingAccentMaster",
+    { width: 0.7, height: 2.0, sideOrientation: Mesh.DOUBLESIDE },
+    scene,
+  );
+  const mat = new StandardMaterial("hangingAccentMat", scene);
+  mat.diffuseColor = accent.clone().scale(0.75);
+  mat.emissiveColor = accent.clone().scale(0.18);
+  mat.specularColor = new Color3(0.02, 0.02, 0.02);
+  mat.backFaceCulling = false;
+  banner.material = mat;
+  return banner;
 }
 
 // -------------------- horizon --------------------
