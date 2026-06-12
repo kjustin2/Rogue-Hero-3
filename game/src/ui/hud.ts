@@ -1,6 +1,6 @@
 import type { Ctx } from "../game/ctx";
 import { ZONES, CRASH_THRESHOLD } from "../game/tempo";
-import { ROOMS } from "../game/run";
+import { ROOMS, ROMAN } from "../game/run";
 
 const STREAK_LABELS: [number, string][] = [
   [12, "UNSTOPPABLE"],
@@ -65,6 +65,7 @@ export class Hud {
           <div class="plate__shield" style="width:0"></div>
         </div>
         <div class="plate__hptext"></div>
+        <div class="relicrow"></div>
       </div>
       <div class="roominfo">
         <div class="roominfo__name"></div>
@@ -115,11 +116,16 @@ export class Hud {
     this.flashRing = q(".flashring");
     this.hintsEl = q(".hints");
 
-    // Room pips
+    // Room pips, grouped by act
     const pipsWrap = q(".roominfo__pips");
     for (let i = 0; i < ROOMS.length; i++) {
+      if (i > 0 && ROOMS[i].act !== ROOMS[i - 1].act) {
+        const sep = document.createElement("div");
+        sep.className = "pip-sep";
+        pipsWrap.appendChild(sep);
+      }
       const pip = document.createElement("div");
-      pip.className = "pip" + (ROOMS[i].boss ? " pip--boss" : "");
+      pip.className = "pip" + (ROOMS[i].bossKind ? " pip--boss" : "");
       pipsWrap.appendChild(pip);
       this.pips.push(pip);
     }
@@ -167,15 +173,26 @@ export class Hud {
     });
     events.on("BOSS_DEFEATED", () => this.bossBar.classList.remove("bossbar--show"));
     events.on("ROOM_START", ({ index, name, isBoss }) => {
+      const room = ROOMS[index];
+      const roman = ROMAN[room.act - 1];
+      const firstOfAct = ROOMS.findIndex((r) => r.act === room.act);
+      const actSize = ROOMS.filter((r) => r.act === room.act).length;
       this.roomName.textContent = name;
-      this.roomProgress.textContent = isBoss ? "FINAL CHAMBER" : `CHAMBER ${index + 1} / ${ROOMS.length}`;
+      this.roomProgress.textContent = isBoss
+        ? `ACT ${roman} · BOSS`
+        : `ACT ${roman} · CHAMBER ${index - firstOfAct + 1} / ${actSize}`;
       this.pips.forEach((p, i) => {
         p.classList.toggle("pip--done", i < index);
         p.classList.toggle("pip--current", i === index);
       });
-      if (!isBoss) this.bossBar.classList.remove("bossbar--show");
+      if (!isBoss) {
+        this.bossBar.classList.remove("bossbar--show");
+        // Boss rooms announce via BOSS_INTRO; act openers via ACT_START
+        if (index !== firstOfAct) this.banner(name, `ACT ${roman}`, "");
+      }
     });
     events.on("PERFECT_DODGE", () => this.replay(this.flashRing, "flashring--go"));
+    events.on("RELIC_ADDED", () => this.rebuildRelicRow());
     events.on("CARD_FAIL", ({ slot }) => {
       const s = this.slotEls[slot];
       if (s) this.replay(s.el, "slot--shake");
@@ -197,7 +214,23 @@ export class Hud {
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? "block" : "none";
-    if (v) this.ghostHp = this.ctx.player.hp / this.ctx.player.maxHp;
+    if (v) {
+      this.ghostHp = this.ctx.player.hp / this.ctx.player.maxHp;
+      this.rebuildRelicRow();
+    }
+  }
+
+  private rebuildRelicRow(): void {
+    const row = this.root.querySelector(".relicrow") as HTMLElement;
+    row.innerHTML = "";
+    for (const r of this.ctx.relics.owned) {
+      const chip = document.createElement("div");
+      chip.className = "relic";
+      chip.style.setProperty("--accent", r.color);
+      chip.textContent = r.icon;
+      chip.title = `${r.name} — ${r.desc}`;
+      row.appendChild(chip);
+    }
   }
 
   /** Hide movement hints once the player has cleared a room — they know. */

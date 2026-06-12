@@ -16,6 +16,8 @@ import type { EnemyManager } from "./enemies";
 import type { Deck } from "./deck";
 import type { CardCaster } from "./cards";
 import type { RunManager } from "./run";
+import type { Relics } from "./relics";
+import type { Profile } from "./profile";
 import type { Sfx } from "../audio/sfx";
 
 export interface RunStats {
@@ -26,10 +28,15 @@ export interface RunStats {
   roomsCleared: number;
   time: number;
   bestStreak: number;
+  crashes: number;
+  actReached: number;
 }
 
 export function freshStats(): RunStats {
-  return { kills: 0, damageDealt: 0, damageTaken: 0, perfectDodges: 0, roomsCleared: 0, time: 0, bestStreak: 0 };
+  return {
+    kills: 0, damageDealt: 0, damageTaken: 0, perfectDodges: 0,
+    roomsCleared: 0, time: 0, bestStreak: 0, crashes: 0, actReached: 1,
+  };
 }
 
 /**
@@ -58,6 +65,8 @@ export interface Ctx {
   deck: Deck;
   caster: CardCaster;
   run: RunManager;
+  relics: Relics;
+  profile: Profile;
   stats: RunStats;
   /** True while gameplay systems should tick (not menu/paused/draft). */
   playing: boolean;

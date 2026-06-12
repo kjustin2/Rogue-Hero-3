@@ -3,7 +3,10 @@ import { ARENA_RADIUS } from "../render/arena";
 import { dampAngle, TAU } from "../core/math";
 import type { Ctx } from "./ctx";
 
-export type EnemyKind = "husk" | "spitter" | "swarmer" | "bomber" | "sentinel" | "boss";
+export type EnemyKind =
+  | "husk" | "spitter" | "swarmer" | "bomber" | "sentinel"
+  | "wisp" | "leaper" | "tether" | "mirror" | "caster"
+  | "boss";
 
 let NEXT_ID = 1;
 
@@ -103,6 +106,14 @@ export abstract class Enemy {
 
   freeze(duration: number): void {
     this.frozen = Math.max(this.frozen, duration);
+  }
+
+  /** Damage-free knockback along (x, z) — pulls when pointed inward. Bosses shrug it off. */
+  shove(x: number, z: number, strength: number): void {
+    if (this.kind === "boss") return;
+    const len = Math.hypot(x, z) || 1;
+    this.kb.x += (x / len) * strength;
+    this.kb.y += (z / len) * strength;
   }
 
   die(): void {
@@ -647,13 +658,29 @@ interface PendingSpawn {
   make?: (ctx: Ctx, x: number, z: number) => Enemy;
 }
 
-const CONSTRUCTORS: Record<Exclude<EnemyKind, "boss">, new (ctx: Ctx, x: number, z: number) => Enemy> = {
-  husk: Husk,
-  spitter: Spitter,
-  swarmer: Swarmer,
-  bomber: Bomber,
-  sentinel: Sentinel,
-};
+type EnemyCtor = new (ctx: Ctx, x: number, z: number) => Enemy;
+
+/**
+ * Mutable registry so additional rosters (enemies2.ts) can register without
+ * a circular import — main.ts imports them once for the side effect.
+ */
+const REGISTRY = new Map<Exclude<EnemyKind, "boss">, EnemyCtor>([
+  ["husk", Husk],
+  ["spitter", Spitter],
+  ["swarmer", Swarmer],
+  ["bomber", Bomber],
+  ["sentinel", Sentinel],
+]);
+
+export function registerEnemy(kind: Exclude<EnemyKind, "boss">, ctor: EnemyCtor): void {
+  REGISTRY.set(kind, ctor);
+}
+
+export function makeEnemy(kind: Exclude<EnemyKind, "boss">, ctx: Ctx, x: number, z: number): Enemy {
+  const ctor = REGISTRY.get(kind);
+  if (!ctor) throw new Error(`Enemy kind not registered: ${kind}`);
+  return new ctor(ctx, x, z);
+}
 
 export class EnemyManager {
   private enemies: Enemy[] = [];
@@ -718,7 +745,7 @@ export class EnemyManager {
       s.timer -= dt;
       if (s.timer <= 0) {
         this.pending.splice(i, 1);
-        const e = s.make ? s.make(this.ctx, s.x, s.z) : new CONSTRUCTORS[s.kind as Exclude<EnemyKind, "boss">](this.ctx, s.x, s.z);
+        const e = s.make ? s.make(this.ctx, s.x, s.z) : makeEnemy(s.kind as Exclude<EnemyKind, "boss">, this.ctx, s.x, s.z);
         this.enemies.push(e);
         this.ctx.fx.burst({
           x: s.x, y: 0.4, z: s.z,

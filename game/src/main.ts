@@ -21,6 +21,10 @@ import { Tempo } from "./game/tempo";
 import { Combat } from "./game/combat";
 import { Projectiles, HostileProjectiles } from "./game/projectiles";
 import { EnemyManager } from "./game/enemies";
+import "./game/enemies2"; // registers the Act II/III roster
+import { ROMAN, ROOMS } from "./game/run";
+import { Relics } from "./game/relics";
+import { Profile } from "./game/profile";
 import { Deck } from "./game/deck";
 import { CardCaster } from "./game/cards";
 import { RunManager } from "./game/run";
@@ -55,7 +59,11 @@ ctx.hostiles = new HostileProjectiles(ctx, ctx.stage.scene);
 ctx.enemies = new EnemyManager(ctx);
 ctx.deck = new Deck(ctx);
 ctx.caster = new CardCaster(ctx);
+ctx.profile = new Profile();
+ctx.relics = new Relics(ctx);
 ctx.run = new RunManager(ctx);
+// Relics scale (or freeze) the tempo drift
+ctx.tempo.decayScale = (v) => ctx.relics.tempoDecayMult(v);
 
 const hud = new Hud(ctx);
 let state: GameState = "menu";
@@ -63,7 +71,7 @@ let state: GameState = "menu";
 const menus = new Menus(ctx, {
   onStartRun: startRun,
   onResume: resume,
-  onAbandon: toMenu,
+  onAbandon: abandonRun,
   onRetry: startRun,
   onMenu: toMenu,
 });
@@ -89,12 +97,18 @@ function startRun(): void {
   ctx.player.root.visible = true;
   ctx.tempo.reset();
   ctx.deck.resetForRun();
+  ctx.relics.resetForRun();
+  ctx.profile.beginRun();
   ctx.run.startRun();
   ctx.cam.mode = "follow";
   hud.setVisible(true);
-  menus.actIntro("ACT I", "THE EMBER RIFT");
   state = "playing";
   ctx.input.enabled = true;
+}
+
+function abandonRun(): void {
+  ctx.profile.recordRun("abandon", ctx.stats);
+  toMenu();
 }
 
 function toMenu(): void {
@@ -126,23 +140,44 @@ function resume(): void {
   state = "playing";
 }
 
-ctx.events.on("ROOM_CLEARED", () => {
+ctx.events.on("ROOM_CLEARED", ({ reward }) => {
   hud.fadeHints();
   window.setTimeout(() => {
     if (state !== "playing") return;
-    state = "draft";
-    menus.showDraft(ctx.deck.draftChoices(), () => {
+    const done = () => {
       menus.clear();
       state = "playing";
       ctx.run.nextRoom();
-    });
+    };
+    if (reward === "relic") {
+      const choices = ctx.relics.draftChoices();
+      if (choices.length === 0) {
+        // Maxed out — quiet consolation heal, straight to the next chamber
+        ctx.player.hp = Math.min(ctx.player.maxHp, ctx.player.hp + 10);
+        ctx.events.emit("HEAL", { amount: 10 });
+        ctx.run.nextRoom();
+        return;
+      }
+      state = "draft";
+      menus.showRelicDraft(choices, done);
+    } else {
+      state = "draft";
+      menus.showDraft(ctx.deck.draftChoices(), done);
+    }
   }, 1500);
 });
 
-ctx.events.on("ROOM_START", ({ index, name, isBoss }) => {
+ctx.events.on("BOSS_DEFEATED", () => {
+  // Bank the milestone immediately — dying later can't take it back
+  ctx.profile.noteBossKill(ROOMS[ctx.run.roomIndex].act, ctx.stats);
+});
+
+ctx.events.on("ACT_START", ({ act, name }) => {
+  menus.actIntro(`ACT ${ROMAN[act - 1]}`, name);
+});
+
+ctx.events.on("ROOM_START", ({ isBoss }) => {
   if (isBoss) ctx.sfx.bossIntroSting();
-  // Boss announces itself via BOSS_INTRO; normal chambers get a name card
-  else if (index > 0) hud.banner(name, `CHAMBER ${index + 1}`, "");
 });
 
 ctx.events.on("HEAL", ({ amount }) => {
@@ -153,11 +188,13 @@ ctx.events.on("HEAL", ({ amount }) => {
 ctx.events.on("RUN_VICTORY", () => {
   ctx.sfx.victory();
   ctx.cam.addTrauma(0.4);
+  const unlocks = ctx.profile.recordRun("victory", ctx.stats);
   window.setTimeout(() => {
     state = "victory";
     ctx.cam.mode = "menu";
     hud.setVisible(false);
-    menus.showVictory(ctx.stats);
+    menus.showVictory(ctx.stats, unlocks);
+    if (unlocks.length) ctx.sfx.unlockFanfare();
   }, 2600);
 });
 
@@ -165,11 +202,13 @@ ctx.events.on("PLAYER_DIED", () => {
   ctx.cam.addTrauma(0.7);
   ctx.stage.punch(1);
   ctx.sfx.defeat();
+  const unlocks = ctx.profile.recordRun("death", ctx.stats);
   window.setTimeout(() => {
     state = "dead";
     ctx.cam.mode = "menu";
     hud.setVisible(false);
-    menus.showDeath(ctx.stats);
+    menus.showDeath(ctx.stats, unlocks);
+    if (unlocks.length) ctx.sfx.unlockFanfare();
   }, 1700);
 });
 

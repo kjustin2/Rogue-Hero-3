@@ -1,12 +1,11 @@
-// Deep-flow smoke: uses the dev __rh3 hook to force room clears and reach
-// the draft screen, later rooms, and the boss. Usage: node scripts/smoke-flow.mjs
+// Full-run smoke: walks all 9 rooms across 3 acts via the dev __rh3 hook,
+// clicking through every draft, ending on the victory screen. Then a death.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const EXE = join(process.env.LOCALAPPDATA, "ms-playwright/chromium-1217/chrome-win64/chrome.exe");
-const OUT = "shots";
-mkdirSync(OUT, { recursive: true });
+mkdirSync("shots", { recursive: true });
 
 const browser = await chromium.launch({ executablePath: EXE, headless: true });
 const page = await (await browser.newContext({ viewport: { width: 1600, height: 900 } })).newPage();
@@ -17,60 +16,65 @@ page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(2000);
 await page.locator("button", { hasText: "Begin Run" }).click();
-await page.waitForTimeout(3200);
-
-// Kill everything in room 1 → ROOM_CLEARED → draft appears after 1.5s
-await page.evaluate(() => {
-  const c = window.__rh3;
-  for (const e of c.enemies.living()) e.takeDamage(9999);
-});
-await page.waitForTimeout(800);
-await page.screenshot({ path: join(OUT, "6-roomclear.png") });
-await page.waitForTimeout(1400);
-await page.screenshot({ path: join(OUT, "7-draft.png") });
-
-// Pick the first card
-const card = page.locator(".card").first();
-if (await card.count()) await card.click();
 await page.waitForTimeout(2500);
-await page.screenshot({ path: join(OUT, "8-room2.png") });
 
-// Jump to the boss room
-await page.evaluate(() => window.__rh3.run.loadRoom(4));
-await page.waitForTimeout(3800);
-await page.screenshot({ path: join(OUT, "9-boss.png") });
+const ROOM_COUNT = await page.evaluate(() => window.__rh3.run.totalRooms);
+console.log("rooms:", ROOM_COUNT);
 
-// Let the boss act
+for (let room = 0; room < ROOM_COUNT; room++) {
+  // Kill everything (pending spawns take a few seconds to materialize)
+  let st = null;
+  for (let tries = 0; tries < 16; tries++) {
+    st = await page.evaluate(() => {
+      const c = window.__rh3;
+      for (const e of c.enemies.living()) e.takeDamage(99999);
+      return { state: c.run.state, idx: c.run.roomIndex };
+    });
+    if (st.state !== "fighting") break;
+    await page.waitForTimeout(450);
+  }
+  console.log(`room ${room}: idx=${st.idx} state=${st.state}`);
+  if (st.state === "victory") break;
+  if (st.state !== "cleared") {
+    console.log(`FAIL: room ${room} never cleared`);
+    break;
+  }
+
+  await page.screenshot({ path: `shots/flow-${room}-cleared.png` });
+  await page.waitForTimeout(1900); // draft opens at +1.5s
+
+  // Click through the draft (pick → optional swap stage)
+  if (await page.locator(".card").count()) {
+    await page.screenshot({ path: `shots/flow-${room}-draft.png` });
+    await page.locator(".card").first().click();
+    await page.waitForTimeout(450);
+    if (await page.locator(".card").count()) {
+      await page.locator(".card").first().click();
+      await page.waitForTimeout(450);
+    }
+  } else if (await page.locator(".draft-skip").count()) {
+    await page.locator(".draft-skip").click();
+  } else {
+    console.log(`WARN: room ${room} no draft UI found`);
+  }
+  await page.waitForTimeout(2800); // room load + act intro card
+}
+
 await page.waitForTimeout(3500);
-await page.screenshot({ path: join(OUT, "10-bossfight.png") });
+await page.screenshot({ path: "shots/flow-victory.png" });
+const victoryShown = await page.locator(".end-title--victory").count();
+console.log("VICTORY SCREEN:", victoryShown > 0 ? "OK" : "MISSING");
 
-// Force a phase transition
-await page.evaluate(() => {
-  const c = window.__rh3;
-  const boss = c.enemies.living().find((e) => e.kind === "boss");
-  if (boss) boss.takeDamage(140);
-});
-await page.waitForTimeout(900);
-await page.screenshot({ path: join(OUT, "11-bossphase.png") });
+// Death screen path
+const again = page.locator("button", { hasText: "Run It Back" });
+if (await again.count()) {
+  await again.click();
+  await page.waitForTimeout(2500);
+  await page.evaluate(() => window.__rh3.combat.damagePlayer(99999, 3, 3));
+  await page.waitForTimeout(2400);
+  const deathShown = await page.locator(".end-title--death").count();
+  console.log("DEATH SCREEN:", deathShown > 0 ? "OK" : "MISSING");
+}
 
-// Kill the boss → victory screen
-await page.evaluate(() => {
-  const c = window.__rh3;
-  const boss = c.enemies.living().find((e) => e.kind === "boss");
-  if (boss) boss.takeDamage(99999);
-});
-await page.waitForTimeout(3500);
-await page.screenshot({ path: join(OUT, "12-victory.png") });
-
-// Death screen: restart, then self-destruct
-await page.locator("button", { hasText: "Run It Back" }).click().catch(() => {});
-await page.waitForTimeout(2500);
-await page.evaluate(() => {
-  const c = window.__rh3;
-  c.combat.damagePlayer(9999, 5, 5);
-});
-await page.waitForTimeout(2300);
-await page.screenshot({ path: join(OUT, "13-death.png") });
-
-console.log(errors.length ? `CONSOLE ERRORS (${errors.length}):\n` + errors.slice(0, 12).join("\n") : "NO CONSOLE ERRORS");
+console.log(errors.length ? `CONSOLE ERRORS (${errors.length}):\n` + errors.slice(0, 10).join("\n") : "NO CONSOLE ERRORS");
 await browser.close();

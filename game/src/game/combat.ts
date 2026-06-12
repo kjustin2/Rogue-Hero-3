@@ -88,6 +88,7 @@ export class Combat {
         controller.consumePerfect();
         tempo.gain(15);
         stats.perfectDodges++;
+        this.ctx.relics.onPerfectDodge();
         events.emit("PERFECT_DODGE", { x: player.pos.x, z: player.pos.z });
         this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 2.6, color: 0x66ffee, duration: 0.45 });
         this.ctx.fx.burst({
@@ -99,6 +100,8 @@ export class Combat {
       }
       return "dodged";
     }
+
+    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult()));
 
     // Shield soaks first
     if (player.shield > 0) {
@@ -148,7 +151,7 @@ export class Combat {
   dealDamage(e: Enemy, baseDmg: number, opts: DamageOpts & { countCombo?: boolean } = {}): void {
     const { tempo, stats, events } = this.ctx;
     const zone = tempo.zone;
-    const dmg = Math.max(1, Math.round(baseDmg * zone.damageMult));
+    const dmg = Math.max(1, Math.round(baseDmg * zone.damageMult * this.ctx.relics.damageDealtMult(e)));
     const killed = e.takeDamage(dmg, opts);
     stats.damageDealt += dmg;
 
@@ -203,8 +206,9 @@ export class Combat {
     const { tempo, player } = this.ctx;
     if (!tempo.crashReady) return;
     const mult = tempo.zone.damageMult;
-    tempo.crash();
+    tempo.crash(this.ctx.relics.crashResetValue() ?? undefined);
     this.crashIframes = 0.45;
+    this.ctx.stats.crashes++;
     const R = 6;
     this.ctx.events.emit("CRASH", { x: player.pos.x, z: player.pos.z });
     for (const e of this.ctx.enemies.living()) {

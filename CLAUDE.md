@@ -1,6 +1,6 @@
 # Rogue Hero 3 — Project Guide
 
-Single-player 3D action roguelike on **Three.js** (the June 2026 ground-up rebuild; the old Babylon.js v1 was removed). Vite + strict TypeScript, ships as an Electron desktop app. Currently a vertical slice: one act, five chambers, one boss — polish this before expanding (acts II/III, relics, more cards/heroes are deliberately deferred).
+Single-player 3D action roguelike on **Three.js** (the June 2026 ground-up rebuild; the old Babylon.js v1 was removed). Vite + strict TypeScript, ships as an Electron desktop app. Content: 3 acts × 3 chambers (combat → elite → boss), 3 bosses, 10 enemy types, 16 cards, 11 relics, and milestone-based meta-progression persisted in localStorage (PROGRESS screen on the main menu). Heroes/anomalies remain future work.
 
 ## Layout
 
@@ -24,7 +24,11 @@ For visual/behavioral checks, run the dev server (`npm run dev`, port 5174) and:
 
 ```bash
 node scripts/smoke-browser.mjs   # boot, combat input, pause — screenshots into shots/
-node scripts/smoke-flow.mjs      # full loop: clear → draft → boss → phases → victory + death
+node scripts/smoke-flow.mjs      # walks all 9 rooms: drafts, act intros, victory + death
+node scripts/smoke-bosses.mjs    # Spire Caster + Colossus across all phases
+node scripts/smoke-relic.mjs     # elite clear → relic draft → HUD relic row
+node scripts/smoke-meta.mjs      # fresh profile → gated drafts → win → unlocks/progress screen (CLEARS the profile)
+node scripts/smoke-crash.mjs     # cooldown sweep + crash-radius ring
 ```
 
 Both print `NO CONSOLE ERRORS` on success and use the Playwright Chromium cached at `%LOCALAPPDATA%\ms-playwright\chromium-1217` (via `playwright-core`, no browser download). **Read the screenshots** — a clean console with a black canvas is still a failure. Dev builds expose the wiring hub as `window.__rh3` for these scripts.
@@ -59,10 +63,12 @@ npm run preview      # production bundle in browser at :4173
 | `game/controller.ts` | Movement, dodge i-frames, perfect-dodge window, external `push()` impulses |
 | `game/combat.ts` | Melee chain, `dealDamage` pipeline (ALL player damage flows through it), `damagePlayer` (returns how it resolved), crash nova |
 | `game/tempo.ts` | The signature 0–100 flow meter; zones in `ZONES` drive damage/speed/colors |
-| `game/cards.ts` / `deck.ts` | Card defs + cast handlers + lingering entities (mines/phantoms); 3 slots, cooldowns, drafting |
-| `game/enemies.ts` | Enemy base (HP bars, knockback, freeze, hit-flash, disposal) + 5 types + manager |
-| `game/boss.ts` | The Pit Warden (3 phases) |
-| `game/run.ts` | `ROOMS` table, wave spawning, clear detection |
+| `game/cards.ts` / `deck.ts` | 16 card defs + cast handlers + lingering entities (mines/phantoms/meteors/wells/bleeds); 3 slots, cooldowns, unlock-gated drafting |
+| `game/enemies.ts` / `enemies2.ts` | Enemy base (HP bars, knockback, freeze, hit-flash, disposal) + registry; base 5 types + Act II/III roster (wisp/leaper/tether/mirror/caster) |
+| `game/boss.ts` / `bossSpire.ts` / `bossColossus.ts` | Pit Warden, Spire Caster (echo lances), Colossus (tectonic ring slams) — 3 phases each |
+| `game/relics.ts` | 11 passive relics; hook surface consulted by combat/tempo/deck/run pipelines |
+| `game/profile.ts` | localStorage meta-progression: lifetime stats, `MILESTONES` unlock table, run history |
+| `game/run.ts` | 9-room `ROOMS` table (3 acts), wave/elite/boss spawning, reward routing (combat→card, elite→relic) |
 | `ui/hud.ts` / `menus.ts` / `style.css` | DOM HUD + every overlay screen — the professional look lives in the CSS |
 | `audio/sfx.ts` | Procedural Web Audio SFX — every sound synthesized, no asset files |
 

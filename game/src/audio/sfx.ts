@@ -206,6 +206,38 @@ export class Sfx {
         this.noise({ dur: 0.18, freq: 4000, q: 6, gain: 0.16 });
         this.tone({ f: 1800, f2: 200, dur: 0.15, type: "sawtooth", gain: 0.1 });
         break;
+      case "sunder":
+        for (let i = 0; i < 4; i++) this.tone({ f: 220 - i * 25, f2: 70, dur: 0.12, type: "square", gain: 0.1, delay: 0.1 + i * 0.12 });
+        break;
+      case "charged-lance":
+        this.tone({ f: 400, f2: 1800, dur: 0.18, type: "sawtooth", gain: 0.14 });
+        this.noise({ dur: 0.22, freq: 2600, freq2: 400, q: 1.6, gain: 0.16 });
+        this.tone({ f: 90, f2: 40, dur: 0.2, type: "sine", gain: 0.16 });
+        break;
+      case "meteor-call":
+        this.tone({ f: 900, f2: 1500, dur: 0.3, type: "sine", gain: 0.08 });
+        this.tone({ f: 1350, f2: 2200, dur: 0.3, type: "sine", gain: 0.06, delay: 0.12 });
+        break;
+      case "bleeding-edge":
+        this.noise({ dur: 0.22, freq: 1100, freq2: 200, q: 1.2, gain: 0.18 });
+        this.tone({ f: 300, f2: 110, dur: 0.16, type: "sawtooth", gain: 0.1 });
+        break;
+      case "storm-conduit":
+        this.tone({ f: 520, f2: 1040, dur: 0.4, type: "triangle", gain: 0.1 });
+        this.noise({ dur: 0.35, freq: 5000, q: 5, gain: 0.07 });
+        break;
+      case "gravity-well":
+        this.tone({ f: 600, f2: 90, dur: 0.6, type: "sine", gain: 0.14 });
+        this.noise({ dur: 0.5, freq: 800, freq2: 200, q: 2, gain: 0.08, type: "lowpass" });
+        break;
+      case "ward-pulse":
+        this.tone({ f: 440, f2: 660, dur: 0.25, type: "sine", gain: 0.12 });
+        this.tone({ f: 660, f2: 880, dur: 0.3, type: "sine", gain: 0.1, delay: 0.1 });
+        break;
+      case "ember-wave":
+        this.noise({ dur: 0.4, freq: 700, freq2: 180, q: 0.9, gain: 0.2, type: "lowpass" });
+        this.tone({ f: 160, f2: 60, dur: 0.3, type: "sawtooth", gain: 0.12 });
+        break;
     }
   }
 
@@ -309,6 +341,17 @@ export class Sfx {
   private roomClear(): void {
     const notes = [523, 659, 784, 1046];
     notes.forEach((f, i) => this.tone({ f, dur: 0.22, type: "triangle", gain: 0.1, delay: i * 0.09 }));
+  }
+
+  relicPickup(): void {
+    this.tone({ f: 660, dur: 0.12, type: "triangle", gain: 0.1 });
+    this.tone({ f: 880, dur: 0.14, type: "triangle", gain: 0.1, delay: 0.08 });
+    this.tone({ f: 1320, dur: 0.22, type: "sine", gain: 0.08, delay: 0.16 });
+  }
+
+  unlockFanfare(): void {
+    const notes = [660, 880, 990, 1320];
+    notes.forEach((f, i) => this.tone({ f, dur: 0.25, type: "triangle", gain: 0.09, delay: i * 0.1 }));
   }
 
   bossIntroSting(): void {

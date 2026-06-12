@@ -33,6 +33,8 @@ export class Tempo {
   /** After any gain, tempo holds for this long before drifting again. */
   private sustainTimer = 0;
   private zoneIdx = 1;
+  /** Injected by main.ts — relics scale (or zero out) the drift rate. */
+  decayScale: (value: number) => number = () => 1;
 
   constructor(private events: EventBus) {}
 
@@ -55,9 +57,9 @@ export class Tempo {
     this.refreshZone();
   }
 
-  /** Crash: reset to resting. Caller is responsible for the nova + FX. */
-  crash(): void {
-    this.value = this.resting;
+  /** Crash: reset to `resetTo` (relics can raise it). Caller owns the nova + FX. */
+  crash(resetTo = this.resting): void {
+    this.value = clamp(resetTo, 0, 100);
     this.sustainTimer = 2.0;
     this.refreshZone();
   }
@@ -89,8 +91,10 @@ export class Tempo {
       return;
     }
     if (Math.abs(this.value - this.resting) < 0.01) return;
+    const rate = this.decayRate * this.decayScale(this.value);
+    if (rate <= 0) return;
     const dir = this.value > this.resting ? -1 : 1;
-    this.value = clamp(this.value + dir * this.decayRate * dt, 0, 100);
+    this.value = clamp(this.value + dir * rate * dt, 0, 100);
     // Don't overshoot the resting point
     if (dir === -1 && this.value < this.resting) this.value = this.resting;
     if (dir === 1 && this.value > this.resting) this.value = this.resting;

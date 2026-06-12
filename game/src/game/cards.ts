@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { angleDelta } from "../core/math";
 import type { Ctx } from "./ctx";
 import type { Enemy } from "./enemies";
 
@@ -24,6 +25,15 @@ export const CARDS: CardDef[] = [
   { id: "mine-field", name: "Mine Field", desc: "Scatter four arc-mines around you. Herd them in.", cooldown: 9, color: "#ff9a5f", glow: 0xff9a5f, icon: "✸", rarity: "uncommon", tempo: 8 },
   { id: "aegis", name: "Aegis", desc: "A 25-point barrier. Press again to detonate it early.", cooldown: 12, color: "#7fc8ff", glow: 0x7fc8ff, icon: "⛨", rarity: "uncommon", tempo: 0 },
   { id: "chain-lightning", name: "Chain Lightning", desc: "A bolt that arcs between up to three foes.", cooldown: 7, color: "#ffe066", glow: 0xffe066, icon: "⚡", rarity: "rare", tempo: 7 },
+  // --- Expansion set (most begin locked; milestones open them up)
+  { id: "sunder", name: "Sunder", desc: "Four eruptions march down a line in front of you.", cooldown: 6, color: "#d8b25f", glow: 0xd8b25f, icon: "⫸", rarity: "common", tempo: 6 },
+  { id: "charged-lance", name: "Charged Lance", desc: "One colossal piercing bolt. The recoil moves you.", cooldown: 7, color: "#9fd0ff", glow: 0x9fd0ff, icon: "➹", rarity: "uncommon", tempo: 7 },
+  { id: "meteor-call", name: "Meteor Call", desc: "Mark the cursor. A heartbeat later, the sky answers.", cooldown: 9, color: "#ff8a4d", glow: 0xff8a4d, icon: "✴", rarity: "uncommon", tempo: 8 },
+  { id: "bleeding-edge", name: "Bleeding Edge", desc: "A wide cleave that leaves deep, ticking wounds.", cooldown: 6, color: "#ff6b7a", glow: 0xff6b7a, icon: "❖", rarity: "common", tempo: 6 },
+  { id: "storm-conduit", name: "Storm Conduit", desc: "For 5s your sword hits arc sparks to a nearby foe.", cooldown: 11, color: "#fff09f", glow: 0xfff09f, icon: "≋", rarity: "rare", tempo: 5 },
+  { id: "gravity-well", name: "Gravity Well", desc: "Drag the pack into one point, then pop it.", cooldown: 9, color: "#b08fff", glow: 0xb08fff, icon: "◉", rarity: "rare", tempo: 6 },
+  { id: "ward-pulse", name: "Ward Pulse", desc: "Mend 12 HP and hurl everything near you away.", cooldown: 14, color: "#8fffc8", glow: 0x8fffc8, icon: "✚", rarity: "uncommon", tempo: 0 },
+  { id: "ember-wave", name: "Ember Wave", desc: "A cone of fire that keeps burning after it lands.", cooldown: 8, color: "#ffb35f", glow: 0xffb35f, icon: "✺", rarity: "uncommon", tempo: 7 },
 ];
 
 export const STARTING_HAND = ["dash-strike", "arc-bolt"];
@@ -54,14 +64,74 @@ interface Phantom {
  * (mines, phantom decoys, aegis state). Casting returns false when the
  * card has no valid use right now (e.g. no targets for chain lightning).
  */
+interface Bleed {
+  enemy: Enemy;
+  ticks: number;
+  timer: number;
+  dmg: number;
+  color: number;
+}
+
+interface Meteor {
+  x: number;
+  z: number;
+  timer: number;
+  pulseAcc: number;
+}
+
+interface SunderPulse {
+  x: number;
+  z: number;
+  timer: number;
+}
+
+interface Well {
+  x: number;
+  z: number;
+  timer: number;
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+}
+
 export class CardCaster {
   private mines: Mine[] = [];
   private phantoms: Phantom[] = [];
   private aegisTimer = 0;
   private fakeSwing = -1;
   private mineGeo = new THREE.ConeGeometry(0.28, 0.4, 4);
+  private bleeds: Bleed[] = [];
+  private meteors: Meteor[] = [];
+  private pulses: SunderPulse[] = [];
+  private wells: Well[] = [];
+  private conduitTimer = 0;
+  /** Re-entrancy latch: conduit sparks must never trigger more sparks. */
+  private sparking = false;
 
-  constructor(private ctx: Ctx) {}
+  constructor(private ctx: Ctx) {
+    ctx.events.on("ENEMY_HIT", ({ x, z, killed }) => {
+      if (this.conduitTimer <= 0 || this.sparking || killed) return;
+      // Arc a spark to the nearest OTHER enemy
+      let best: Enemy | null = null;
+      let bestD = 6;
+      for (const e of this.ctx.enemies.living()) {
+        const d = Math.hypot(e.pos.x - x, e.pos.z - z);
+        if (d > 0.8 && d < bestD) {
+          bestD = d;
+          best = e;
+        }
+      }
+      if (!best) return;
+      this.sparking = true;
+      this.ctx.combat.dealDamage(best, 4, { kb: 1 });
+      this.sparking = false;
+      this.lightningVisual([{ x, z }, { x: best.pos.x, z: best.pos.z }]);
+    });
+  }
+
+  /** Apply a damage-over-time stack (Bleeding Edge, Ember Wave burns). */
+  addBleed(enemy: Enemy, ticks: number, dmg: number, color = 0xff6b7a): void {
+    this.bleeds.push({ enemy, ticks, timer: 0.5, dmg, color });
+  }
 
   /** True if Aegis is up — pressing its slot again detonates it. */
   get aegisActive(): boolean {
@@ -221,7 +291,8 @@ export class CardCaster {
         const pool = enemies.living();
         const hit = new Set<number>();
         let cur = { x: player.pos.x, z: player.pos.z };
-        for (let n = 0; n < 3; n++) {
+        const maxChain = this.ctx.relics.has("chain-amulet") ? 5 : 3;
+        for (let n = 0; n < maxChain; n++) {
           let best: (typeof pool)[number] | null = null;
           let bestD = n === 0 ? 12 : 7;
           for (const e of pool) {
@@ -242,6 +313,152 @@ export class CardCaster {
         this.lightningVisual(targets);
         this.ctx.stage.punch(0.15);
         this.ctx.cam.addTrauma(0.12);
+        return true;
+      }
+
+      case "sunder": {
+        for (let i = 0; i < 4; i++) {
+          const d = 2.0 + i * 1.9;
+          this.pulses.push({
+            x: player.pos.x + Math.sin(player.facing) * d,
+            z: player.pos.z + Math.cos(player.facing) * d,
+            timer: 0.1 + i * 0.12,
+          });
+        }
+        this.fakeSwing = 0;
+        this.ctx.cam.kick(Math.sin(player.facing), Math.cos(player.facing), 2.5);
+        return true;
+      }
+
+      case "charged-lance": {
+        this.ctx.projectiles.fire(player.pos.x, player.pos.z, player.facing, {
+          speed: 34, dmg: 34, color: 0x9fd0ff, radius: 0.55, range: 26, pierce: true,
+        });
+        const mx = player.pos.x + Math.sin(player.facing) * 1.3;
+        const mz = player.pos.z + Math.cos(player.facing) * 1.3;
+        fx.burst({
+          x: mx, y: 1.0, z: mz,
+          count: 20, color: [0x9fd0ff, 0xffffff],
+          speed: [4, 11], up: 0.3, size: [0.4, 0.8], life: [0.15, 0.35], gravity: -2, drag: 4,
+        });
+        // The recoil is real
+        this.ctx.controller.push(-Math.sin(player.facing) * 7, -Math.cos(player.facing) * 7);
+        this.ctx.cam.kick(-Math.sin(player.facing), -Math.cos(player.facing), 5);
+        this.ctx.cam.addTrauma(0.2);
+        return true;
+      }
+
+      case "meteor-call": {
+        const dx = aim.x - player.pos.x;
+        const dz = aim.z - player.pos.z;
+        const len = Math.hypot(dx, dz);
+        const dist = Math.min(12, len);
+        const nx = len > 0.01 ? dx / len : Math.sin(player.facing);
+        const nz = len > 0.01 ? dz / len : Math.cos(player.facing);
+        const tx = player.pos.x + nx * dist;
+        const tz = player.pos.z + nz * dist;
+        // Friendly mark — fx ring, not the enemy-threat telegraph language
+        fx.ring(tx, tz, { radius: 3.2, color: 0xff8a4d, duration: 0.9 });
+        this.meteors.push({ x: tx, z: tz, timer: 0.9, pulseAcc: 0 });
+        return true;
+      }
+
+      case "bleeding-edge": {
+        const arc = (150 * Math.PI) / 180;
+        const range = 3.4;
+        let hits = 0;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          const d = Math.hypot(dx, dz);
+          if (d > range + e.radius) continue;
+          if (Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) > arc / 2) continue;
+          combat.dealDamage(e, 14, { kbX: dx, kbZ: dz, kb: 4, countCombo: true });
+          this.addBleed(e, 5, 2);
+          hits++;
+        }
+        combat.slashVisual(arc, range, false);
+        this.fakeSwing = 0;
+        if (hits > 0) this.ctx.cam.addTrauma(0.18);
+        return true;
+      }
+
+      case "storm-conduit": {
+        this.conduitTimer = 5;
+        fx.ring(player.pos.x, player.pos.z, { radius: 2.2, color: 0xfff09f, duration: 0.5 });
+        fx.burst({
+          x: player.pos.x, y: 1.4, z: player.pos.z,
+          count: 22, color: [0xfff09f, 0xffffff],
+          speed: [1, 5], up: 1.0, size: [0.3, 0.6], life: [0.3, 0.6], gravity: 0.5, drag: 2,
+        });
+        return true;
+      }
+
+      case "gravity-well": {
+        const dx = aim.x - player.pos.x;
+        const dz = aim.z - player.pos.z;
+        const len = Math.hypot(dx, dz);
+        const dist = Math.min(10, len);
+        const nx = len > 0.01 ? dx / len : Math.sin(player.facing);
+        const nz = len > 0.01 ? dz / len : Math.cos(player.facing);
+        const wx = player.pos.x + nx * dist;
+        const wz = player.pos.z + nz * dist;
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xb08fff, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 10), mat);
+        mesh.position.set(wx, 1.0, wz);
+        this.ctx.stage.scene.add(mesh);
+        this.wells.push({ x: wx, z: wz, timer: 1.2, mesh, mat });
+        fx.ring(wx, wz, { radius: 5, color: 0xb08fff, duration: 0.6 });
+        return true;
+      }
+
+      case "ward-pulse": {
+        const heal = Math.min(12, player.maxHp - player.hp);
+        player.hp += heal;
+        if (heal > 0) this.ctx.events.emit("HEAL", { amount: heal });
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < 4 + e.radius) e.shove(dx, dz, 11);
+        }
+        fx.ring(player.pos.x, player.pos.z, { radius: 4, color: 0x8fffc8, duration: 0.5 });
+        fx.burst({
+          x: player.pos.x, y: 1.0, z: player.pos.z,
+          count: 28, color: [0x8fffc8, 0xffffff],
+          speed: [3, 8], up: 0.7, size: [0.35, 0.7], life: [0.3, 0.6], gravity: -1, drag: 3,
+        });
+        this.ctx.stage.punch(0.12);
+        return true;
+      }
+
+      case "ember-wave": {
+        const arc = (90 * Math.PI) / 180;
+        const range = 4.6;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          const d = Math.hypot(dx, dz);
+          if (d > range + e.radius) continue;
+          if (Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) > arc / 2) continue;
+          combat.dealDamage(e, 18, { kbX: dx, kbZ: dz, kb: 3, heavy: true, countCombo: true });
+          this.addBleed(e, 4, 2, 0xffb35f);
+        }
+        // Fire cone read: bursts marching out along the arc
+        for (let ring = 1; ring <= 3; ring++) {
+          const r = (range / 3) * ring;
+          for (let i = -2; i <= 2; i++) {
+            const a = player.facing + (i / 2) * (arc / 2) * 0.9;
+            fx.burst({
+              x: player.pos.x + Math.sin(a) * r, y: 0.4, z: player.pos.z + Math.cos(a) * r,
+              count: 4, color: [0xffb35f, 0xff7733],
+              speed: [1, 4], up: 1.2, size: [0.4, 0.8], life: [0.25, 0.55], gravity: -1, drag: 2,
+            });
+          }
+        }
+        this.ctx.cam.kick(Math.sin(player.facing), Math.cos(player.facing), 3);
+        this.ctx.stage.punch(0.12);
         return true;
       }
     }
@@ -333,13 +550,133 @@ export class CardCaster {
   clear(): void {
     for (const m of this.mines) this.ctx.stage.scene.remove(m.mesh);
     for (const p of this.phantoms) this.ctx.stage.scene.remove(p.group);
+    for (const w of this.wells) {
+      this.ctx.stage.scene.remove(w.mesh);
+      w.mat.dispose();
+    }
     this.mines = [];
     this.phantoms = [];
+    this.wells = [];
+    this.bleeds = [];
+    this.meteors = [];
+    this.pulses = [];
+    this.conduitTimer = 0;
     this.aegisTimer = 0;
     this.ctx.player.shield = 0;
   }
 
   update(dt: number): void {
+    this.conduitTimer = Math.max(0, this.conduitTimer - dt);
+    // Conduit aura while active
+    if (this.conduitTimer > 0 && Math.random() < dt * 8) {
+      const p = this.ctx.player;
+      this.ctx.fx.burst({
+        x: p.pos.x, y: 1.6, z: p.pos.z, count: 1, color: 0xfff09f,
+        speed: [0.5, 2], up: 1.2, size: [0.25, 0.5], life: [0.2, 0.4], gravity: 0, drag: 2, jitter: 0.5,
+      });
+    }
+
+    // Bleed / burn ticks (each tick flows through the dealDamage pipeline)
+    for (let i = this.bleeds.length - 1; i >= 0; i--) {
+      const b = this.bleeds[i];
+      if (!b.enemy.alive || b.ticks <= 0) {
+        this.bleeds.splice(i, 1);
+        continue;
+      }
+      b.timer -= dt;
+      if (b.timer <= 0) {
+        b.timer = 0.5;
+        b.ticks--;
+        this.ctx.combat.dealDamage(b.enemy, b.dmg, {});
+      }
+    }
+
+    // Sunder pulses marching down their line
+    for (let i = this.pulses.length - 1; i >= 0; i--) {
+      const pu = this.pulses[i];
+      pu.timer -= dt;
+      if (pu.timer > 0) continue;
+      this.pulses.splice(i, 1);
+      this.ctx.fx.ring(pu.x, pu.z, { radius: 1.5, color: 0xd8b25f, duration: 0.3 });
+      this.ctx.fx.burst({
+        x: pu.x, y: 0.4, z: pu.z,
+        count: 12, color: [0xd8b25f, 0xfff0c0],
+        speed: [2, 7], up: 1.3, size: [0.35, 0.7], life: [0.2, 0.45], gravity: -5, drag: 2.5,
+      });
+      this.ctx.sfx.explosion();
+      for (const e of this.ctx.enemies.living()) {
+        const dx = e.pos.x - pu.x;
+        const dz = e.pos.z - pu.z;
+        if (Math.hypot(dx, dz) < 1.5 + e.radius) {
+          this.ctx.combat.dealDamage(e, 10, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
+        }
+      }
+    }
+
+    // Meteors
+    for (let i = this.meteors.length - 1; i >= 0; i--) {
+      const m = this.meteors[i];
+      m.timer -= dt;
+      m.pulseAcc -= dt;
+      if (m.pulseAcc <= 0 && m.timer > 0.15) {
+        m.pulseAcc = 0.3;
+        this.ctx.fx.ring(m.x, m.z, { radius: 3.2, color: 0xff8a4d, duration: 0.28 });
+      }
+      if (m.timer > 0) continue;
+      this.meteors.splice(i, 1);
+      const R = 3.2;
+      this.ctx.fx.burst({
+        x: m.x, y: 1.2, z: m.z,
+        count: 50, color: [0xff8a4d, 0xffcc66, 0xffffff],
+        speed: [4, 14], up: 0.9, size: [0.5, 1.2], life: [0.3, 0.8], gravity: -7, drag: 2.3,
+      });
+      this.ctx.fx.ring(m.x, m.z, { radius: R, color: 0xff8a4d, duration: 0.5 });
+      this.ctx.fx.ring(m.x, m.z, { radius: R * 0.55, color: 0xffffff, duration: 0.35 });
+      this.ctx.cam.addTrauma(0.35);
+      this.ctx.stage.punch(0.2);
+      this.ctx.sfx.explosion();
+      for (const e of this.ctx.enemies.living()) {
+        const dx = e.pos.x - m.x;
+        const dz = e.pos.z - m.z;
+        if (Math.hypot(dx, dz) < R + e.radius) {
+          this.ctx.combat.dealDamage(e, 30, { kbX: dx, kbZ: dz, kb: 8, heavy: true, countCombo: true });
+        }
+      }
+    }
+
+    // Gravity wells: pull, then pop
+    for (let i = this.wells.length - 1; i >= 0; i--) {
+      const w = this.wells[i];
+      w.timer -= dt;
+      w.mesh.scale.setScalar(1 + Math.sin(w.timer * 20) * 0.15);
+      w.mat.opacity = 0.45 + Math.sin(w.timer * 14) * 0.2;
+      for (const e of this.ctx.enemies.living()) {
+        const dx = w.x - e.pos.x;
+        const dz = w.z - e.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 5.5 && d > 0.4) e.shove(dx, dz, 22 * dt);
+      }
+      if (w.timer > 0) continue;
+      this.wells.splice(i, 1);
+      this.ctx.stage.scene.remove(w.mesh);
+      w.mesh.geometry.dispose();
+      w.mat.dispose();
+      this.ctx.fx.ring(w.x, w.z, { radius: 2.6, color: 0xb08fff, duration: 0.4 });
+      this.ctx.fx.burst({
+        x: w.x, y: 1.0, z: w.z,
+        count: 30, color: [0xb08fff, 0xffffff],
+        speed: [3, 9], up: 0.6, size: [0.4, 0.8], life: [0.25, 0.55], gravity: -3, drag: 3,
+      });
+      this.ctx.sfx.phantomBoom();
+      for (const e of this.ctx.enemies.living()) {
+        const dx = e.pos.x - w.x;
+        const dz = e.pos.z - w.z;
+        if (Math.hypot(dx, dz) < 2.6 + e.radius) {
+          this.ctx.combat.dealDamage(e, 10, { kbX: dx, kbZ: dz, kb: 2, countCombo: true });
+        }
+      }
+    }
+
     // Fake heavy-swing pose for Cleave
     if (this.fakeSwing >= 0) {
       this.fakeSwing += dt;

@@ -19,7 +19,9 @@ export interface EventMap {
   SHIELD_GAINED: { amount: number };
   SHIELD_BROKEN: Record<string, never>;
   ROOM_START: { index: number; name: string; isBoss: boolean };
-  ROOM_CLEARED: { index: number };
+  ROOM_CLEARED: { index: number; reward: "card" | "relic" };
+  ACT_START: { act: number; name: string };
+  RELIC_ADDED: { id: string };
   RUN_VICTORY: Record<string, never>;
   BOSS_INTRO: { name: string; title: string };
   BOSS_PHASE: { phase: number; line: string };

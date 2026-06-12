@@ -6,6 +6,8 @@ interface Telegraph {
   fill: THREE.Mesh;
   zone: THREE.Mesh;
   sweep: THREE.Mesh;
+  /** Annulus mesh, built per use (inner/outer ratio varies), disposed on release. */
+  annulus: THREE.Mesh | null;
   outlineMat: THREE.MeshBasicMaterial;
   fillMat: THREE.MeshBasicMaterial;
   zoneMat: THREE.MeshBasicMaterial;
@@ -14,7 +16,7 @@ interface Telegraph {
   dur: number;
   radius: number;
   length: number;
-  shape: "circle" | "line";
+  shape: "circle" | "line" | "ring";
   active: boolean;
 }
 
@@ -46,7 +48,7 @@ export class Telegraphs {
     stripGeo.rotateX(-Math.PI / 2);
     stripGeo.translate(0, 0, 0.5);
 
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 32; i++) {
       const group = new THREE.Group();
       const mat = () =>
         new THREE.MeshBasicMaterial({
@@ -71,7 +73,7 @@ export class Telegraphs {
       group.visible = false;
       this.scene.add(group);
       this.pool.push({
-        group, outline, fill, zone, sweep,
+        group, outline, fill, zone, sweep, annulus: null,
         outlineMat, fillMat, zoneMat, sweepMat,
         t: 0, dur: 1, radius: 1, length: 1, shape: "circle", active: false,
       });
@@ -123,9 +125,43 @@ export class Telegraphs {
     return { cancel: () => this.release(t) };
   }
 
+  /**
+   * Annulus danger band — the area between innerR and outerR is the threat,
+   * inside and outside are safe lanes (a filled disc here would lie).
+   */
+  ring(x: number, z: number, innerR: number, outerR: number, duration: number, color = 0xff3344): TelegraphHandle {
+    const t = this.pool.find((p) => !p.active);
+    if (!t) return { cancel() {} };
+    t.active = true;
+    t.shape = "ring";
+    t.t = 0;
+    t.dur = duration;
+    t.group.visible = true;
+    t.group.position.set(x, 0.05, z);
+    t.group.rotation.y = 0;
+    t.outline.visible = true;
+    t.fill.visible = t.zone.visible = t.sweep.visible = false;
+    t.outline.scale.set(outerR, 1, outerR);
+    t.outlineMat.color.set(color);
+    t.outlineMat.opacity = 0.85;
+    const geo = new THREE.RingGeometry(innerR, outerR, 64);
+    geo.rotateX(-Math.PI / 2);
+    t.annulus = new THREE.Mesh(geo, t.fillMat);
+    t.annulus.position.y = 0.01;
+    t.fillMat.color.set(color);
+    t.fillMat.opacity = 0.18;
+    t.group.add(t.annulus);
+    return { cancel: () => this.release(t) };
+  }
+
   private release(t: Telegraph): void {
     t.active = false;
     t.group.visible = false;
+    if (t.annulus) {
+      t.group.remove(t.annulus);
+      t.annulus.geometry.dispose();
+      t.annulus = null;
+    }
   }
 
   update(dt: number): void {
@@ -137,6 +173,9 @@ export class Telegraphs {
       if (t.shape === "circle") {
         t.fill.scale.setScalar(Math.max(0.001, t.radius * k));
         t.fillMat.opacity = 0.16 + k * 0.3;
+        t.outlineMat.opacity = 0.85 * pulse;
+      } else if (t.shape === "ring") {
+        t.fillMat.opacity = 0.14 + k * 0.34;
         t.outlineMat.opacity = 0.85 * pulse;
       } else {
         t.sweep.scale.z = Math.max(0.001, t.length * k);

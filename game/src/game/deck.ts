@@ -29,10 +29,19 @@ export class Deck {
     this.cooldowns[slot] = 0;
   }
 
-  /** Three draft options the player doesn't already hold. */
+  /** Three draft options the player doesn't hold and HAS unlocked. */
   draftChoices(): CardDef[] {
-    const pool = CARDS.filter((c) => !this.slots.some((s) => s?.id === c.id));
+    const pool = CARDS.filter(
+      (c) => !this.slots.some((s) => s?.id === c.id) && this.ctx.profile.isUnlocked(`card:${c.id}`)
+    );
     return this.ctx.rng.shuffle([...pool]).slice(0, 3);
+  }
+
+  /** Relic hook (Adrenal Surge): shave seconds off every running cooldown. */
+  reduceCooldowns(sec: number): void {
+    for (let i = 0; i < this.cooldowns.length; i++) {
+      if (this.cooldowns[i] > 0) this.cooldowns[i] = Math.max(0.01, this.cooldowns[i] - sec);
+    }
   }
 
   tryCast(slot: number): void {
@@ -50,7 +59,7 @@ export class Deck {
       return;
     }
     if (this.ctx.caster.cast(card)) {
-      this.cooldowns[slot] = card.cooldown;
+      this.cooldowns[slot] = card.cooldown * this.ctx.relics.cooldownMult(card);
     } else {
       this.ctx.events.emit("CARD_FAIL", { slot });
       this.ctx.sfx.deny();
