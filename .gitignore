@@ -9,6 +9,9 @@ build/
 .vite/
 *.tsbuildinfo
 
+# Smoke-test screenshots
+game/shots/
+
 # Logs
 *.log
 npm-debug.log*

@@ -1,1 +1,1 @@
-Check for bugs and fix. Ensure game flow makes sense. Audit for oddities and issues to fix.
+Check for bugs and fix. Ensure game flow makes sense. Audit for oddities and issues to fix. Think deeply about this. Ensure all moves are exciting and fun to use!
