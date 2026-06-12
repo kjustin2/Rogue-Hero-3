@@ -284,7 +284,8 @@ export class Husk extends Enemy {
           const dz = p.pos.z - this.pos.z;
           const len = Math.hypot(dx, dz) || 1;
           this.lungeDir.set(dx / len, dz / len);
-          this.ctx.tele.circle(this.pos.x + this.lungeDir.x * 1.6, this.pos.z + this.lungeDir.y * 1.6, 1.35, 0.45);
+          // Covers the lunge's moving strike zone (~1.75 around the husk over ~2.2m travel)
+          this.ctx.tele.circle(this.pos.x + this.lungeDir.x * 1.5, this.pos.z + this.lungeDir.y * 1.5, 1.7, 0.45);
           this.eyeMat.emissiveIntensity = 5;
         }
         break;
@@ -595,7 +596,8 @@ export class Sentinel extends Enemy {
         this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
       }
       if (prev > 0.45 && this.aiming <= 0.45) {
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 17, 1.1, 0.45, 0xbb66ff);
+        // Width matches the real hit window: 0.55 beam half-width + player radius
+        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 17, 2.0, 0.45, 0xbb66ff);
         this.ctx.sfx.beamCharge();
       }
       this.tipMat.emissiveIntensity = 2 + (1.25 - this.aiming) * 6;
@@ -612,8 +614,8 @@ export class Sentinel extends Enemy {
     const len = 17;
     const sx = Math.sin(this.lockedAngle);
     const cz = Math.cos(this.lockedAngle);
-    // Visual beam
-    this.beamMesh.scale.set(1, 1, len);
+    // Visual beam — widened so the rendered lance matches the telegraphed lane
+    this.beamMesh.scale.set(2.4, 2.4, len);
     this.beamMesh.position.set(this.pos.x + sx * len * 0.5, 1.1, this.pos.z + cz * len * 0.5);
     this.beamMesh.rotation.y = this.lockedAngle;
     this.beamFade = 0.9;

@@ -184,7 +184,7 @@ export class PitWarden extends Enemy {
         if (this.timer <= 0) {
           this.dashesLeft--;
           if (this.dashesLeft > 0) {
-            this.aimDash();
+            this.aimDash(0.3);
             this.state = "dashTell";
             this.timer = 0.3;
           } else {
@@ -232,19 +232,21 @@ export class PitWarden extends Enemy {
 
   private beginDashCombo(): void {
     this.dashesLeft = this.phase >= 3 ? 4 : 2;
-    this.aimDash();
+    this.aimDash(0.45);
     this.state = "dashTell";
     this.timer = 0.45;
   }
 
-  private aimDash(): void {
+  /** Telegraph duration must match the tell timer so the sweep completing == dash launching. */
+  private aimDash(tellDur: number): void {
     const p = this.ctx.player;
     const dx = p.pos.x - this.pos.x;
     const dz = p.pos.z - this.pos.z;
     const len = Math.hypot(dx, dz) || 1;
     this.dashDir.set(dx / len, dz / len);
-    const dashLen = 7.5;
-    this.ctx.tele.line(this.pos.x, this.pos.z, Math.atan2(this.dashDir.x, this.dashDir.y), dashLen, 2.6, 0.42, 0xff5533);
+    // 17 m/s × 0.42 s travel plus the boss's own bulk; width covers
+    // radius(1.4) + player(0.5) + grace(0.4) on each side.
+    this.ctx.tele.line(this.pos.x, this.pos.z, Math.atan2(this.dashDir.x, this.dashDir.y), 8.5, 4.2, tellDur, 0xff5533);
   }
 
   private beginLeap(): void {
