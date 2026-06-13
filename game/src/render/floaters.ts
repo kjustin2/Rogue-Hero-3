@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-export type FloaterKind = "dmg" | "crit" | "heal" | "tempo" | "label" | "playerdmg";
+export type FloaterKind = "dmg" | "crit" | "heal" | "tempo" | "label" | "playerdmg" | "shieldbreak";
 
 /**
  * DOM-based floating combat text. Projected to screen once at spawn;
@@ -22,7 +22,7 @@ export class Floaters {
     }
   }
 
-  spawn(x: number, y: number, z: number, text: string, kind: FloaterKind = "dmg"): void {
+  spawn(x: number, y: number, z: number, text: string, kind: FloaterKind = "dmg", color?: string): void {
     this.v.set(x, y, z).project(this.camera);
     if (this.v.z > 1) return;
     const sx = (this.v.x * 0.5 + 0.5) * window.innerWidth;
@@ -32,6 +32,8 @@ export class Floaters {
     if (!el) return;
     el.textContent = text;
     el.className = `floater floater--${kind}`;
+    // Optional per-call tint (shield-chip numbers). Cleared on pooled reuse.
+    el.style.color = color ?? "";
     const drift = (Math.random() - 0.5) * 36;
     el.style.setProperty("--drift", `${drift.toFixed(0)}px`);
     el.style.left = `${sx.toFixed(0)}px`;

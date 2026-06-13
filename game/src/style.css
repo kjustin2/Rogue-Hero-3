@@ -77,6 +77,20 @@ body {
 }
 .floater--playerdmg { color: var(--ui-red); font-size: 22px; }
 .floater--label { color: var(--ui-dim); font-size: 14px; letter-spacing: 3px; }
+.floater--shieldbreak {
+  color: var(--ui-gold);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  text-shadow: 0 0 18px rgba(255, 200, 90, 0.7), 0 2px 8px rgba(0, 0, 0, 0.9);
+  animation-name: floater-shieldbreak;
+}
+@keyframes floater-shieldbreak {
+  0% { opacity: 0; transform: translate(-50%, -45%) scale(0.4) rotate(-8deg); }
+  16% { opacity: 1; transform: translate(-50%, -64%) scale(1.55) rotate(3deg); }
+  34% { transform: translate(-50%, -76%) scale(1.1) rotate(0deg); }
+  100% { opacity: 0; transform: translate(calc(-50% + var(--drift, 0px)), -150%) scale(1.05); }
+}
 
 @keyframes floater-rise {
   0% { opacity: 0; transform: translate(-50%, -30%) scale(0.6); }

@@ -11,6 +11,11 @@ export type EnemyKind =
 
 let NEXT_ID = 1;
 
+/** 0xRRGGBB → "#rrggbb" for DOM floater tints. */
+function hex(c: number): string {
+  return "#" + c.toString(16).padStart(6, "0");
+}
+
 interface FlashMat {
   mat: THREE.MeshStandardMaterial;
   baseEmissive: THREE.Color;
@@ -41,6 +46,20 @@ export abstract class Enemy {
   contactDmg = 0;
   protected contactCd = 0;
 
+  // --- Breakable shields (Bastion front-wall, Mirror bubble). Shield HP lives in
+  // the SAME final-damage units as body HP, so every player multiplier already
+  // applied in dealDamage accelerates the break for free.
+  protected shieldHp = 0;
+  protected shieldMaxHp = 0;
+  protected shieldBarColor = 0xffffff;
+  /** Brief post-break exposure that interrupts any in-progress attack (not freeze — no blue tint). */
+  protected stagger = 0;
+  /** Read by combat.dealDamage for honest floaters/stats: how much of the last hit reached the body, and whether a shield ate it. */
+  lastBodyDamage = 0;
+  lastHitShielded = false;
+  private shieldBg: THREE.Sprite | null = null;
+  private shieldFill: THREE.Sprite | null = null;
+
   readonly root = new THREE.Group();
   protected heading = 0;
   protected kb = new THREE.Vector2();
@@ -67,6 +86,20 @@ export abstract class Enemy {
     this.root.add(this.hpBg, this.hpFill);
   }
 
+  /** Lazily build the shield bar (only shielded enemies ever need it). */
+  private ensureShieldBar(): void {
+    if (this.shieldBg) return;
+    const bg = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x000000, opacity: 0.55, transparent: true, depthWrite: false }));
+    const fill = new THREE.Sprite(new THREE.SpriteMaterial({ color: this.shieldBarColor, opacity: 0.95, transparent: true, depthWrite: false }));
+    bg.scale.set(1.0, 0.07, 1);
+    fill.scale.set(0.96, 0.045, 1);
+    fill.center.set(0, 0.5);
+    bg.visible = fill.visible = false;
+    this.root.add(bg, fill);
+    this.shieldBg = bg;
+    this.shieldFill = fill;
+  }
+
   protected registerFlash(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
     this.flashMats.push({ mat, baseEmissive: mat.emissive.clone(), baseIntensity: mat.emissiveIntensity });
     return mat;
@@ -88,8 +121,19 @@ export abstract class Enemy {
     return m;
   }
 
+  /** Public entry. Subclasses override to insert a shield check, then call super (full body) or hitShield. */
   takeDamage(amount: number, opts: DamageOpts = {}): boolean {
-    if (!this.alive) return false;
+    this.lastHitShielded = false;
+    return this.applyBodyDamage(amount, opts);
+  }
+
+  /** The actual HP/knockback/death logic. Never re-enters a subclass shield check. */
+  protected applyBodyDamage(amount: number, opts: DamageOpts = {}): boolean {
+    if (!this.alive) {
+      this.lastBodyDamage = 0;
+      return false;
+    }
+    this.lastBodyDamage = Math.min(amount, Math.max(0, this.hp));
     this.hp -= amount;
     this.hitFlash = 1;
     const kbStrength = (opts.kb ?? 0) * (opts.heavy ? 1.4 : 1);
@@ -103,6 +147,48 @@ export abstract class Enemy {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Route a hit into the shield: it drains the FULL hit off shieldHp and leaks
+   * `chipFrac` to the body (min 1, no knockback) so the player always sees
+   * progress. When shieldHp crosses 0 the shield shatters — overkill spills to
+   * the body (keeping knockback), the shatter FX fire, and onShieldBreak() runs.
+   * Returns true if the body died. Caller decides a hit is shielded.
+   */
+  protected hitShield(amount: number, opts: DamageOpts, chipFrac: number, color: number, breakWord: string): boolean {
+    const before = this.shieldHp;
+    this.shieldHp = Math.max(0, before - amount);
+    this.lastHitShielded = true;
+    this.hitFlash = 1;
+    if (this.shieldHp > 0) {
+      // Chipped: show the guard-colored number that hit the shield, leak a little to the body.
+      this.ctx.floaters.spawn(this.pos.x, 1.7, this.pos.z, String(Math.round(amount)), "dmg", hex(color));
+      const leak = Math.max(1, Math.round(amount * chipFrac));
+      return this.applyBodyDamage(leak, { heavy: opts.heavy });
+    }
+    // Broke this frame.
+    this.shatterFx(color, breakWord);
+    this.onShieldBreak();
+    const overkill = amount - before;
+    if (overkill > 0) return this.applyBodyDamage(Math.round(overkill), opts); // breaking blow jolts
+    return this.applyBodyDamage(Math.max(1, Math.round(amount * chipFrac)), { heavy: opts.heavy });
+  }
+
+  /** Hook for break behavior (stagger, attack interrupt, regen). FX are handled by shatterFx. */
+  protected onShieldBreak(): void {}
+
+  private shatterFx(color: number, word: string): void {
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 2.5, color, duration: 0.55 });
+    this.ctx.fx.burst({
+      x: this.pos.x, y: 1.1, z: this.pos.z,
+      count: 26, color: [color, 0xffffff], speed: [3, 11], up: 0.7, size: [0.4, 1.0], life: [0.3, 0.7], gravity: -6, drag: 2.5,
+    });
+    this.ctx.cam.addTrauma(0.32);
+    this.ctx.stage.punch(0.4);
+    this.ctx.tempo.gain(8); // shattering a guard fuels your kit, like a heavy finisher
+    this.ctx.sfx.shieldBreak();
+    this.ctx.floaters.spawn(this.pos.x, 2.0, this.pos.z, word, "shieldbreak");
   }
 
   freeze(duration: number): void {
@@ -159,6 +245,7 @@ export abstract class Enemy {
     this.t += dt;
     this.contactCd -= dt;
 
+    this.stagger = Math.max(0, this.stagger - dt);
     if (this.frozen > 0) {
       this.frozen -= dt;
       for (const f of this.flashMats) {
@@ -166,7 +253,8 @@ export abstract class Enemy {
         f.mat.emissiveIntensity = 0.9 + Math.sin(this.t * 6) * 0.2;
       }
     } else {
-      this.tick(dt);
+      // Stagger interrupts the brain (no blue tint) but the body still flashes/settles.
+      if (this.stagger <= 0) this.tick(dt);
       // Hit flash: spike emissive to white, settle back
       this.hitFlash = Math.max(0, this.hitFlash - dt * 7);
       for (const f of this.flashMats) {
@@ -204,6 +292,23 @@ export abstract class Enemy {
       this.hpBg.position.set(0, h, 0);
       this.hpFill.position.set(-0.53, h, 0.001);
       this.hpFill.scale.x = 1.06 * frac;
+    }
+
+    // Shield bar — sits just above the HP bar, shown only while partially up.
+    if (this.shieldMaxHp > 0) {
+      const sFrac = this.shieldHp / this.shieldMaxHp;
+      const sShow = this.shieldHp > 0.01 && sFrac < 0.999;
+      this.ensureShieldBar();
+      const bg = this.shieldBg!;
+      const fill = this.shieldFill!;
+      bg.visible = fill.visible = sShow;
+      if (sShow) {
+        const h = this.barHeight() + 0.13;
+        bg.position.set(0, h, 0);
+        fill.position.set(-0.48, h, 0.001);
+        fill.scale.x = 0.96 * sFrac;
+        (fill.material as THREE.SpriteMaterial).color.set(this.shieldBarColor);
+      }
     }
   }
 

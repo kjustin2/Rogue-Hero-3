@@ -282,6 +282,7 @@ export class Mirror extends Enemy {
     this.hp = this.maxHp = 80;
     this.speed = 2.0;
     this.radius = 0.7;
+    this.shieldBarColor = 0x99ddff;
 
     const plateMat = this.stdMat(0x39414f, 0x4a6a8a, 0.5);
     const trimMat = this.stdMat(0x222831, 0x99ccff, 0.9);
@@ -313,24 +314,35 @@ export class Mirror extends Enemy {
   }
 
   takeDamage(amount: number, opts: DamageOpts = {}): boolean {
-    if (this.shieldTimer > 0) {
-      // Mirror is up — damage glances off
+    if (!this.alive) return false;
+    // Bubble is omnidirectional but now BREAKABLE — burst it down to pop it early.
+    if (this.shieldTimer > 0 && this.shieldHp > 0) {
       this.ctx.fx.burst({
         x: this.pos.x, y: 1.2, z: this.pos.z,
         count: 6, color: 0x99ddff, speed: [2, 5], up: 0.6, size: [0.3, 0.55], life: [0.15, 0.3], gravity: -2, drag: 3,
       });
-      this.ctx.floaters.spawn(this.pos.x, 1.9, this.pos.z, "IMMUNE", "label");
       this.ctx.sfx.shieldHit();
-      return false;
+      return this.hitShield(amount, opts, 0.25, 0x99ddff, "SHATTERED");
     }
     const killed = super.takeDamage(amount, opts);
     if (!killed && !this.shieldUsed && this.hp <= this.maxHp * 0.5) {
       this.shieldUsed = true;
       this.shieldTimer = 3.5;
+      this.shieldHp = this.shieldMaxHp = 60; // pops early under ~50-75 burst, or waits out 3.5s
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 2.4, color: 0x99ddff, duration: 0.5 });
       this.ctx.sfx.shieldHit();
+      this.ctx.floaters.spawn(this.pos.x, 2.0, this.pos.z, "WARDING", "label");
     }
     return killed;
+  }
+
+  protected onShieldBreak(): void {
+    this.shieldTimer = 0;
+    this.stagger = 0.8; // bigger achievement than the Bastion's wall → longer punish window
+    this.state = "recover";
+    this.timer = 0;
+    this.bubbleMat.opacity = 0;
+    this.bubble.visible = false;
   }
 
   protected tick(dt: number): void {
@@ -338,8 +350,16 @@ export class Mirror extends Enemy {
     this.timer -= dt;
     if (this.shieldTimer > 0) {
       this.shieldTimer -= dt;
-      this.bubbleMat.opacity = Math.min(0.3, this.shieldTimer);
+      // Bubble visibly thins as it is beaten down — "keep hitting, it is about to pop".
+      const sFrac = this.shieldMaxHp > 0 ? this.shieldHp / this.shieldMaxHp : 0;
+      this.bubbleMat.opacity = Math.min(0.3, this.shieldTimer) * (0.4 + 0.6 * sFrac);
       this.bubble.rotation.y += dt;
+      this.bubble.scale.setScalar(0.85 + 0.15 * sFrac);
+      if (this.shieldTimer <= 0) {
+        // Timer ran out (never broken) — quiet fade, no payoff; clear shield HP so the bar hides.
+        this.shieldTimer = 0;
+        this.shieldHp = 0;
+      }
     } else {
       this.bubbleMat.opacity = Math.max(0, this.bubbleMat.opacity - dt * 2);
     }
@@ -581,20 +601,33 @@ export class Bastion extends Enemy {
   readonly kind: EnemyKind = "bastion";
   private slamTimer = 2.5;
   private slamWindup = -1;
+  // Shield + plate are NOT stdMat (kept out of the flash loop) so the break-dim
+  // we drive each frame off shieldHp isn't overwritten by the hit-flash lerp.
   private shieldMat: THREE.MeshStandardMaterial;
+  private plateMat: THREE.MeshStandardMaterial;
+  private regenAfterBreak = false;
+  /** Seconds since the last hit of any kind — the wall only re-forms if you back off. */
+  private sinceHit = 99;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 45;
     this.speed = 1.8;
     this.radius = 0.7;
+    this.shieldHp = this.shieldMaxHp = 36; // ≈ one full melee combo (9+9+18) at neutral tempo
+    this.shieldBarColor = 0xffaa33;
 
     const hide = this.stdMat(0x2c2418, 0x553311, 0.3);
-    this.shieldMat = this.stdMat(0x1a1408, 0xffaa33, 1.1);
+    this.shieldMat = new THREE.MeshStandardMaterial({
+      color: 0x1a1408, emissive: 0xffaa33, emissiveIntensity: 1.1, roughness: 0.6, metalness: 0.2, flatShading: true,
+    });
+    this.plateMat = new THREE.MeshStandardMaterial({
+      color: 0x24180a, emissive: 0xffaa33, emissiveIntensity: 0.5, roughness: 0.6, metalness: 0.2, flatShading: true,
+    });
     this.addMesh(new THREE.BoxGeometry(1.0, 1.3, 0.8), hide, 0, 0.85);
     this.addMesh(new THREE.BoxGeometry(0.5, 0.4, 0.4), hide, 0, 1.7);
     // The wall itself: a broad frontal shield with a glowing edge
-    this.addMesh(new THREE.BoxGeometry(1.7, 1.7, 0.16), this.stdMat(0x24180a), 0, 1.0, 0.62);
+    this.addMesh(new THREE.BoxGeometry(1.7, 1.7, 0.16), this.plateMat, 0, 1.0, 0.62);
     this.addMesh(new THREE.BoxGeometry(1.8, 0.12, 0.2), this.shieldMat, 0, 1.9, 0.62);
     this.addMesh(new THREE.BoxGeometry(1.8, 0.12, 0.2), this.shieldMat, 0, 0.12, 0.62);
     this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, -0.6, 0.3, 0);
@@ -610,33 +643,72 @@ export class Bastion extends Enemy {
   }
 
   takeDamage(amount: number, opts: DamageOpts = {}): boolean {
-    // Attacks arriving at its front face glance off. Attack direction is
-    // inferred from the knockback vector (radial, attacker → enemy).
-    if (opts.kbX !== undefined && opts.kbZ !== undefined) {
-      const len = Math.hypot(opts.kbX, opts.kbZ);
-      if (len > 0.001) {
-        const inX = -opts.kbX / len;
-        const inZ = -opts.kbZ / len;
+    if (!this.alive) return false;
+    this.sinceHit = 0; // any hit (shield or body) keeps the wall from re-forming
+    // Front-arc hits feed the breakable shield instead of glancing off forever;
+    // flank/rear hits (and post-break hits) take full body damage — the fast route.
+    if (this.shieldHp > 0) {
+      let shielded = true; // no-direction (DoT) hits are a neutral chip
+      if (opts.kbX !== undefined && opts.kbZ !== undefined) {
+        const len = Math.hypot(opts.kbX, opts.kbZ);
+        if (len > 0.001) {
+          const inX = -opts.kbX / len;
+          const inZ = -opts.kbZ / len;
+          const fx = Math.sin(this.heading);
+          const fz = Math.cos(this.heading);
+          shielded = inX * fx + inZ * fz > 0.34; // within ~140° front arc
+        }
+      }
+      if (shielded) {
         const fx = Math.sin(this.heading);
         const fz = Math.cos(this.heading);
-        // Incoming threat within ~100° of its facing → blocked
-        if (inX * fx + inZ * fz > 0.34) {
-          this.ctx.fx.burst({
-            x: this.pos.x + fx * 0.8, y: 1.1, z: this.pos.z + fz * 0.8,
-            count: 6, color: 0xffaa33, speed: [2, 5], up: 0.5, size: [0.3, 0.55], life: [0.15, 0.3], gravity: -2, drag: 3,
-          });
-          this.ctx.floaters.spawn(this.pos.x, 1.9, this.pos.z, "BLOCKED", "label");
-          this.ctx.sfx.shieldHit();
-          return false;
-        }
+        this.ctx.fx.burst({
+          x: this.pos.x + fx * 0.8, y: 1.1, z: this.pos.z + fz * 0.8,
+          count: 6, color: 0xffaa33, speed: [2, 5], up: 0.5, size: [0.3, 0.55], life: [0.15, 0.3], gravity: -2, drag: 3,
+        });
+        this.ctx.sfx.shieldHit();
+        return this.hitShield(amount, opts, 0.25, 0xffaa33, "SHIELD BREAK");
       }
     }
     return super.takeDamage(amount, opts);
   }
 
+  protected onShieldBreak(): void {
+    this.stagger = 0.6;
+    this.slamWindup = -1;
+    this.slamTimer = Math.max(this.slamTimer, 0.9);
+    this.regenAfterBreak = true; // becomes a wall again once the window closes
+  }
+
+  update(dt: number): void {
+    super.update(dt);
+    // These mats are outside the flash loop (so the shield-HP glow isn't clobbered),
+    // which also means we owe them the freeze tint the base loop gives flashMats.
+    if (this.frozen > 0) {
+      const fi = 0.9 + Math.sin(this.t * 6) * 0.2;
+      this.shieldMat.emissive.set(0x5599ff);
+      this.plateMat.emissive.set(0x5599ff);
+      this.shieldMat.emissiveIntensity = fi;
+      this.plateMat.emissiveIntensity = fi;
+      return;
+    }
+    // Drive shield/plate glow off shield HP (restore amber after any freeze tint).
+    this.shieldMat.emissive.set(0xffaa33);
+    this.plateMat.emissive.set(0xffaa33);
+    const frac = this.shieldHp / this.shieldMaxHp;
+    this.shieldMat.emissiveIntensity = 0.12 + frac * (1.0 + Math.sin(this.t * 2.5) * 0.3);
+    this.plateMat.emissiveIntensity = 0.06 + frac * 0.5;
+  }
+
   protected tick(dt: number): void {
     const p = this.ctx.player;
-    this.shieldMat.emissiveIntensity = 1.1 + Math.sin(this.t * 2.5) * 0.4;
+    this.sinceHit += dt;
+    // Regenerate the wall ONLY once you've stopped pressuring it (1.5s untouched);
+    // sustained aggression keeps the shield broken so the body stays killable head-on.
+    if (this.regenAfterBreak && this.sinceHit > 1.5 && this.shieldHp < this.shieldMaxHp) {
+      this.shieldHp = Math.min(this.shieldMaxHp, this.shieldHp + (this.shieldMaxHp / 1.2) * dt);
+      if (this.shieldHp >= this.shieldMaxHp) this.regenAfterBreak = false;
+    }
     if (this.slamWindup < 0) {
       const d = this.seek(p.pos.x, p.pos.z, dt);
       this.slamTimer -= dt;

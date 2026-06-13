@@ -194,21 +194,26 @@ export class Combat {
     const zone = tempo.zone;
     const dmg = Math.max(1, Math.round(baseDmg * zone.damageMult * this.ctx.relics.damageDealtMult(e)));
     const killed = e.takeDamage(dmg, opts);
-    stats.damageDealt += dmg;
+    // A shielded hit drains the guard (the enemy spawns its own chip floater + sparks);
+    // only what reached the BODY counts toward the stat and the generic FX.
+    const bodyDmg = e.lastHitShielded ? e.lastBodyDamage : dmg;
+    stats.damageDealt += bodyDmg;
 
-    const critical = zone.zone === "critical";
-    this.ctx.floaters.spawn(
-      e.pos.x, 1.6, e.pos.z,
-      String(dmg),
-      opts.heavy || critical ? "crit" : "dmg"
-    );
-    this.ctx.fx.burst({
-      x: e.pos.x, y: 1.0, z: e.pos.z,
-      count: opts.heavy ? 16 : 8,
-      color: [0xffeeaa, zone.color],
-      speed: [2, opts.heavy ? 10 : 7], up: 0.5, size: [0.3, 0.75], life: [0.15, 0.4], gravity: -5, drag: 3.5,
-    });
-    events.emit("ENEMY_HIT", { x: e.pos.x, y: 1, z: e.pos.z, dmg, heavy: !!opts.heavy, killed });
+    if (!e.lastHitShielded) {
+      const critical = zone.zone === "critical";
+      this.ctx.floaters.spawn(
+        e.pos.x, 1.6, e.pos.z,
+        String(dmg),
+        opts.heavy || critical ? "crit" : "dmg"
+      );
+      this.ctx.fx.burst({
+        x: e.pos.x, y: 1.0, z: e.pos.z,
+        count: opts.heavy ? 16 : 8,
+        color: [0xffeeaa, zone.color],
+        speed: [2, opts.heavy ? 10 : 7], up: 0.5, size: [0.3, 0.75], life: [0.15, 0.4], gravity: -5, drag: 3.5,
+      });
+    }
+    events.emit("ENEMY_HIT", { x: e.pos.x, y: 1, z: e.pos.z, dmg: bodyDmg, heavy: !!opts.heavy, killed });
     if (opts.countCombo) this.swingHits++;
   }
 
