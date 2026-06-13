@@ -542,7 +542,9 @@ export class Sentinel extends Enemy {
     this.tipMat = this.stdMat(0x221133, 0xbb66ff, 2.0);
 
     this.addMesh(new THREE.CylinderGeometry(0.55, 0.75, 1.5, 6), armorMat, 0, 0.75);
-    this.addMesh(new THREE.CylinderGeometry(0.62, 0.62, 0.18, 6), trimMat, 0, 1.0);
+    // Trim must protrude well past the tapered body (r≈0.62 at this height)
+    // or the coincident walls shimmer.
+    this.addMesh(new THREE.CylinderGeometry(0.72, 0.72, 0.18, 6), trimMat, 0, 1.0);
     this.addMesh(new THREE.SphereGeometry(0.3, 8, 6), armorMat, 0, 1.75);
     // Lance
     this.addMesh(new THREE.CylinderGeometry(0.06, 0.06, 1.6, 6), trimMat, 0.55, 1.3, 0).rotation.x = Math.PI / 2;

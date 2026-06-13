@@ -287,7 +287,9 @@ export class Mirror extends Enemy {
     const trimMat = this.stdMat(0x222831, 0x99ccff, 0.9);
     this.addMesh(new THREE.BoxGeometry(1.2, 1.5, 0.9), plateMat, 0, 0.95);
     this.addMesh(new THREE.BoxGeometry(0.6, 0.45, 0.5), plateMat, 0, 1.9);
-    this.addMesh(new THREE.BoxGeometry(1.34, 0.16, 1.0), trimMat, 0, 1.62);
+    // Glowing belt through the upper torso. Must NOT end flush with the
+    // torso top (y=1.70) — coplanar caps z-fight and flicker.
+    this.addMesh(new THREE.BoxGeometry(1.34, 0.16, 1.04), trimMat, 0, 1.34);
     // Tower-shield arms
     this.addMesh(new THREE.BoxGeometry(0.22, 1.2, 0.7), trimMat, -0.78, 0.95, 0.15);
     this.addMesh(new THREE.BoxGeometry(0.22, 1.2, 0.7), trimMat, 0.78, 0.95, 0.15);
@@ -341,6 +343,7 @@ export class Mirror extends Enemy {
     } else {
       this.bubbleMat.opacity = Math.max(0, this.bubbleMat.opacity - dt * 2);
     }
+    this.bubble.visible = this.bubbleMat.opacity > 0.01;
 
     switch (this.state) {
       case "walk": {

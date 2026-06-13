@@ -87,8 +87,9 @@ export class Colossus extends Enemy {
     body.castShadow = true;
     this.addMesh(new THREE.CylinderGeometry(1.1, 1.5, 1.0, 7), plateMat, 0, 3.9);
     this.addMesh(new THREE.SphereGeometry(0.55, 8, 6), this.coreMat, 0, 2.4, 1.85);
-    this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.1), eyeMat, -0.45, 4.1, 1.15);
-    this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.1), eyeMat, 0.45, 4.1, 1.15);
+    // Eyes must clear the faceted head surface (facet depth 1.10–1.22 here)
+    this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.14), eyeMat, -0.45, 4.1, 1.32);
+    this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.14), eyeMat, 0.45, 4.1, 1.32);
     // Magma veins
     for (let i = 0; i < 5; i++) {
       const v = this.addMesh(new THREE.BoxGeometry(0.16, 1.8 + Math.random(), 0.16), this.veinMat, 0, 1.8, 0);
