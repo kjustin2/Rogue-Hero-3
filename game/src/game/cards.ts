@@ -122,6 +122,11 @@ export class CardCaster {
     return this.riposteTimer > 0;
   }
 
+  /** True while a card is driving the swing pose (Cleave, Bleeding Edge, Cyclone). */
+  get swinging(): boolean {
+    return this.fakeSwing >= 0 || this.cycloneTimers.length > 0;
+  }
+
   consumeRiposte(): void {
     this.riposteTimer = 0;
   }

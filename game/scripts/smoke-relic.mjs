@@ -18,6 +18,11 @@ await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
 await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
 await page.waitForTimeout(700);
 await page.locator(".hero-card").first().click();
+await page.waitForTimeout(800);
+if (await page.locator(".story-skip").count()) {
+  await page.locator(".story-skip").click();
+  await page.waitForTimeout(600);
+}
 await page.waitForTimeout(2500);
 
 // Jump to the elite chamber (room 2) and clear it

@@ -20,9 +20,12 @@ export class CameraRig {
   private baseFov = 50;
   private t = 0;
   private orbitAngle = 0;
-  /** "menu" slowly orbits the arena; "follow" chases the target. */
-  mode: "follow" | "menu" = "menu";
+  /** "menu" orbits the arena; "follow" chases the target; "cinematic" dollies to a point. */
+  mode: "follow" | "menu" | "cinematic" = "menu";
   shakeScale = 1;
+  private cineTarget = new THREE.Vector3();
+  private cineZoom = 0.62;
+  private zoom = 1;
 
   private offset = new THREE.Vector3(0, 15.5, 9.6);
 
@@ -51,6 +54,13 @@ export class CameraRig {
     this.smoothed.copy(this.target);
   }
 
+  /** Dolly toward a world point, pulled in close — boss entrances. */
+  cinematic(x: number, z: number, zoom = 0.62): void {
+    this.mode = "cinematic";
+    this.cineTarget.set(x, 0, z);
+    this.cineZoom = zoom;
+  }
+
   update(dt: number): void {
     this.t += dt;
 
@@ -68,14 +78,24 @@ export class CameraRig {
       return;
     }
 
-    // Follow with aim lead
-    const lead = new THREE.Vector3()
-      .subVectors(this.aimPoint, this.target)
-      .multiplyScalar(this.lookAhead);
-    lead.clampLength(0, 4.5);
-    const desired = new THREE.Vector3().addVectors(this.target, lead);
-    this.smoothed.x = damp(this.smoothed.x, desired.x, 7, dt);
-    this.smoothed.z = damp(this.smoothed.z, desired.z, 7, dt);
+    // Follow with aim lead — or a slow dolly to the cinematic target
+    const cine = this.mode === "cinematic";
+    let dx: number;
+    let dz: number;
+    if (cine) {
+      dx = this.cineTarget.x;
+      dz = this.cineTarget.z;
+    } else {
+      const lead = new THREE.Vector3()
+        .subVectors(this.aimPoint, this.target)
+        .multiplyScalar(this.lookAhead);
+      lead.clampLength(0, 4.5);
+      dx = this.target.x + lead.x;
+      dz = this.target.z + lead.z;
+    }
+    const rate = cine ? 2.6 : 7;
+    this.smoothed.x = damp(this.smoothed.x, dx, rate, dt);
+    this.smoothed.z = damp(this.smoothed.z, dz, rate, dt);
 
     // Kick spring (no per-frame allocation)
     this.kickVel.multiplyScalar(Math.exp(-9 * dt));
@@ -92,12 +112,14 @@ export class CameraRig {
     const shakeY = n2 * sh * 0.4;
     const shakeZ = n3 * sh * 0.45;
 
+    // Cinematic mode pulls the rig in close for drama
+    this.zoom = damp(this.zoom, cine ? this.cineZoom : 1, 2.8, dt);
     this.camera.position.set(
-      this.smoothed.x + this.offset.x + this.kickOffset.x + shakeX,
-      this.offset.y + shakeY,
-      this.smoothed.z + this.offset.z + this.kickOffset.z + shakeZ
+      this.smoothed.x + this.offset.x * this.zoom + this.kickOffset.x + shakeX,
+      this.offset.y * this.zoom + shakeY,
+      this.smoothed.z + this.offset.z * this.zoom + this.kickOffset.z + shakeZ
     );
-    this.camera.lookAt(this.smoothed.x + shakeX * 0.5, 0.5, this.smoothed.z + shakeZ * 0.5);
+    this.camera.lookAt(this.smoothed.x + shakeX * 0.5, cine ? 1.6 : 0.5, this.smoothed.z + shakeZ * 0.5);
 
     // FOV pulse decay
     this.fovPulse = Math.max(0, this.fovPulse - dt * 3.2);

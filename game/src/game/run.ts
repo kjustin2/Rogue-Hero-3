@@ -204,8 +204,10 @@ export class RunManager {
 
     if (room.bossKind) {
       const boss = BOSSES[room.bossKind];
-      ctx.events.emit("BOSS_INTRO", { name: boss.name, title: boss.title });
-      ctx.enemies.spawnCustom(boss.make, 0, -ARENA_RADIUS * 0.4, 2.4);
+      const bx = 0;
+      const bz = -ARENA_RADIUS * 0.4;
+      ctx.events.emit("BOSS_INTRO", { name: boss.name, title: boss.title, x: bx, z: bz });
+      ctx.enemies.spawnCustom(boss.make, bx, bz, 2.4);
     } else {
       this.spawnWave(room.waves[0]);
     }

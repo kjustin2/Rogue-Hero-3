@@ -1202,6 +1202,82 @@ body {
   100% { opacity: 0; }
 }
 
+/* --- cinematic letterbox --- */
+.letterbox {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  background: #000;
+  transition: height 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 5;
+}
+.letterbox--top { top: 0; }
+.letterbox--bottom { bottom: 0; }
+.letterbox--on { height: 11vh; }
+
+/* --- story intro --- */
+.story {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  background: radial-gradient(ellipse at 50% 45%, rgba(5, 6, 12, 0.45) 0%, rgba(4, 5, 10, 0.88) 100%);
+}
+.story__line {
+  max-width: 640px;
+  font-family: var(--font-display);
+  font-size: 24px;
+  line-height: 1.7;
+  letter-spacing: 2px;
+  text-align: center;
+  color: var(--ui-text);
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.9), 0 0 30px rgba(120, 200, 255, 0.15);
+  animation: story-line 1.4s ease both;
+}
+@keyframes story-line {
+  from { opacity: 0; transform: translateY(14px); filter: blur(3px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+.story__hint {
+  position: absolute;
+  bottom: 14vh;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 4px;
+  color: var(--ui-dim);
+  animation: pip-pulse 1.6s ease-in-out infinite;
+}
+.story-skip {
+  position: absolute;
+  bottom: 5vh;
+  right: 5vw;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--ui-dim);
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 8px 18px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.story-skip:hover { color: var(--ui-text); border-color: rgba(255, 255, 255, 0.5); }
+
+/* act card flavor line */
+.actcard__flavor {
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 5px;
+  color: var(--ui-dim);
+}
+
 /* vignette flash for perfect dodge */
 .flashring {
   position: absolute;

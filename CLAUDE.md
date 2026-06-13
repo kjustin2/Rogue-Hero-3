@@ -30,6 +30,7 @@ node scripts/smoke-relic.mjs     # elite clear → relic draft → HUD relic row
 node scripts/smoke-meta.mjs      # fresh profile → gated drafts → win → unlocks/progress screen (CLEARS the profile)
 node scripts/smoke-crash.mjs     # cooldown sweep + crash-radius ring
 node scripts/smoke-release.mjs   # hero select, obstacles, save/continue, armory purchase (CLEARS profile)
+node scripts/smoke-cutscene.mjs  # story intro + boss entrance cutscene (letterbox, dolly, skip)
 ```
 
 Both print `NO CONSOLE ERRORS` on success and use the Playwright Chromium cached at `%LOCALAPPDATA%\ms-playwright\chromium-1217` (via `playwright-core`, no browser download). **Read the screenshots** — a clean console with a black canvas is still a failure. Dev builds expose the wiring hub as `window.__rh3` for these scripts.

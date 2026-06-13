@@ -534,11 +534,52 @@ export class Menus {
   }
 
   /** One-shot act title card over the gameplay (self-removing). */
-  actIntro(act: string, name: string): void {
+  actIntro(act: string, name: string, flavor = ""): void {
     const el = document.createElement("div");
     el.className = "actcard";
-    el.innerHTML = `<div class="actcard__act">${act}</div><div class="actcard__name">${name}</div>`;
+    el.innerHTML = `
+      <div class="actcard__act">${act}</div>
+      <div class="actcard__name">${name}</div>
+      ${flavor ? `<div class="actcard__flavor">${flavor}</div>` : ""}`;
     this.root.appendChild(el);
     window.setTimeout(() => el.remove(), 2700);
+  }
+
+  /**
+   * Opening story crawl: lines advance on click (or auto), SKIP bails out.
+   * Plays over the live arena before the first chamber loads.
+   */
+  storyIntro(lines: string[], onDone: () => void): void {
+    const s = this.screen("");
+    s.classList.add("story");
+    let idx = 0;
+    let autoTimer = 0;
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(autoTimer);
+      onDone();
+    };
+    const show = () => {
+      if (idx >= lines.length) {
+        finish();
+        return;
+      }
+      s.innerHTML = `
+        <div class="story__line">${lines[idx]}</div>
+        <div class="story__hint">CLICK TO CONTINUE</div>
+        <button class="story-skip">SKIP ▸</button>
+      `;
+      s.querySelector(".story-skip")!.addEventListener("click", (e) => {
+        e.stopPropagation();
+        finish();
+      });
+      idx++;
+      window.clearTimeout(autoTimer);
+      autoTimer = window.setTimeout(show, 3400);
+    };
+    s.addEventListener("click", show);
+    show();
   }
 }

@@ -31,6 +31,11 @@ if (await begin.count()) {
   await begin.click();
   await page.waitForTimeout(700);
   await page.locator(".hero-card").first().click();
+await page.waitForTimeout(800);
+if (await page.locator(".story-skip").count()) {
+  await page.locator(".story-skip").click();
+  await page.waitForTimeout(600);
+}
   await page.waitForTimeout(3500); // act card + spawn-in
   await page.screenshot({ path: join(OUT, "2-gameplay.png") });
 

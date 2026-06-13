@@ -36,7 +36,24 @@ import { Hud } from "./ui/hud";
 import { Menus } from "./ui/menus";
 import { freshStats, type Ctx } from "./game/ctx";
 
-type GameState = "menu" | "playing" | "paused" | "draft" | "dead" | "victory";
+type GameState = "menu" | "playing" | "paused" | "draft" | "cutscene" | "dead" | "victory";
+
+const STORY_LINES = [
+  "A hundred years ago, the Rift split the kingdom's floor — and the world fell burning into the dark.",
+  "Three wardens were sworn to hold its heart. The Rift holds them now.",
+  "Descend, Rift-sworn. Break the wardens. Seal the core.",
+];
+
+const ACT_FLAVOR = [
+  "WHERE THE KINGDOM FIRST FELL",
+  "THE WARDENS' SHATTERED SANCTUM",
+  "THE HEART OF THE WOUND",
+];
+
+const BOSS_EPITAPHS: Record<string, [string, string]> = {
+  warden: ["THE PIT WARDEN FALLS", "One oath broken. Two remain."],
+  spire: ["THE SPIRE CASTER SHATTERS", "The light here moves freely again."],
+};
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 
@@ -112,15 +129,34 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
     ctx.relics.restore(resume.relics);
     ctx.run.loadRoom(resume.roomIndex);
     ctx.player.hp = Math.max(1, Math.min(ctx.player.maxHp, resume.hp));
-  } else {
-    clearRunSave();
-    ctx.player.hp = ctx.player.maxHp;
-    ctx.run.startRun();
+    ctx.cam.mode = "follow";
+    hud.setVisible(true);
+    state = "playing";
+    ctx.input.enabled = true;
+    return;
   }
+
+  clearRunSave();
+  ctx.player.hp = ctx.player.maxHp;
+  // Opening story over an emptied arena; the first chamber loads after
+  ctx.enemies.clear();
+  ctx.projectiles.clear();
+  ctx.hostiles.clear();
+  ctx.caster.clear();
+  ctx.arena.setObstacles([], 0);
+  ctx.player.pos.set(0, 0, 6);
+  ctx.player.facing = Math.PI;
+  ctx.cam.snapTo(0, 6);
   ctx.cam.mode = "follow";
-  hud.setVisible(true);
-  state = "playing";
-  ctx.input.enabled = true;
+  state = "cutscene";
+  ctx.input.enabled = false;
+  menus.storyIntro(STORY_LINES, () => {
+    menus.clear();
+    hud.setVisible(true);
+    state = "playing";
+    ctx.input.enabled = true;
+    ctx.run.startRun();
+  });
 }
 
 function continueRun(): void {
@@ -219,18 +255,69 @@ ctx.events.on("ROOM_CLEARED", ({ reward }) => {
 });
 
 ctx.events.on("BOSS_DEFEATED", () => {
+  // A boss dying mid-cutscene (debug kills, smoke tests) must not soft-lock
+  finishCutscene();
   awardShards(20);
   // Bank the milestone immediately — dying later can't take it back
   ctx.profile.noteBossKill(ROOMS[ctx.run.roomIndex].act, ctx.stats);
+  // Mid-run wardens get an epitaph as the dust settles
+  const kind = ROOMS[ctx.run.roomIndex].bossKind;
+  if (kind && BOSS_EPITAPHS[kind] && ctx.run.roomIndex < ROOMS.length - 1) {
+    const [title, sub] = BOSS_EPITAPHS[kind];
+    window.setTimeout(() => {
+      if (state === "playing") hud.banner(title, sub, "banner--clear");
+    }, 1100);
+  }
 });
 
 ctx.events.on("ACT_START", ({ act, name }) => {
-  menus.actIntro(`ACT ${ROMAN[act - 1]}`, name);
+  menus.actIntro(`ACT ${ROMAN[act - 1]}`, name, ACT_FLAVOR[act - 1]);
 });
 
 ctx.events.on("ROOM_START", ({ isBoss }) => {
   if (isBoss) ctx.sfx.bossIntroSting();
 });
+
+// ---------------------------------------------------------------- boss cutscene
+let bossCutscene = false;
+let cutsceneTimers: number[] = [];
+
+function skipCutscene(): void {
+  finishCutscene();
+}
+
+function finishCutscene(): void {
+  if (!bossCutscene) return;
+  bossCutscene = false;
+  cutsceneTimers.forEach((t) => window.clearTimeout(t));
+  cutsceneTimers = [];
+  window.removeEventListener("pointerdown", skipCutscene);
+  window.removeEventListener("keydown", skipCutscene);
+  hud.setLetterbox(false);
+  ctx.cam.mode = "follow";
+  ctx.input.enabled = true;
+  if (state === "cutscene") state = "playing";
+}
+
+/** Entrance: letterbox in, dolly to the spawn, materialize + roar, dolly back. */
+function playBossCutscene(bx: number, bz: number): void {
+  bossCutscene = true;
+  state = "cutscene";
+  ctx.input.enabled = false;
+  hud.setLetterbox(true);
+  ctx.cam.cinematic(bx, bz, 0.58);
+  cutsceneTimers.push(window.setTimeout(() => {
+    // Just after the spawn beam fires (2.4s pending spawn)
+    ctx.sfx.bossRoar();
+    ctx.cam.addTrauma(0.5);
+    ctx.stage.punch(0.3);
+  }, 2550));
+  cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 4300));
+  window.addEventListener("pointerdown", skipCutscene);
+  window.addEventListener("keydown", skipCutscene);
+}
+
+ctx.events.on("BOSS_INTRO", ({ x, z }) => playBossCutscene(x, z));
 
 ctx.events.on("HEAL", ({ amount }) => {
   const p = ctx.player;
@@ -298,11 +385,18 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.hostiles.update(dt);
     ctx.run.update();
     ctx.player.update(dt);
-    // Sword ribbon while the blade is actually moving
+    // Sword ribbon while the blade is actually moving (chain or card swings)
     ctx.player.getBladePoints(trailTip, trailBase);
     ctx.trail.setColor(ctx.player.bladeColor);
-    ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging);
+    ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging || ctx.caster.swinging);
     hud.update();
+  } else if (state === "cutscene") {
+    // Cinematics: the world breathes, spawns materialize, nothing fights
+    ctx.player.animMoveAmount = 0;
+    ctx.player.update(dt);
+    ctx.enemies.update(dt);
+    ctx.player.getBladePoints(trailTip, trailBase);
+    ctx.trail.update(dt, trailTip, trailBase, false);
   } else if (state === "draft" || state === "paused") {
     // World idles but the hero still breathes
     ctx.player.update(0.0001);

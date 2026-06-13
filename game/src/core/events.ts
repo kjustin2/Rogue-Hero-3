@@ -23,7 +23,7 @@ export interface EventMap {
   ACT_START: { act: number; name: string };
   RELIC_ADDED: { id: string };
   RUN_VICTORY: Record<string, never>;
-  BOSS_INTRO: { name: string; title: string };
+  BOSS_INTRO: { name: string; title: string; x: number; z: number };
   BOSS_PHASE: { phase: number; line: string };
   BOSS_DEFEATED: { x: number; z: number };
   BOSS_HP: { hp: number; maxHp: number };

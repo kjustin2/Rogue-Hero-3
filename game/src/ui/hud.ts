@@ -59,6 +59,8 @@ export class Hud {
       <div class="edgeglow"></div>
       <div class="lowhp"></div>
       <div class="flashring"></div>
+      <div class="letterbox letterbox--top"></div>
+      <div class="letterbox letterbox--bottom"></div>
       <div class="plate">
         <div class="plate__name">THE BLADE</div>
         <div class="plate__hpwrap">
@@ -221,6 +223,9 @@ export class Hud {
     if (v) {
       this.ghostHp = this.ctx.player.hp / this.ctx.player.maxHp;
       this.rebuildRelicRow();
+      // Nameplate follows the chosen hero
+      const plateName = this.root.querySelector(".plate__name") as HTMLElement;
+      plateName.textContent = this.ctx.player.hero.name.toUpperCase();
     }
   }
 
@@ -241,6 +246,11 @@ export class Hud {
   fadeHints(): void {
     this.hintsEl.style.transition = "opacity 1.5s";
     this.hintsEl.style.opacity = "0";
+  }
+
+  /** Cinematic letterbox bars for cutscenes. */
+  setLetterbox(on: boolean): void {
+    this.root.querySelectorAll(".letterbox").forEach((el) => el.classList.toggle("letterbox--on", on));
   }
 
   update(): void {

@@ -29,6 +29,11 @@ const lockedHeroes = await page.locator(".hero-card--locked").count();
 console.log(`HERO SELECT: ${heroes} heroes, ${lockedHeroes} locked`, heroes === 3 && lockedHeroes === 2 ? "OK" : "FAIL");
 await page.screenshot({ path: "shots/r-heroselect.png" });
 await page.locator(".hero-card").first().click();
+await page.waitForTimeout(800);
+if (await page.locator(".story-skip").count()) {
+  await page.locator(".story-skip").click();
+  await page.waitForTimeout(600);
+}
 await page.waitForTimeout(2500);
 
 // --- Obstacles: jump to The Shattered Court and check pillars block movement
