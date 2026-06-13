@@ -1,6 +1,6 @@
 # Rogue Hero 3 — Project Guide
 
-Single-player 3D action roguelike on **Three.js** (the June 2026 ground-up rebuild; the old Babylon.js v1 was removed). Vite + strict TypeScript, ships as an Electron desktop app. Content: 3 acts × 3 chambers (combat → elite → boss), 3 bosses, 10 enemy types, 16 cards, 11 relics, and milestone-based meta-progression persisted in localStorage (PROGRESS screen on the main menu). Heroes/anomalies remain future work.
+Single-player 3D action roguelike on **Three.js** (the June 2026 ground-up rebuild; the old Babylon.js v1 was removed). Vite + strict TypeScript, ships as an Electron desktop app. Content: 3 playable heroes (`game/heroes.ts`, data-driven multipliers — no per-hero branching), 3 acts × 4 chambers (combat ×2 → elite → boss; some rooms have blocking pillar obstacles via `arena.obstacles`), 3 bosses, 12 enemy types, 20 cards, 16 relics, chamber-boundary save points (`profile.ts` RunSave + Continue Run), a rift-shard economy with Armory cosmetics (`cosmetics.ts`; cape + blade colors applied in `Player.applyHero`), milestone meta-progression, and Low/Medium/High quality presets (`Stage.applyQuality`).
 
 ## Layout
 
@@ -29,6 +29,7 @@ node scripts/smoke-bosses.mjs    # Spire Caster + Colossus across all phases
 node scripts/smoke-relic.mjs     # elite clear → relic draft → HUD relic row
 node scripts/smoke-meta.mjs      # fresh profile → gated drafts → win → unlocks/progress screen (CLEARS the profile)
 node scripts/smoke-crash.mjs     # cooldown sweep + crash-radius ring
+node scripts/smoke-release.mjs   # hero select, obstacles, save/continue, armory purchase (CLEARS profile)
 ```
 
 Both print `NO CONSOLE ERRORS` on success and use the Playwright Chromium cached at `%LOCALAPPDATA%\ms-playwright\chromium-1217` (via `playwright-core`, no browser download). **Read the screenshots** — a clean console with a black canvas is still a failure. Dev builds expose the wiring hub as `window.__rh3` for these scripts.

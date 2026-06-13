@@ -7,7 +7,6 @@ const DODGE_DURATION = 0.22;
 const DODGE_SPEED = 17;
 const DODGE_COOLDOWN = 0.5;
 const PERFECT_WINDOW = 0.11;
-const BASE_SPEED = 6.4;
 
 /**
  * Input → hero movement. Snappy damped velocity, twin-stick facing (always
@@ -123,7 +122,7 @@ export class Controller {
         player.animDodge = null;
       }
     } else if (this.externalMoveTimer <= 0) {
-      const target = BASE_SPEED * speedMult;
+      const target = player.hero.speed * speedMult;
       this.vel.x = damp(this.vel.x, ix * target, 11, dt);
       this.vel.y = damp(this.vel.y, iz * target, 11, dt);
     }
@@ -143,8 +142,9 @@ export class Controller {
       player.pos.x *= maxR / r;
       player.pos.z *= maxR / r;
     }
+    this.ctx.arena.resolveObstacles(player.pos, player.radius);
 
-    player.animMoveAmount = clamp01(this.vel.length() / BASE_SPEED);
+    player.animMoveAmount = clamp01(this.vel.length() / player.hero.speed);
     this.ctx.cam.target.set(player.pos.x, 0, player.pos.z);
   }
 }

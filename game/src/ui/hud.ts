@@ -39,6 +39,8 @@ export class Hud {
   private bannerSub!: HTMLElement;
   private edgeGlow!: HTMLElement;
   private lowHp!: HTMLElement;
+  private shardsEl!: HTMLElement;
+  private lastShards = 0;
   private flashRing!: HTMLElement;
   private hintsEl!: HTMLElement;
   private ghostHp = 1;
@@ -71,6 +73,7 @@ export class Hud {
         <div class="roominfo__name"></div>
         <div class="roominfo__progress"></div>
         <div class="roominfo__pips"></div>
+        <div class="roominfo__shards">◆ 0</div>
       </div>
       <div class="cards"></div>
       <div class="tempo">
@@ -98,6 +101,7 @@ export class Hud {
     this.hpText = q(".plate__hptext");
     this.roomName = q(".roominfo__name");
     this.roomProgress = q(".roominfo__progress");
+    this.shardsEl = q(".roominfo__shards");
     this.tempoDial = q(".tempo__dial");
     this.tempoValue = q(".tempo__value .num");
     this.tempoZoneName = q(".tempo__zonename");
@@ -262,6 +266,14 @@ export class Hud {
     this.tempoValue.parentElement!.style.setProperty("--zone", zone.css);
     this.tempoZoneName.textContent = zone.zone.toUpperCase();
     this.tempoCrash.classList.toggle("tempo__crash--ready", tempo.value >= CRASH_THRESHOLD);
+
+    // Shard counter (pulse on gain)
+    const shards = this.ctx.stats.shards;
+    if (shards !== this.lastShards) {
+      this.shardsEl.textContent = `◆ ${shards}`;
+      this.replay(this.shardsEl, "shards--pulse");
+      this.lastShards = shards;
+    }
 
     // Edge glow at hot/critical
     const hotIdx = ZONES.findIndex((z) => z.zone === zone.zone);

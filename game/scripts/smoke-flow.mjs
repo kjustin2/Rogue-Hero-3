@@ -15,7 +15,10 @@ page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
 
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(2000);
-await page.locator("button", { hasText: "Begin Run" }).click();
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
+await page.waitForTimeout(700);
+await page.locator(".hero-card").first().click();
 await page.waitForTimeout(2500);
 
 const ROOM_COUNT = await page.evaluate(() => window.__rh3.run.totalRooms);

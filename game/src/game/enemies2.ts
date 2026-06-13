@@ -470,8 +470,207 @@ export class Caster extends Enemy {
 
 }
 
+// ---------------------------------------------------------------- Shade
+/** Half-real assassin. Fades out, reappears BEHIND you — watch your back. */
+export class Shade extends Enemy {
+  readonly kind: EnemyKind = "shade";
+  private state: "lurk" | "fade" | "strike" | "recover" = "lurk";
+  private timer = 2.2;
+  private strikeX = 0;
+  private strikeZ = 0;
+  private bodyMats: THREE.MeshStandardMaterial[] = [];
+  private opacity = 0.75;
+  private strafeDir = Math.random() < 0.5 ? 1 : -1;
+
+  constructor(ctx: Ctx, x: number, z: number) {
+    super(ctx, x, z);
+    this.hp = this.maxHp = 20;
+    this.speed = 3.6;
+    this.radius = 0.45;
+
+    const mk = (color: number, emissive: number, ei: number) => {
+      const m = this.stdMat(color, emissive, ei);
+      m.transparent = true;
+      m.opacity = 0.75;
+      this.bodyMats.push(m);
+      return m;
+    };
+    const cloak = mk(0x12081e, 0x441166, 0.6);
+    const eye = mk(0x000000, 0xff2266, 3.0);
+    const torso = this.addMesh(new THREE.ConeGeometry(0.45, 1.5, 5), cloak, 0, 0.75);
+    torso.rotation.y = 0.4;
+    this.addMesh(new THREE.SphereGeometry(0.22, 8, 6), cloak, 0, 1.6);
+    this.addMesh(new THREE.BoxGeometry(0.16, 0.05, 0.06), eye, 0, 1.62, 0.2);
+    // Twin daggers
+    const dagger = this.stdMat(0x223344, 0x6688aa, 0.8);
+    this.addMesh(new THREE.ConeGeometry(0.05, 0.6, 4), dagger, -0.4, 1.0, 0.2).rotation.x = Math.PI / 2;
+    this.addMesh(new THREE.ConeGeometry(0.05, 0.6, 4), dagger, 0.4, 1.0, 0.2).rotation.x = Math.PI / 2;
+  }
+
+  protected deathColor(): number {
+    return 0xcc2266;
+  }
+
+  protected tick(dt: number): void {
+    const p = this.ctx.player;
+    this.timer -= dt;
+
+    // Opacity follows state
+    const targetOpacity = this.state === "fade" ? 0.06 : this.state === "lurk" ? 0.55 : 0.95;
+    this.opacity += (targetOpacity - this.opacity) * Math.min(1, dt * 8);
+    for (const m of this.bodyMats) m.opacity = this.opacity;
+
+    switch (this.state) {
+      case "lurk": {
+        const d = this.distToPlayer();
+        this.facePlayer(dt);
+        const ang = Math.atan2(this.pos.x - p.pos.x, this.pos.z - p.pos.z) + this.strafeDir * 0.6 * dt;
+        this.seek(p.pos.x + Math.sin(ang) * Math.max(6, d), p.pos.z + Math.cos(ang) * Math.max(6, d), dt, 0.7);
+        if (Math.random() < dt * 0.2) this.strafeDir *= -1;
+        if (this.timer <= 0 && d < 14) {
+          this.state = "fade";
+          this.timer = 0.5;
+          this.ctx.sfx.spawn();
+        }
+        break;
+      }
+      case "fade":
+        if (this.timer <= 0) {
+          // Materialize behind the player's current facing
+          const bx = p.pos.x - Math.sin(p.facing) * 2.2;
+          const bz = p.pos.z - Math.cos(p.facing) * 2.2;
+          this.pos.x = bx;
+          this.pos.z = bz;
+          this.strikeX = p.pos.x;
+          this.strikeZ = p.pos.z;
+          this.ctx.tele.circle(p.pos.x, p.pos.z, 1.8, 0.55, 0xff2266);
+          this.facePlayer(1);
+          this.state = "strike";
+          this.timer = 0.55;
+          this.ctx.fx.burst({
+            x: bx, y: 1, z: bz,
+            count: 14, color: 0xcc2266, speed: [1, 5], up: 0.6, size: [0.3, 0.6], life: [0.2, 0.45], gravity: -1, drag: 3,
+          });
+        }
+        break;
+      case "strike":
+        this.facePlayer(dt * 2);
+        if (this.timer <= 0) {
+          if (Math.hypot(p.pos.x - this.strikeX, p.pos.z - this.strikeZ) < 1.8 + p.radius) {
+            this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z);
+          }
+          this.ctx.fx.ring(this.strikeX, this.strikeZ, { radius: 1.8, color: 0xff2266, duration: 0.3 });
+          this.ctx.sfx.enemyLunge();
+          this.state = "recover";
+          this.timer = 1.0;
+        }
+        break;
+      case "recover":
+        if (this.timer <= 0) {
+          this.state = "lurk";
+          this.timer = 2.6 + Math.random();
+        }
+        break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------- Bastion
+/** A walking wall. Its front blocks everything — hit it from behind. */
+export class Bastion extends Enemy {
+  readonly kind: EnemyKind = "bastion";
+  private slamTimer = 2.5;
+  private slamWindup = -1;
+  private shieldMat: THREE.MeshStandardMaterial;
+
+  constructor(ctx: Ctx, x: number, z: number) {
+    super(ctx, x, z);
+    this.hp = this.maxHp = 45;
+    this.speed = 1.8;
+    this.radius = 0.7;
+
+    const hide = this.stdMat(0x2c2418, 0x553311, 0.3);
+    this.shieldMat = this.stdMat(0x1a1408, 0xffaa33, 1.1);
+    this.addMesh(new THREE.BoxGeometry(1.0, 1.3, 0.8), hide, 0, 0.85);
+    this.addMesh(new THREE.BoxGeometry(0.5, 0.4, 0.4), hide, 0, 1.7);
+    // The wall itself: a broad frontal shield with a glowing edge
+    this.addMesh(new THREE.BoxGeometry(1.7, 1.7, 0.16), this.stdMat(0x24180a), 0, 1.0, 0.62);
+    this.addMesh(new THREE.BoxGeometry(1.8, 0.12, 0.2), this.shieldMat, 0, 1.9, 0.62);
+    this.addMesh(new THREE.BoxGeometry(1.8, 0.12, 0.2), this.shieldMat, 0, 0.12, 0.62);
+    this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, -0.6, 0.3, 0);
+    this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, 0.6, 0.3, 0);
+  }
+
+  protected deathColor(): number {
+    return 0xffaa33;
+  }
+
+  protected barHeight(): number {
+    return 2.4;
+  }
+
+  takeDamage(amount: number, opts: DamageOpts = {}): boolean {
+    // Attacks arriving at its front face glance off. Attack direction is
+    // inferred from the knockback vector (radial, attacker → enemy).
+    if (opts.kbX !== undefined && opts.kbZ !== undefined) {
+      const len = Math.hypot(opts.kbX, opts.kbZ);
+      if (len > 0.001) {
+        const inX = -opts.kbX / len;
+        const inZ = -opts.kbZ / len;
+        const fx = Math.sin(this.heading);
+        const fz = Math.cos(this.heading);
+        // Incoming threat within ~100° of its facing → blocked
+        if (inX * fx + inZ * fz > 0.34) {
+          this.ctx.fx.burst({
+            x: this.pos.x + fx * 0.8, y: 1.1, z: this.pos.z + fz * 0.8,
+            count: 6, color: 0xffaa33, speed: [2, 5], up: 0.5, size: [0.3, 0.55], life: [0.15, 0.3], gravity: -2, drag: 3,
+          });
+          this.ctx.floaters.spawn(this.pos.x, 1.9, this.pos.z, "BLOCKED", "label");
+          this.ctx.sfx.shieldHit();
+          return false;
+        }
+      }
+    }
+    return super.takeDamage(amount, opts);
+  }
+
+  protected tick(dt: number): void {
+    const p = this.ctx.player;
+    this.shieldMat.emissiveIntensity = 1.1 + Math.sin(this.t * 2.5) * 0.4;
+    if (this.slamWindup < 0) {
+      const d = this.seek(p.pos.x, p.pos.z, dt);
+      this.slamTimer -= dt;
+      if (d < 3.0 && this.slamTimer <= 0) {
+        this.slamWindup = 0.6;
+        this.slamTimer = 3.0;
+        const fx = Math.sin(this.heading);
+        const fz = Math.cos(this.heading);
+        this.ctx.tele.circle(this.pos.x + fx * 1.6, this.pos.z + fz * 1.6, 2.2, 0.6, 0xffaa33);
+      }
+    } else {
+      this.facePlayer(dt * 0.4);
+      this.slamWindup -= dt;
+      if (this.slamWindup <= 0) {
+        this.slamWindup = -1;
+        const fx = Math.sin(this.heading);
+        const fz = Math.cos(this.heading);
+        const sx = this.pos.x + fx * 1.6;
+        const sz = this.pos.z + fz * 1.6;
+        this.ctx.fx.ring(sx, sz, { radius: 2.2, color: 0xffaa33, duration: 0.35 });
+        this.ctx.cam.addTrauma(0.15);
+        this.ctx.sfx.bossSlam();
+        if (Math.hypot(p.pos.x - sx, p.pos.z - sz) < 2.2 + p.radius) {
+          this.ctx.combat.damagePlayer(15, this.pos.x, this.pos.z);
+        }
+      }
+    }
+  }
+}
+
 registerEnemy("wisp", Wisp);
 registerEnemy("leaper", Leaper);
 registerEnemy("tether", Tether);
 registerEnemy("mirror", Mirror);
 registerEnemy("caster", Caster);
+registerEnemy("shade", Shade);
+registerEnemy("bastion", Bastion);

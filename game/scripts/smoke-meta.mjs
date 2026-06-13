@@ -29,9 +29,13 @@ const lockedOk = await page.evaluate(() => {
 console.log("LOCKED CARDS IN DRAFT:", lockedOk.lockedSeen.length === 0 ? "NONE (OK)" : `LEAK: ${lockedOk.lockedSeen}`);
 
 // Win a full run quickly
-await page.locator("button", { hasText: "Begin Run" }).click();
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
+await page.waitForTimeout(700);
+await page.locator(".hero-card").first().click();
 await page.waitForTimeout(2500);
-for (let room = 0; room < 9; room++) {
+const N = await page.evaluate(() => window.__rh3.run.totalRooms);
+for (let room = 0; room < N; room++) {
   let st = null;
   for (let tries = 0; tries < 16; tries++) {
     st = await page.evaluate(() => {
@@ -71,7 +75,7 @@ await page.locator("button", { hasText: "Progress" }).click();
 await page.waitForTimeout(700);
 const items = await page.locator(".prog-item").count();
 const lockedItems = await page.locator(".prog-item--locked").count();
-console.log(`PROGRESS GRID: ${items} items (${lockedItems} locked)`, items === 27 ? "OK" : "CHECK");
+console.log(`PROGRESS GRID: ${items} items (${lockedItems} locked)`, items === 39 ? "OK" : "CHECK");
 await page.screenshot({ path: "shots/meta-progress.png" });
 
 console.log(errors.length ? `CONSOLE ERRORS:\n` + errors.join("\n") : "NO CONSOLE ERRORS");

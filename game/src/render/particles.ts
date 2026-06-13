@@ -47,6 +47,7 @@ export class Particles {
   private ambientAcc = 0;
 
   private rings: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; t: number; dur: number; from: number; to: number }[] = [];
+  private beams: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; t: number }[] = [];
 
   constructor(private scene: THREE.Scene) {
     this.positions = new Float32Array(MAX_PARTICLES * 3);
@@ -116,6 +117,32 @@ export class Particles {
       this.scene.add(mesh);
       this.rings.push({ mesh, mat, t: 0, dur: 0, from: 0, to: 0 });
     }
+
+    // Light-beam pool (spawn pillars, arrivals)
+    const beamGeo = new THREE.CylinderGeometry(0.4, 0.55, 9, 10, 1, true);
+    beamGeo.translate(0, 4.5, 0);
+    for (let i = 0; i < 12; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(beamGeo, mat);
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.beams.push({ mesh, mat, t: -1 });
+    }
+  }
+
+  /** Vertical light pillar — used when something materializes. */
+  beam(x: number, z: number, color: number): void {
+    const b = this.beams.find((b) => b.t < 0);
+    if (!b) return;
+    b.t = 0;
+    b.mesh.visible = true;
+    b.mesh.position.set(x, 0, z);
+    b.mesh.scale.set(1, 1, 1);
+    b.mat.color.set(color);
+    b.mat.opacity = 0.7;
   }
 
   burst(opts: BurstOpts): void {
@@ -249,6 +276,18 @@ export class Particles {
       r.mesh.scale.setScalar(r.from + (r.to - r.from) * eased);
       r.mat.opacity = 0.9 * (1 - k);
       if (k >= 1) r.mesh.visible = false;
+    }
+
+    for (const b of this.beams) {
+      if (b.t < 0) continue;
+      b.t += dt;
+      const k = Math.min(1, b.t / 0.5);
+      b.mesh.scale.set(1 - k * 0.75, 1 + k * 0.3, 1 - k * 0.75);
+      b.mat.opacity = 0.7 * (1 - k);
+      if (k >= 1) {
+        b.t = -1;
+        b.mesh.visible = false;
+      }
     }
   }
 }

@@ -238,6 +238,19 @@ export class Sfx {
         this.noise({ dur: 0.4, freq: 700, freq2: 180, q: 0.9, gain: 0.2, type: "lowpass" });
         this.tone({ f: 160, f2: 60, dur: 0.3, type: "sawtooth", gain: 0.12 });
         break;
+      case "blade-cyclone":
+        for (let i = 0; i < 3; i++) this.noise({ dur: 0.18, freq: 900 + i * 300, freq2: 250, q: 1.5, gain: 0.12, delay: i * 0.2 });
+        break;
+      case "riposte":
+        this.tone({ f: 980, f2: 1400, dur: 0.18, type: "triangle", gain: 0.1 });
+        break;
+      case "tempo-theft":
+        this.tone({ f: 1200, f2: 300, dur: 0.3, type: "sawtooth", gain: 0.1 });
+        this.tone({ f: 300, f2: 700, dur: 0.25, type: "sine", gain: 0.1, delay: 0.12 });
+        break;
+      case "starfall":
+        for (let i = 0; i < 3; i++) this.tone({ f: 1600 - i * 280, f2: 500, dur: 0.2, type: "sine", gain: 0.07, delay: i * 0.12 });
+        break;
     }
   }
 

@@ -186,6 +186,65 @@ export class Arena {
     }
   }
 
+  /** Per-room blocking pillars — collision circles consulted by movement + projectiles. */
+  obstacles: { x: number; z: number; r: number }[] = [];
+  private obstacleGroup: THREE.Group | null = null;
+
+  setObstacles(defs: { x: number; z: number; r: number }[], accentColor: number): void {
+    if (this.obstacleGroup) {
+      this.stage.scene.remove(this.obstacleGroup);
+      this.obstacleGroup.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          (o.material as THREE.Material).dispose();
+        }
+      });
+      this.obstacleGroup = null;
+    }
+    this.obstacles = defs;
+    if (!defs.length) return;
+
+    this.obstacleGroup = new THREE.Group();
+    for (const d of defs) {
+      const h = 2.4 + d.r;
+      const rock = new THREE.MeshStandardMaterial({ color: 0x191523, roughness: 0.85, flatShading: true });
+      const band = new THREE.MeshStandardMaterial({
+        color: 0x0c0a14, emissive: accentColor, emissiveIntensity: 1.4, roughness: 0.3, flatShading: true,
+      });
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(d.r * 0.82, d.r, h, 7), rock);
+      pillar.position.set(d.x, h / 2, d.z);
+      pillar.rotation.y = Math.random() * Math.PI;
+      pillar.castShadow = true;
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(d.r * 0.92, 0.07, 8, 24), band);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(d.x, h * 0.72, d.z);
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(d.r * 0.5, 0.9, 5), band);
+      cap.position.set(d.x, h + 0.4, d.z);
+      this.obstacleGroup.add(pillar, ring, cap);
+    }
+    this.stage.scene.add(this.obstacleGroup);
+  }
+
+  /** Push a circle (entity) out of any obstacle it overlaps. */
+  resolveObstacles(pos: THREE.Vector3, radius: number): void {
+    for (const o of this.obstacles) {
+      const dx = pos.x - o.x;
+      const dz = pos.z - o.z;
+      const d = Math.hypot(dx, dz);
+      const min = o.r + radius;
+      if (d >= min) continue;
+      if (d > 0.0001) {
+        pos.x = o.x + (dx / d) * min;
+        pos.z = o.z + (dz / d) * min;
+      } else {
+        // Dead center (teleports, spawns) — eject toward the arena middle
+        const a = Math.atan2(-o.x, -o.z) || 0;
+        pos.x = o.x + Math.sin(a) * min;
+        pos.z = o.z + Math.cos(a) * min;
+      }
+    }
+  }
+
   constructor(private stage: Stage) {
     const scene = stage.scene;
 
@@ -197,6 +256,7 @@ export class Arena {
       uniforms: {
         topColor: { value: new THREE.Color(THEMES.rift.skyTop) },
         bottomColor: { value: new THREE.Color(THEMES.rift.skyBottom) },
+        auroraColor: { value: new THREE.Color(THEMES.rift.ember) },
         uTime: { value: 0 },
       },
       vertexShader: /* glsl */ `
@@ -209,20 +269,27 @@ export class Arena {
       fragmentShader: /* glsl */ `
         uniform vec3 topColor;
         uniform vec3 bottomColor;
+        uniform vec3 auroraColor;
         uniform float uTime;
         varying vec3 vPos;
         float hash(vec2 p) {
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
         }
         void main() {
-          float h = normalize(vPos).y * 0.5 + 0.5;
+          vec3 dir = normalize(vPos);
+          float h = dir.y * 0.5 + 0.5;
           vec3 col = mix(bottomColor, topColor, pow(h, 0.65));
           // Star field above the horizon
-          vec2 sp = normalize(vPos).xz / max(0.12, normalize(vPos).y + 0.25) * 28.0;
+          vec2 sp = dir.xz / max(0.12, dir.y + 0.25) * 28.0;
           vec2 cell = floor(sp);
           float star = step(0.985, hash(cell));
           float tw = 0.5 + 0.5 * sin(uTime * (1.0 + hash(cell + 7.0) * 3.0) + hash(cell) * 50.0);
           col += vec3(0.9, 0.95, 1.0) * star * tw * smoothstep(0.0, 0.35, h) * 0.5;
+          // Aurora bands drifting through the upper sky, act-colored
+          float band = sin(dir.x * 3.2 + uTime * 0.16 + sin(dir.z * 2.4 - uTime * 0.11) * 1.4);
+          float band2 = sin(dir.z * 2.7 - uTime * 0.09 + dir.x * 1.6);
+          float aur = smoothstep(0.5, 0.72, h) * smoothstep(0.98, 0.78, h);
+          col += auroraColor * aur * (max(0.0, band) * 0.30 + max(0.0, band2) * 0.18);
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -407,6 +474,7 @@ export class Arena {
     this.fromTheme = instant ? theme : this.currentBlend();
     this.toTheme = theme;
     this.themeLerp = instant ? 1 : 0;
+    this.blendSettled = false;
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
     this.setDressing(theme.dressing);
   }
@@ -437,22 +505,54 @@ export class Arena {
     return this.currentBlend().ember;
   }
 
+  // Reusable scratch colors — the blend runs only while a theme transition is
+  // in flight, and never allocates (this used to create ~12 Colors per frame).
+  private cA = new THREE.Color();
+  private cB = new THREE.Color();
+  private blendSettled = false;
+
+  private mixTo(target: THREE.Color, a: number, b: number, k: number): void {
+    this.cA.set(a);
+    this.cB.set(b);
+    target.copy(this.cA).lerp(this.cB, k);
+  }
+
+  private applyBlendColors(): void {
+    const f = this.fromTheme;
+    const t = this.toTheme;
+    const k = this.themeLerp;
+    this.mixTo(this.stage.fog.color, f.fog, t.fog, k);
+    if (this.stage.scene.background instanceof THREE.Color) {
+      this.stage.scene.background.copy(this.stage.fog.color);
+    }
+    this.mixTo(this.skyMat.uniforms.topColor.value as THREE.Color, f.skyTop, t.skyTop, k);
+    this.mixTo(this.skyMat.uniforms.bottomColor.value as THREE.Color, f.skyBottom, t.skyBottom, k);
+    this.mixTo(this.skyMat.uniforms.auroraColor.value as THREE.Color, f.ember, t.ember, k);
+    this.mixTo(this.stage.hemiLight.color, f.hemiSky, t.hemiSky, k);
+    this.mixTo(this.stage.hemiLight.groundColor, f.hemiGround, t.hemiGround, k);
+    this.mixTo(this.stage.keyLight.color, f.key, t.key, k);
+    this.mixTo(this.rimMat.emissive, f.rim, t.rim, k);
+    this.mixTo(this.floorMat.emissive, f.gridEmissive, t.gridEmissive, k);
+    if (this.crystalMats.length) {
+      this.mixTo(this.crystalMats[0].emissive, f.crystal, t.crystal, k);
+      for (let i = 1; i < this.crystalMats.length; i++) {
+        this.crystalMats[i].emissive.copy(this.crystalMats[0].emissive);
+      }
+    }
+  }
+
   update(dt: number): void {
     this.t += dt;
-    if (this.themeLerp < 1) this.themeLerp = Math.min(1, this.themeLerp + dt * 0.7);
-    const b = this.currentBlend();
-
-    this.stage.fog.color.set(b.fog);
-    this.stage.scene.background = new THREE.Color(b.fog);
-    (this.skyMat.uniforms.topColor.value as THREE.Color).set(b.skyTop);
-    (this.skyMat.uniforms.bottomColor.value as THREE.Color).set(b.skyBottom);
     this.skyMat.uniforms.uTime.value = this.t;
-    this.stage.hemiLight.color.set(b.hemiSky);
-    this.stage.hemiLight.groundColor.set(b.hemiGround);
-    this.stage.keyLight.color.set(b.key);
-    this.rimMat.emissive.set(b.rim);
-    this.floorMat.emissive.set(b.gridEmissive);
-    for (const m of this.crystalMats) m.emissive.set(b.crystal);
+
+    if (this.themeLerp < 1) {
+      this.themeLerp = Math.min(1, this.themeLerp + dt * 0.7);
+      this.applyBlendColors();
+      this.blendSettled = this.themeLerp >= 1;
+    } else if (!this.blendSettled) {
+      this.applyBlendColors();
+      this.blendSettled = true;
+    }
 
     // Breathing rim + crystals
     const breathe = 1.9 + Math.sin(this.t * 1.4) * 0.5;

@@ -6,6 +6,7 @@ import type { Ctx } from "./ctx";
 export type EnemyKind =
   | "husk" | "spitter" | "swarmer" | "bomber" | "sentinel"
   | "wisp" | "leaper" | "tether" | "mirror" | "caster"
+  | "shade" | "bastion"
   | "boss";
 
 let NEXT_ID = 1;
@@ -185,6 +186,10 @@ export abstract class Enemy {
     if (r > maxR) {
       this.pos.x *= maxR / r;
       this.pos.z *= maxR / r;
+    }
+    // Pillars block everything smaller than a boss (airborne leaps excluded)
+    if (this.kind !== "boss" && this.pos.y < 1) {
+      this.ctx.arena.resolveObstacles(this.pos, this.radius);
     }
 
     this.root.position.set(this.pos.x, this.pos.y, this.pos.z);
@@ -749,6 +754,7 @@ export class EnemyManager {
         this.pending.splice(i, 1);
         const e = s.make ? s.make(this.ctx, s.x, s.z) : makeEnemy(s.kind as Exclude<EnemyKind, "boss">, this.ctx, s.x, s.z);
         this.enemies.push(e);
+        this.ctx.fx.beam(s.x, s.z, e.kind === "boss" ? 0xff5533 : 0xddddff);
         this.ctx.fx.burst({
           x: s.x, y: 0.4, z: s.z,
           count: 16, color: 0xddddff, speed: [2, 7], up: 1.2, size: [0.3, 0.7], life: [0.25, 0.5], gravity: -6, drag: 3,

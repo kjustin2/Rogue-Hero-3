@@ -15,7 +15,10 @@ page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
 
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
-await page.locator("button", { hasText: "Begin Run" }).click();
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
+await page.waitForTimeout(700);
+await page.locator(".hero-card").first().click();
 await page.waitForTimeout(2600);
 
 // Clear the starting room's enemies, then place the subjects around the player

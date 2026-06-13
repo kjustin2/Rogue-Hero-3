@@ -1,12 +1,15 @@
 import * as THREE from "three";
 import { clamp01, damp, ease, TAU } from "../core/math";
+import { heroById, type HeroDef } from "./heroes";
+import { DEFAULT_COSMETICS, cosmeticById } from "./cosmetics";
 import type { Ctx } from "./ctx";
 
 /**
- * The hero: stats + a fully procedural low-poly knight. No asset files —
- * the silhouette is built from flat-shaded boxes with emissive accents so it
- * reads crisply under bloom. Combat/controller drive the animation inputs
- * (moveSpeed, swing phase, dodge phase); this class turns them into pose.
+ * The hero: stats + a fully procedural low-poly knight, rebuilt from any
+ * HeroDef palette + cosmetic colors. No asset files — flat-shaded boxes with
+ * emissive accents that read crisply under bloom. Combat/controller drive the
+ * animation inputs (move amount, swing phase, dodge phase); this class turns
+ * them into pose.
  */
 export class Player {
   hp = 100;
@@ -17,28 +20,32 @@ export class Player {
   /** Radians, world yaw the hero faces (toward aim). */
   facing = 0;
   radius = 0.5;
+  hero: HeroDef = heroById("blade");
+  /** Blade energy color — also tints trails, ghosts, and light slash arcs. */
+  bladeColor = 0x44ccff;
 
   readonly root: THREE.Group;
-  private body: THREE.Group;
-  private rollGroup: THREE.Group;
-  private armR: THREE.Group;
-  private armL: THREE.Group;
-  private legR: THREE.Group;
-  private legL: THREE.Group;
-  private cape: THREE.Mesh;
-  private torso: THREE.Group;
-  private sword: THREE.Group;
-  private bladeMat: THREE.MeshStandardMaterial;
-  private visorMat: THREE.MeshStandardMaterial;
-  private auraMat: THREE.MeshBasicMaterial;
-  private auraRing: THREE.Mesh;
-  private auraLight: THREE.PointLight;
+  private body!: THREE.Group;
+  private rollGroup!: THREE.Group;
+  private armR!: THREE.Group;
+  private armL!: THREE.Group;
+  private legR!: THREE.Group;
+  private legL!: THREE.Group;
+  private cape!: THREE.Mesh;
+  private torso!: THREE.Group;
+  private sword!: THREE.Group;
+  private bladeTipMarker!: THREE.Object3D;
+  private bladeBaseMarker!: THREE.Object3D;
+  private visorMat!: THREE.MeshStandardMaterial;
+  private auraMat!: THREE.MeshBasicMaterial;
+  private auraRing!: THREE.Mesh;
+  private auraLight!: THREE.PointLight;
   private armorMats: THREE.MeshStandardMaterial[] = [];
-  private shieldBubble: THREE.Mesh;
-  private shieldMat: THREE.MeshBasicMaterial;
-  private crashRing: THREE.Group;
-  private crashRingMat: THREE.MeshBasicMaterial;
-  private crashFillMat: THREE.MeshBasicMaterial;
+  private shieldBubble!: THREE.Mesh;
+  private shieldMat!: THREE.MeshBasicMaterial;
+  private crashRing!: THREE.Group;
+  private crashRingMat!: THREE.MeshBasicMaterial;
+  private crashFillMat!: THREE.MeshBasicMaterial;
   private wasCrashReady = false;
 
   // Animation inputs (set by controller/combat each frame)
@@ -52,31 +59,49 @@ export class Player {
 
   constructor(private ctx: Ctx) {
     this.root = new THREE.Group();
+    this.root.scale.setScalar(1.12);
+    ctx.stage.scene.add(this.root);
+    this.applyHero(this.hero, DEFAULT_COSMETICS.cape, DEFAULT_COSMETICS.blade);
+  }
+
+  /** Tear down and rebuild the whole mesh for a hero + cosmetic loadout. */
+  applyHero(hero: HeroDef, capeId: string, bladeId: string): void {
+    this.hero = hero;
+    this.maxHp = hero.maxHp;
+    const capeColor = cosmeticById(capeId).color;
+    this.bladeColor = cosmeticById(bladeId).color;
+
+    // Dispose previous build
+    this.root.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.geometry.dispose();
+        const m = o.material as THREE.Material | THREE.Material[];
+        if (Array.isArray(m)) m.forEach((x) => x.dispose());
+        else m.dispose();
+      }
+    });
+    this.root.clear();
+    this.armorMats = [];
+
     this.rollGroup = new THREE.Group();
     this.rollGroup.position.y = 0.55;
     this.body = new THREE.Group();
     this.body.position.y = -0.55;
+    this.body.scale.set(hero.bulk, 1, hero.bulk);
     this.root.add(this.rollGroup);
     this.rollGroup.add(this.body);
-    // Slight scale-up for readability at gameplay camera distance
-    this.root.scale.setScalar(1.12);
 
     const armor = (color: number, emissive = 0x000000, ei = 0) => {
       const m = new THREE.MeshStandardMaterial({
-        color,
-        roughness: 0.55,
-        metalness: 0.35,
-        flatShading: true,
-        emissive,
-        emissiveIntensity: ei,
+        color, roughness: 0.55, metalness: 0.35, flatShading: true, emissive, emissiveIntensity: ei,
       });
       this.armorMats.push(m);
       return m;
     };
 
-    const plate = armor(0x2a3045);
-    const plateDark = armor(0x1b2030);
-    const gold = armor(0x9a7833, 0xffaa33, 0.35);
+    const plate = armor(hero.plate);
+    const plateDark = armor(hero.plateDark);
+    const gold = armor(hero.trim, hero.trimEmissive, 0.35);
     const cloth = armor(0x141824);
 
     const box = (
@@ -106,10 +131,7 @@ export class Player {
     this.torso.add(head);
     box(0.4, 0.38, 0.4, plateDark, 0, 0.08, 0, head);
     this.visorMat = new THREE.MeshStandardMaterial({
-      color: 0x111111,
-      emissive: 0x55ddff,
-      emissiveIntensity: 2.4,
-      roughness: 0.3,
+      color: 0x111111, emissive: 0x55ddff, emissiveIntensity: 2.4, roughness: 0.3,
     });
     const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.07, 0.05), this.visorMat);
     visor.position.set(0, 0.1, 0.21);
@@ -131,27 +153,29 @@ export class Player {
     this.torso.add(this.armL);
     box(0.17, 0.52, 0.17, plate, 0, -0.3, 0, this.armL);
 
-    // Sword in right hand: emissive blade reads as a light source under bloom
+    // Sword: emissive blade reads as a light source under bloom
     this.sword = new THREE.Group();
     this.sword.position.set(0, -0.56, 0.05);
     this.armR.add(this.sword);
-    this.bladeMat = new THREE.MeshStandardMaterial({
-      color: 0x99ddff,
-      emissive: 0x44ccff,
-      emissiveIntensity: 2.0,
-      roughness: 0.2,
-      metalness: 0.6,
+    const bladeMat = new THREE.MeshStandardMaterial({
+      color: 0x99ddff, emissive: this.bladeColor, emissiveIntensity: 2.0, roughness: 0.2, metalness: 0.6,
     });
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 1.3), this.bladeMat);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 1.3), bladeMat);
     blade.position.z = 0.78;
     this.sword.add(blade);
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.22, 4), this.bladeMat);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.22, 4), bladeMat);
     tip.rotation.x = Math.PI / 2;
     tip.position.z = 1.54;
     this.sword.add(tip);
     const guard = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.08), gold);
     guard.position.z = 0.1;
     this.sword.add(guard);
+    // Invisible markers for the trail ribbon
+    this.bladeTipMarker = new THREE.Object3D();
+    this.bladeTipMarker.position.z = 1.6;
+    this.bladeBaseMarker = new THREE.Object3D();
+    this.bladeBaseMarker.position.z = 0.35;
+    this.sword.add(this.bladeTipMarker, this.bladeBaseMarker);
 
     // Hips + legs
     box(0.5, 0.24, 0.36, plateDark, 0, 0.62, 0);
@@ -164,25 +188,18 @@ export class Player {
     this.body.add(this.legL);
     box(0.19, 0.52, 0.22, cloth, 0, -0.28, 0, this.legL);
 
-    // Cape
-    const capeMat = new THREE.MeshStandardMaterial({
-      color: 0x3a1020,
-      roughness: 0.9,
-      side: THREE.DoubleSide,
-    });
-    this.cape = new THREE.Mesh(new THREE.PlaneGeometry(0.66, 0.95), capeMat);
-    this.cape.geometry.translate(0, -0.475, 0);
+    // Cape (cosmetic color)
+    const capeMat = new THREE.MeshStandardMaterial({ color: capeColor, roughness: 0.9, side: THREE.DoubleSide });
+    const capeGeo = new THREE.PlaneGeometry(0.66, 0.95);
+    capeGeo.translate(0, -0.475, 0);
+    this.cape = new THREE.Mesh(capeGeo, capeMat);
     this.cape.position.set(0, 0.42, -0.24);
     this.cape.castShadow = true;
     this.torso.add(this.cape);
 
     // Tempo aura ring at the feet
     this.auraMat = new THREE.MeshBasicMaterial({
-      color: 0x3df59a,
-      transparent: true,
-      opacity: 0.55,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      color: 0x3df59a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const auraGeo = new THREE.RingGeometry(0.55, 0.72, 40);
     auraGeo.rotateX(-Math.PI / 2);
@@ -196,26 +213,16 @@ export class Player {
 
     // Shield bubble (hidden unless shielded)
     this.shieldMat = new THREE.MeshBasicMaterial({
-      color: 0x66bbff,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.BackSide,
+      color: 0x66bbff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide,
     });
     this.shieldBubble = new THREE.Mesh(new THREE.SphereGeometry(1.2, 20, 14), this.shieldMat);
     this.shieldBubble.position.y = 1.0;
     this.root.add(this.shieldBubble);
 
-    // Crash nova range preview — shown only while crash is ready (tempo ≥85)
-    // so the 6m blast radius is never a guess. Counter-scaled against root.
+    // Crash nova range preview — counter-scaled against root
     this.crashRing = new THREE.Group();
     this.crashRingMat = new THREE.MeshBasicMaterial({
-      color: 0xff4252,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      color: 0xff4252, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.crashFillMat = this.crashRingMat.clone();
     const crashOutlineGeo = new THREE.RingGeometry(5.82, 6.0, 72);
@@ -228,23 +235,23 @@ export class Player {
     this.crashRing.visible = false;
     this.crashRing.scale.setScalar(1 / 1.12);
     this.root.add(this.crashRing);
-
-    ctx.stage.scene.add(this.root);
   }
 
   flashHit(): void {
     this.hitFlash = 1;
   }
 
+  /** World-space blade ribbon anchor points (tip, base) for the trail. */
+  getBladePoints(tip: THREE.Vector3, base: THREE.Vector3): void {
+    this.bladeTipMarker.getWorldPosition(tip);
+    this.bladeBaseMarker.getWorldPosition(base);
+  }
+
   /** Spawn translucent afterimage of the hero — dodge ghosts. */
   spawnGhost(): void {
     const ghost = this.body.clone(true);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x55ddff,
-      transparent: true,
-      opacity: 0.35,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      color: this.bladeColor, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     ghost.traverse((o) => {
       if (o instanceof THREE.Mesh) {
@@ -253,7 +260,7 @@ export class Player {
       }
     });
     ghost.position.copy(this.pos);
-    ghost.position.y += 0.55 - 0.55;
+    ghost.scale.multiplyScalar(1.12);
     ghost.rotation.y = this.root.rotation.y;
     this.ctx.stage.scene.add(ghost);
     const start = performance.now();
@@ -311,6 +318,7 @@ export class Player {
     // Shield bubble
     const shieldTarget = this.shield > 0 ? 0.16 : 0;
     this.shieldMat.opacity = damp(this.shieldMat.opacity, shieldTarget, 10, dt);
+    this.shieldBubble.visible = this.shieldMat.opacity > 0.01;
     this.shieldBubble.rotation.y += dt * 0.8;
 
     // ---- Pose layering: dodge > swing > locomotion

@@ -101,7 +101,30 @@ export class Combat {
       return "dodged";
     }
 
-    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult()));
+    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult() * player.hero.dmgTakenMult));
+
+    // Riposte stance: negate the hit and answer with a nova
+    if (this.ctx.caster.riposteActive) {
+      this.ctx.caster.consumeRiposte();
+      for (const e of this.ctx.enemies.living()) {
+        const dx = e.pos.x - player.pos.x;
+        const dz = e.pos.z - player.pos.z;
+        if (Math.hypot(dx, dz) < 4 + e.radius) {
+          this.dealDamage(e, 25, { kbX: dx, kbZ: dz, kb: 7, heavy: true });
+        }
+      }
+      tempo.gain(10);
+      this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 4, color: 0xffe066, duration: 0.45 });
+      this.ctx.fx.burst({
+        x: player.pos.x, y: 1.1, z: player.pos.z,
+        count: 26, color: [0xffe066, 0xffffff],
+        speed: [4, 10], up: 0.5, size: [0.4, 0.8], life: [0.25, 0.5], gravity: -3, drag: 3,
+      });
+      this.ctx.floaters.spawn(player.pos.x, 2.0, player.pos.z, "RIPOSTE", "tempo");
+      this.ctx.sfx.crash();
+      this.ctx.cam.addTrauma(0.25);
+      return "shielded";
+    }
 
     // Shield soaks first
     if (player.shield > 0) {
@@ -118,11 +141,29 @@ export class Combat {
       return "shielded";
     }
 
+    // Second Wind: a lethal hit leaves you at 1 HP, once per run
+    if (player.hp - dmg <= 0 && this.ctx.relics.consumeSecondWind()) {
+      player.hp = 1;
+      stats.damageTaken += dmg;
+      this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 5, color: 0x7dffb0, duration: 0.7 });
+      this.ctx.fx.burst({
+        x: player.pos.x, y: 1, z: player.pos.z,
+        count: 36, color: [0x7dffb0, 0xffffff],
+        speed: [3, 9], up: 0.8, size: [0.4, 0.9], life: [0.3, 0.7], gravity: -2, drag: 3,
+      });
+      this.ctx.floaters.spawn(player.pos.x, 2.2, player.pos.z, "SECOND WIND", "heal");
+      this.ctx.stage.punch(0.6);
+      this.ctx.sfx.coldCrash();
+      events.emit("PLAYER_HIT", { dmg });
+      return "hit";
+    }
+
     player.hp = Math.max(0, player.hp - dmg);
     stats.damageTaken += dmg;
     player.flashHit();
     tempo.drain(10);
     events.emit("PLAYER_HIT", { dmg });
+    this.ctx.relics.onDamageTaken(srcX, srcZ);
 
     const dx = player.pos.x - srcX;
     const dz = player.pos.z - srcZ;
@@ -197,7 +238,7 @@ export class Combat {
   private comboTempoPayout(hits: number): void {
     if (hits <= 0) return;
     const idx = hits >= 5 ? 3 : hits >= 3 ? 2 : hits - 1;
-    this.ctx.tempo.gain(COMBO_TEMPO[idx]);
+    this.ctx.tempo.gain(Math.round(COMBO_TEMPO[idx] * this.ctx.player.hero.comboTempoMult));
     this.ctx.events.emit("COMBO_HIT", { count: hits });
   }
 
@@ -229,6 +270,7 @@ export class Combat {
     this.ctx.cam.pulseFov(1);
     this.ctx.stage.punch(0.5);
     this.ctx.sfx.crash();
+    this.ctx.relics.onCrash();
   }
 
   private coldCrash(): void {
@@ -288,7 +330,11 @@ export class Combat {
       if (!this.struck && phase >= STRIKE_POINT) {
         this.struck = true;
         this.swingHits = 0;
-        const hits = this.meleeSweep(player.facing, stage.arc, stage.range, stage.dmg, stage.kb, stage.heavy);
+        const hero = player.hero;
+        const hits = this.meleeSweep(
+          player.facing, stage.arc, stage.range,
+          stage.dmg * hero.meleeDmgMult, stage.kb * hero.kbMult, stage.heavy
+        );
         this.comboTempoPayout(hits);
         this.spawnSlashArc(stage);
         this.ctx.sfx.swing(this.stageIdx, hits > 0);
@@ -356,7 +402,7 @@ export class Combat {
     // Flattened sector spans planar angles [0, width] from local +X; center it on facing.
     s.mesh.rotation.set(-0.12, p.facing - Math.PI / 2 - width / 2, 0);
     s.mat.opacity = 0.7;
-    s.mat.color.set(stage.heavy ? 0xffcc66 : 0x88eeff);
+    s.mat.color.set(stage.heavy ? 0xffcc66 : this.ctx.player.bladeColor);
     s.mesh.scale.setScalar(1);
   }
 }

@@ -14,11 +14,14 @@ page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
 
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
-await page.locator("button", { hasText: "Begin Run" }).click();
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
+await page.waitForTimeout(700);
+await page.locator(".hero-card").first().click();
 await page.waitForTimeout(2500);
 
-// Jump to the elite chamber (room 1) and clear it
-await page.evaluate(() => window.__rh3.run.loadRoom(1));
+// Jump to the elite chamber (room 2) and clear it
+await page.evaluate(() => window.__rh3.run.loadRoom(2));
 for (let tries = 0; tries < 16; tries++) {
   const state = await page.evaluate(() => {
     const c = window.__rh3;

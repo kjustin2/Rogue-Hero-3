@@ -34,6 +34,11 @@ export const CARDS: CardDef[] = [
   { id: "gravity-well", name: "Gravity Well", desc: "Drag the pack into one point, then pop it.", cooldown: 9, color: "#b08fff", glow: 0xb08fff, icon: "◉", rarity: "rare", tempo: 6 },
   { id: "ward-pulse", name: "Ward Pulse", desc: "Mend 12 HP and hurl everything near you away.", cooldown: 14, color: "#8fffc8", glow: 0x8fffc8, icon: "✚", rarity: "uncommon", tempo: 0 },
   { id: "ember-wave", name: "Ember Wave", desc: "A cone of fire that keeps burning after it lands.", cooldown: 8, color: "#ffb35f", glow: 0xffb35f, icon: "✺", rarity: "uncommon", tempo: 7 },
+  // --- Expansion II
+  { id: "blade-cyclone", name: "Blade Cyclone", desc: "Become the storm — three spinning shockwaves around you.", cooldown: 8, color: "#7fe8d8", glow: 0x7fe8d8, icon: "❋", rarity: "uncommon", tempo: 7 },
+  { id: "riposte", name: "Riposte", desc: "Take a stance. The next hit is denied — and answered.", cooldown: 12, color: "#ffe066", glow: 0xffe066, icon: "⌖", rarity: "rare", tempo: 0 },
+  { id: "tempo-theft", name: "Tempo Theft", desc: "Rip the rhythm out of the nearest foe. Damage and heat.", cooldown: 7, color: "#c98fff", glow: 0xc98fff, icon: "♬", rarity: "uncommon", tempo: 12 },
+  { id: "starfall", name: "Starfall", desc: "Five shards of sky rain down around the cursor.", cooldown: 10, color: "#9fb8ff", glow: 0x9fb8ff, icon: "✧", rarity: "rare", tempo: 8 },
 ];
 
 export const STARTING_HAND = ["dash-strike", "arc-bolt"];
@@ -77,6 +82,10 @@ interface Meteor {
   z: number;
   timer: number;
   pulseAcc: number;
+  r: number;
+  dmg: number;
+  /** Starfall shards skip the warning pulses. */
+  quiet?: boolean;
 }
 
 interface SunderPulse {
@@ -106,6 +115,16 @@ export class CardCaster {
   private conduitTimer = 0;
   /** Re-entrancy latch: conduit sparks must never trigger more sparks. */
   private sparking = false;
+  private cycloneTimers: number[] = [];
+  private riposteTimer = 0;
+
+  get riposteActive(): boolean {
+    return this.riposteTimer > 0;
+  }
+
+  consumeRiposte(): void {
+    this.riposteTimer = 0;
+  }
 
   constructor(private ctx: Ctx) {
     ctx.events.on("ENEMY_HIT", ({ x, z, killed }) => {
@@ -359,7 +378,7 @@ export class CardCaster {
         const tz = player.pos.z + nz * dist;
         // Friendly mark — fx ring, not the enemy-threat telegraph language
         fx.ring(tx, tz, { radius: 3.2, color: 0xff8a4d, duration: 0.9 });
-        this.meteors.push({ x: tx, z: tz, timer: 0.9, pulseAcc: 0 });
+        this.meteors.push({ x: tx, z: tz, timer: 0.9, pulseAcc: 0, r: 3.2, dmg: 30 });
         return true;
       }
 
@@ -461,6 +480,61 @@ export class CardCaster {
         this.ctx.stage.punch(0.12);
         return true;
       }
+
+      case "blade-cyclone": {
+        this.cycloneTimers.push(0.05, 0.25, 0.45);
+        this.fakeSwing = 0;
+        this.ctx.cam.pulseFov(0.5);
+        return true;
+      }
+
+      case "riposte": {
+        this.riposteTimer = 2.5;
+        fx.ring(player.pos.x, player.pos.z, { radius: 1.6, color: 0xffe066, duration: 0.4 });
+        this.ctx.floaters.spawn(player.pos.x, 2.0, player.pos.z, "EN GARDE", "label");
+        return true;
+      }
+
+      case "tempo-theft": {
+        let best: Enemy | null = null;
+        let bestD = 9;
+        for (const e of enemies.living()) {
+          const d = Math.hypot(e.pos.x - player.pos.x, e.pos.z - player.pos.z);
+          if (d < bestD) {
+            bestD = d;
+            best = e;
+          }
+        }
+        if (!best) return false; // nothing to steal from
+        combat.dealDamage(best, 12, { kbX: best.pos.x - player.pos.x, kbZ: best.pos.z - player.pos.z, kb: 3 });
+        this.lightningVisual([{ x: best.pos.x, z: best.pos.z }, { x: player.pos.x, z: player.pos.z }]);
+        fx.burst({
+          x: player.pos.x, y: 1.4, z: player.pos.z,
+          count: 14, color: 0xc98fff, speed: [1, 4], up: 1.0, size: [0.3, 0.6], life: [0.25, 0.5], gravity: 0, drag: 2,
+        });
+        return true;
+      }
+
+      case "starfall": {
+        const dx = aim.x - player.pos.x;
+        const dz = aim.z - player.pos.z;
+        const len = Math.hypot(dx, dz);
+        const dist = Math.min(12, len);
+        const nx = len > 0.01 ? dx / len : Math.sin(player.facing);
+        const nz = len > 0.01 ? dz / len : Math.cos(player.facing);
+        const cx = player.pos.x + nx * dist;
+        const cz = player.pos.z + nz * dist;
+        fx.ring(cx, cz, { radius: 3.5, color: 0x9fb8ff, duration: 0.6 });
+        for (let i = 0; i < 5; i++) {
+          const a = this.ctx.rng.range(0, Math.PI * 2);
+          const r = this.ctx.rng.range(0, 3.2);
+          this.meteors.push({
+            x: cx + Math.sin(a) * r, z: cz + Math.cos(a) * r,
+            timer: 0.45 + i * 0.16, pulseAcc: 99, r: 1.6, dmg: 10, quiet: true,
+          });
+        }
+        return true;
+      }
     }
     return false;
   }
@@ -560,6 +634,8 @@ export class CardCaster {
     this.bleeds = [];
     this.meteors = [];
     this.pulses = [];
+    this.cycloneTimers = [];
+    this.riposteTimer = 0;
     this.conduitTimer = 0;
     this.aegisTimer = 0;
     this.ctx.player.shield = 0;
@@ -613,34 +689,66 @@ export class CardCaster {
       }
     }
 
-    // Meteors
+    // Meteors (Meteor Call + Starfall shards)
     for (let i = this.meteors.length - 1; i >= 0; i--) {
       const m = this.meteors[i];
       m.timer -= dt;
-      m.pulseAcc -= dt;
-      if (m.pulseAcc <= 0 && m.timer > 0.15) {
-        m.pulseAcc = 0.3;
-        this.ctx.fx.ring(m.x, m.z, { radius: 3.2, color: 0xff8a4d, duration: 0.28 });
+      if (!m.quiet) {
+        m.pulseAcc -= dt;
+        if (m.pulseAcc <= 0 && m.timer > 0.15) {
+          m.pulseAcc = 0.3;
+          this.ctx.fx.ring(m.x, m.z, { radius: m.r, color: 0xff8a4d, duration: 0.28 });
+        }
       }
       if (m.timer > 0) continue;
       this.meteors.splice(i, 1);
-      const R = 3.2;
+      const big = m.r > 2;
       this.ctx.fx.burst({
         x: m.x, y: 1.2, z: m.z,
-        count: 50, color: [0xff8a4d, 0xffcc66, 0xffffff],
-        speed: [4, 14], up: 0.9, size: [0.5, 1.2], life: [0.3, 0.8], gravity: -7, drag: 2.3,
+        count: big ? 50 : 18, color: big ? [0xff8a4d, 0xffcc66, 0xffffff] : [0x9fb8ff, 0xffffff],
+        speed: [4, big ? 14 : 9], up: 0.9, size: [0.5, big ? 1.2 : 0.8], life: [0.3, 0.7], gravity: -7, drag: 2.3,
       });
-      this.ctx.fx.ring(m.x, m.z, { radius: R, color: 0xff8a4d, duration: 0.5 });
-      this.ctx.fx.ring(m.x, m.z, { radius: R * 0.55, color: 0xffffff, duration: 0.35 });
-      this.ctx.cam.addTrauma(0.35);
-      this.ctx.stage.punch(0.2);
+      this.ctx.fx.ring(m.x, m.z, { radius: m.r, color: big ? 0xff8a4d : 0x9fb8ff, duration: 0.45 });
+      if (big) this.ctx.fx.ring(m.x, m.z, { radius: m.r * 0.55, color: 0xffffff, duration: 0.35 });
+      this.ctx.cam.addTrauma(big ? 0.35 : 0.12);
+      if (big) this.ctx.stage.punch(0.2);
       this.ctx.sfx.explosion();
       for (const e of this.ctx.enemies.living()) {
         const dx = e.pos.x - m.x;
         const dz = e.pos.z - m.z;
-        if (Math.hypot(dx, dz) < R + e.radius) {
-          this.ctx.combat.dealDamage(e, 30, { kbX: dx, kbZ: dz, kb: 8, heavy: true, countCombo: true });
+        if (Math.hypot(dx, dz) < m.r + e.radius) {
+          this.ctx.combat.dealDamage(e, m.dmg, { kbX: dx, kbZ: dz, kb: big ? 8 : 3, heavy: big, countCombo: true });
         }
+      }
+    }
+
+    // Blade Cyclone pulses (centered on the player as they move)
+    for (let i = this.cycloneTimers.length - 1; i >= 0; i--) {
+      this.cycloneTimers[i] -= dt;
+      if (this.cycloneTimers[i] > 0) continue;
+      this.cycloneTimers.splice(i, 1);
+      const p = this.ctx.player;
+      this.ctx.combat.slashVisual(Math.PI * 2, 3.2, false);
+      this.ctx.fx.ring(p.pos.x, p.pos.z, { radius: 3.2, color: 0x7fe8d8, duration: 0.3 });
+      this.ctx.sfx.swing(2, true);
+      for (const e of this.ctx.enemies.living()) {
+        const dx = e.pos.x - p.pos.x;
+        const dz = e.pos.z - p.pos.z;
+        if (Math.hypot(dx, dz) < 3.2 + e.radius) {
+          this.ctx.combat.dealDamage(e, 8, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
+        }
+      }
+    }
+
+    // Riposte stance: golden shimmer while armed
+    if (this.riposteTimer > 0) {
+      this.riposteTimer -= dt;
+      if (Math.random() < dt * 10) {
+        const p = this.ctx.player;
+        this.ctx.fx.burst({
+          x: p.pos.x, y: 1.0, z: p.pos.z, count: 1, color: 0xffe066,
+          speed: [0.5, 1.5], up: 1.3, size: [0.25, 0.5], life: [0.25, 0.45], gravity: 0, drag: 2, jitter: 0.5,
+        });
       }
     }
 

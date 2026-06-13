@@ -14,7 +14,10 @@ page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
 
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
-await page.locator("button", { hasText: "Begin Run" }).click();
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
+await page.waitForTimeout(700);
+await page.locator(".hero-card").first().click();
 await page.waitForTimeout(2500);
 
 // The smoke player never dodges — keep them alive through the captures
@@ -56,8 +59,8 @@ const boss = async (room, tag, phaseDmg) => {
   await godmode();
 };
 
-await boss(5, "spire", 160);
-await boss(8, "colossus", 230);
+await boss(7, "spire", 160);
+await boss(11, "colossus", 230);
 
 console.log(errors.length ? `CONSOLE ERRORS (${errors.length}):\n` + errors.slice(0, 10).join("\n") : "NO CONSOLE ERRORS");
 await browser.close();

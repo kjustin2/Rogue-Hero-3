@@ -77,9 +77,9 @@ export class CameraRig {
     this.smoothed.x = damp(this.smoothed.x, desired.x, 7, dt);
     this.smoothed.z = damp(this.smoothed.z, desired.z, 7, dt);
 
-    // Kick spring
+    // Kick spring (no per-frame allocation)
     this.kickVel.multiplyScalar(Math.exp(-9 * dt));
-    this.kickOffset.add(this.kickVel.clone().multiplyScalar(dt));
+    this.kickOffset.addScaledVector(this.kickVel, dt);
     this.kickOffset.multiplyScalar(Math.exp(-7 * dt));
 
     // Trauma shake (perlin-ish via incommensurate sines)

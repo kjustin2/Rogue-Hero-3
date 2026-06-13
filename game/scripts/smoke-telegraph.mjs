@@ -14,13 +14,16 @@ page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
 
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
-await page.locator("button", { hasText: "Begin Run" }).click();
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
+await page.waitForTimeout(700);
+await page.locator(".hero-card").first().click();
 await page.waitForTimeout(2500);
 
 // Sentinel room — kill everything else so only the sentinel acts
 await page.evaluate(() => {
   const c = window.__rh3;
-  c.run.loadRoom(3);
+  c.run.loadRoom(2);
 });
 await page.waitForTimeout(2200);
 await page.evaluate(() => {
@@ -34,7 +37,7 @@ for (let i = 0; i < 4; i++) {
 }
 
 // Boss room — wait through spawn + first dash tell
-await page.evaluate(() => window.__rh3.run.loadRoom(4));
+await page.evaluate(() => window.__rh3.run.loadRoom(3));
 await page.waitForTimeout(3000);
 for (let i = 0; i < 5; i++) {
   await page.waitForTimeout(650);

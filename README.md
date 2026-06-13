@@ -2,8 +2,9 @@
 
 Single-player 3D action roguelike. **Three.js** + Vite + strict TypeScript,
 fully procedural art and audio (zero asset files), ships as an Electron
-desktop app. Three acts, three bosses, sixteen cards, eleven relics, and
-persistent milestone progression.
+desktop app. Three playable heroes, three acts of twelve chambers, three
+bosses, twenty cards, sixteen relics, chamber save points, and a rift-shard
+economy with an Armory of cosmetics.
 
 ## Layout
 
@@ -58,14 +59,23 @@ node scripts/smoke-flow.mjs         # full loop: draft → boss → victory/deat
 
 ## Content
 
-- **Run:** 3 acts × 3 chambers (combat → elite → boss), linear with reward variety —
-  combat clears draft **cards**, elite clears draft **relics**, act bosses fully heal
+- **Heroes:** The Blade (balanced duelist), The Bulwark (slow juggernaut, 145 HP),
+  The Sparkmage (fragile caster, fast cooldowns) — distinct stats, passives, starting
+  hands, and palettes; two unlock by defeating act bosses
+- **Run:** 3 acts × 4 chambers (combat → combat → elite → boss), some chambers with
+  blocking pillar layouts (cover for you, walls for bullets) — combat clears draft
+  **cards**, elite clears draft **relics**, act bosses fully heal
+- **Save points:** every chamber boundary auto-checkpoints; Continue Run from the menu
 - **Acts:** The Ember Rift → The Shattered Spire (jade glass pillars) → The Molten Core
-  (slag fields) — each with its own palette, edge silhouettes, and enemy roster
+  (slag fields) — each with its own palette, aurora, edge silhouettes, and roster
 - **Bosses:** The Pit Warden (dash brawler) · The Spire Caster (mirror-echo lances) ·
   The Colossus (rooted titan, tectonic ring slams with safe lanes)
 - **Tempo system:** 0–100 flow meter; hot = faster + harder hits; crash it at 85+ for a nova
-- **16 cards**, **11 relics**, **10 enemy types** — every attack telegraphed
-- **Meta-progression:** milestone unlocks (new cards/relics earned by playing), lifetime
-  stats, and run history on the main-menu PROGRESS screen (localStorage)
-- **Presentation:** ACES + bloom post chain, trauma camera, procedural Web Audio SFX
+- **20 cards**, **16 relics**, **12 enemy types** — every attack telegraphed
+- **Shards & Armory:** kills/clears/bosses pay rift shards; spend them on cape colors
+  and blade energy (tints sword, trail, slashes, dodge ghosts)
+- **Meta-progression:** 21 milestone unlocks (heroes, cards, relics), lifetime stats,
+  and run history on the main-menu PROGRESS screen (localStorage)
+- **Presentation:** ACES + bloom + color-grade post chain, sword ribbon trails, spawn
+  light beams, act-colored auroras, trauma camera, procedural Web Audio SFX
+- **Quality presets:** Low / Medium / High in Settings (resolution, shadows, post effects)

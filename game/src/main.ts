@@ -5,9 +5,11 @@ import "@fontsource/rajdhani/600.css";
 import "@fontsource/rajdhani/700.css";
 import "./style.css";
 
+import * as THREE from "three";
 import { Stage } from "./render/stage";
 import { CameraRig } from "./render/cameraRig";
 import { Particles } from "./render/particles";
+import { SwordTrail } from "./render/trail";
 import { Telegraphs } from "./render/telegraphs";
 import { Floaters } from "./render/floaters";
 import { Arena, THEMES } from "./render/arena";
@@ -24,7 +26,9 @@ import { EnemyManager } from "./game/enemies";
 import "./game/enemies2"; // registers the Act II/III roster
 import { ROMAN, ROOMS } from "./game/run";
 import { Relics } from "./game/relics";
-import { Profile } from "./game/profile";
+import { Profile, loadRunSave, writeRunSave, clearRunSave, type RunSave } from "./game/profile";
+import { heroById, type HeroDef } from "./game/heroes";
+import { cardById } from "./game/cards";
 import { Deck } from "./game/deck";
 import { CardCaster } from "./game/cards";
 import { RunManager } from "./game/run";
@@ -44,6 +48,7 @@ ctx.events = new EventBus();
 ctx.rng = new Rng();
 ctx.input = new Input(canvas);
 ctx.fx = new Particles(ctx.stage.scene);
+ctx.trail = new SwordTrail(ctx.stage.scene);
 ctx.tele = new Telegraphs(ctx.stage.scene);
 ctx.floaters = new Floaters(ctx.stage.camera);
 ctx.arena = new Arena(ctx.stage);
@@ -69,11 +74,13 @@ const hud = new Hud(ctx);
 let state: GameState = "menu";
 
 const menus = new Menus(ctx, {
-  onStartRun: startRun,
+  onStartRun: (hero) => startRun(hero),
+  onContinueRun: continueRun,
   onResume: resume,
   onAbandon: abandonRun,
-  onRetry: startRun,
+  onRetry: () => startRun(ctx.player.hero),
   onMenu: toMenu,
+  hasSave: () => loadRunSave() !== null,
 });
 menus.applySettings();
 
@@ -87,11 +94,12 @@ window.addEventListener("pointerdown", unlock);
 window.addEventListener("keydown", unlock);
 
 // ---------------------------------------------------------------- state flow
-function startRun(): void {
+function startRun(hero: HeroDef, resume?: RunSave): void {
   menus.clear();
   ctx.sfx.stopAmbient();
-  ctx.stats = freshStats();
-  ctx.player.hp = ctx.player.maxHp;
+  ctx.stats = resume ? resume.stats : freshStats();
+  ctx.player.applyHero(hero, ctx.profile.data.equipped.cape, ctx.profile.data.equipped.blade);
+  ctx.profile.setLastHero(hero.id);
   ctx.player.alive = true;
   ctx.player.shield = 0;
   ctx.player.root.visible = true;
@@ -99,14 +107,52 @@ function startRun(): void {
   ctx.deck.resetForRun();
   ctx.relics.resetForRun();
   ctx.profile.beginRun();
-  ctx.run.startRun();
+  if (resume) {
+    resume.slots.forEach((id, i) => (ctx.deck.slots[i] = id ? cardById(id) : null));
+    ctx.relics.restore(resume.relics);
+    ctx.run.loadRoom(resume.roomIndex);
+    ctx.player.hp = Math.max(1, Math.min(ctx.player.maxHp, resume.hp));
+  } else {
+    clearRunSave();
+    ctx.player.hp = ctx.player.maxHp;
+    ctx.run.startRun();
+  }
   ctx.cam.mode = "follow";
   hud.setVisible(true);
   state = "playing";
   ctx.input.enabled = true;
 }
 
+function continueRun(): void {
+  const save = loadRunSave();
+  if (!save) {
+    menus.showMain();
+    return;
+  }
+  startRun(heroById(save.hero), save);
+}
+
+/** Save point: written at every chamber boundary. */
+function checkpoint(nextIndex: number): void {
+  writeRunSave({
+    v: 1,
+    roomIndex: nextIndex,
+    hero: ctx.player.hero.id,
+    hp: ctx.player.hp,
+    slots: ctx.deck.slots.map((s) => s?.id ?? null),
+    relics: ctx.relics.owned.map((r) => r.id),
+    stats: ctx.stats,
+  });
+}
+
+/** Shards: the run's earnings, banked into the profile at run end. */
+function awardShards(n: number): void {
+  const m = ctx.relics.has("lucky-coin") ? Math.round(n * 1.5) : n;
+  ctx.stats.shards += m;
+}
+
 function abandonRun(): void {
+  clearRunSave();
   ctx.profile.recordRun("abandon", ctx.stats);
   toMenu();
 }
@@ -140,13 +186,17 @@ function resume(): void {
   state = "playing";
 }
 
+ctx.events.on("KILL", () => awardShards(1));
+
 ctx.events.on("ROOM_CLEARED", ({ reward }) => {
   hud.fadeHints();
+  awardShards(6);
   window.setTimeout(() => {
     if (state !== "playing") return;
     const done = () => {
       menus.clear();
       state = "playing";
+      checkpoint(ctx.run.roomIndex + 1);
       ctx.run.nextRoom();
     };
     if (reward === "relic") {
@@ -155,6 +205,7 @@ ctx.events.on("ROOM_CLEARED", ({ reward }) => {
         // Maxed out — quiet consolation heal, straight to the next chamber
         ctx.player.hp = Math.min(ctx.player.maxHp, ctx.player.hp + 10);
         ctx.events.emit("HEAL", { amount: 10 });
+        checkpoint(ctx.run.roomIndex + 1);
         ctx.run.nextRoom();
         return;
       }
@@ -168,6 +219,7 @@ ctx.events.on("ROOM_CLEARED", ({ reward }) => {
 });
 
 ctx.events.on("BOSS_DEFEATED", () => {
+  awardShards(20);
   // Bank the milestone immediately — dying later can't take it back
   ctx.profile.noteBossKill(ROOMS[ctx.run.roomIndex].act, ctx.stats);
 });
@@ -188,6 +240,8 @@ ctx.events.on("HEAL", ({ amount }) => {
 ctx.events.on("RUN_VICTORY", () => {
   ctx.sfx.victory();
   ctx.cam.addTrauma(0.4);
+  awardShards(60);
+  clearRunSave();
   const unlocks = ctx.profile.recordRun("victory", ctx.stats);
   window.setTimeout(() => {
     state = "victory";
@@ -202,6 +256,7 @@ ctx.events.on("PLAYER_DIED", () => {
   ctx.cam.addTrauma(0.7);
   ctx.stage.punch(1);
   ctx.sfx.defeat();
+  clearRunSave();
   const unlocks = ctx.profile.recordRun("death", ctx.stats);
   window.setTimeout(() => {
     state = "dead";
@@ -220,6 +275,8 @@ window.addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- frame loop
 let last = performance.now();
+const trailTip = new THREE.Vector3();
+const trailBase = new THREE.Vector3();
 
 ctx.stage.renderer.setAnimationLoop(() => {
   const now = performance.now();
@@ -241,6 +298,10 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.hostiles.update(dt);
     ctx.run.update();
     ctx.player.update(dt);
+    // Sword ribbon while the blade is actually moving
+    ctx.player.getBladePoints(trailTip, trailBase);
+    ctx.trail.setColor(ctx.player.bladeColor);
+    ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging);
     hud.update();
   } else if (state === "draft" || state === "paused") {
     // World idles but the hero still breathes

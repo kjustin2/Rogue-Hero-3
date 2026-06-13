@@ -27,6 +27,12 @@ export const RELICS: RelicDef[] = [
   { id: "berserker-sigil", name: "Berserker Sigil", desc: "Crashing resets tempo to 65 instead of 50.", icon: "𐍈", color: "#ff4252", rarity: "rare" },
   { id: "adrenal-surge", name: "Adrenal Surge", desc: "Perfect dodges refund 1.5s on every card cooldown.", icon: "⚯", color: "#66ffee", rarity: "rare" },
   { id: "bulwark-idol", name: "Bulwark Idol", desc: "Begin each chamber with a 10-point shield.", icon: "⛨", color: "#7fc8ff", rarity: "common" },
+  // Expansion II
+  { id: "glass-cannon", name: "Glass Cannon", desc: "Deal 25% more damage. Take 25% more damage.", icon: "◇", color: "#ffd8e8", rarity: "rare" },
+  { id: "second-wind", name: "Second Wind", desc: "Once per run, survive a lethal hit at 1 HP.", icon: "♥", color: "#7dffb0", rarity: "rare" },
+  { id: "lucky-coin", name: "Lucky Coin", desc: "Earn 50% more rift shards.", icon: "◆", color: "#ffc266", rarity: "common" },
+  { id: "resonant-bell", name: "Resonant Bell", desc: "Crashing also resets every card cooldown.", icon: "♪", color: "#c9a8ff", rarity: "rare" },
+  { id: "thorn-plate", name: "Thorn Plate", desc: "Enemies that hurt you up close take 6 damage back.", icon: "✶", color: "#ff9a5f", rarity: "common" },
 ];
 
 export function relicById(id: string): RelicDef {
@@ -44,6 +50,7 @@ export function relicById(id: string): RelicDef {
 export class Relics {
   owned: RelicDef[] = [];
   private killCounter = 0;
+  private secondWindUsed = false;
 
   constructor(private ctx: Ctx) {
     ctx.events.on("KILL", () => {
@@ -81,6 +88,21 @@ export class Relics {
   resetForRun(): void {
     this.owned = [];
     this.killCounter = 0;
+    this.secondWindUsed = false;
+  }
+
+  /** Quietly restore a saved loadout (no pickup events/chimes). */
+  restore(ids: string[]): void {
+    this.owned = ids.map(relicById);
+    this.killCounter = 0;
+    this.secondWindUsed = false;
+  }
+
+  /** Second Wind: true exactly once per run, when held. */
+  consumeSecondWind(): boolean {
+    if (this.secondWindUsed || !this.has("second-wind")) return false;
+    this.secondWindUsed = true;
+    return true;
   }
 
   /** Un-owned (and, once the profile lands, unlocked) relics — up to 3. May be fewer. */
@@ -93,13 +115,43 @@ export class Relics {
   damageDealtMult(e: Enemy): number {
     let m = 1;
     if (e.frozen > 0 && this.has("frost-chord")) m *= 1.3;
+    if (this.has("glass-cannon")) m *= 1.25;
     return m;
   }
 
   damageTakenMult(): number {
     const p = this.ctx.player;
-    if (this.has("ironclad") && p.hp < p.maxHp * 0.3) return 0.75;
-    return 1;
+    let m = 1;
+    if (this.has("ironclad") && p.hp < p.maxHp * 0.3) m *= 0.75;
+    if (this.has("glass-cannon")) m *= 1.25;
+    return m;
+  }
+
+  /** After the player takes a real hit: Thorn Plate bites back at close attackers. */
+  onDamageTaken(srcX: number, srcZ: number): void {
+    if (!this.has("thorn-plate")) return;
+    const p = this.ctx.player;
+    if (Math.hypot(srcX - p.pos.x, srcZ - p.pos.z) > 3.2) return;
+    let best: Enemy | null = null;
+    let bestD = 3.2;
+    for (const e of this.ctx.enemies.living()) {
+      const d = Math.hypot(e.pos.x - srcX, e.pos.z - srcZ);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    if (best) {
+      this.ctx.combat.dealDamage(best, 6, { kbX: best.pos.x - p.pos.x, kbZ: best.pos.z - p.pos.z, kb: 2 });
+    }
+  }
+
+  /** After a crash nova fires. */
+  onCrash(): void {
+    if (this.has("resonant-bell")) {
+      this.ctx.deck.reduceCooldowns(99);
+      this.ctx.floaters.spawn(this.ctx.player.pos.x, 2.4, this.ctx.player.pos.z, "RESONANCE", "tempo");
+    }
   }
 
   tempoDecayMult(value: number): number {

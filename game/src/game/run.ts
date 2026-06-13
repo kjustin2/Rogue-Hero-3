@@ -20,6 +20,8 @@ export interface RoomDef {
   elite?: boolean;
   bossKind?: BossKind;
   reward: "card" | "relic";
+  /** Blocking pillars — cover for the player, walls for bullets. */
+  obstacles?: { x: number; z: number; r: number }[];
 }
 
 interface BossEntry {
@@ -36,42 +38,72 @@ export const BOSSES: Record<BossKind, BossEntry> = {
 
 export const ROMAN = ["I", "II", "III"];
 
-/** 3 acts × (combat → elite → boss). Combat clears draft cards, elites draft relics. */
+/** 3 acts × (combat → combat → elite → boss). Combat clears draft cards, elites draft relics. */
 export const ROOMS: RoomDef[] = [
+  // --- Act I
   { name: "The Threshold", theme: "rift", act: 1, actName: "THE EMBER RIFT", waves: [], reward: "card" },
+  {
+    name: "The Shattered Court", theme: "rift", act: 1, actName: "THE EMBER RIFT", waves: [], reward: "card",
+    obstacles: [{ x: -6, z: -3, r: 1.2 }, { x: 6, z: -3, r: 1.2 }, { x: 0, z: 6, r: 1.5 }],
+  },
   { name: "Ember Crossing", theme: "dusk", act: 1, actName: "THE EMBER RIFT", waves: [], elite: true, reward: "relic" },
   { name: "The Pit", theme: "ember", act: 1, actName: "THE EMBER RIFT", waves: [], bossKind: "warden", reward: "card" },
+  // --- Act II
   { name: "Glass Causeway", theme: "spire", act: 2, actName: "THE SHATTERED SPIRE", waves: [], reward: "card" },
+  {
+    name: "The Prism Fields", theme: "spire", act: 2, actName: "THE SHATTERED SPIRE", waves: [], reward: "card",
+    obstacles: [{ x: -8, z: 2, r: 1.3 }, { x: 8, z: 2, r: 1.3 }, { x: -4, z: -8, r: 1.1 }, { x: 4, z: -8, r: 1.1 }],
+  },
   { name: "The Mirror Gallery", theme: "spire", act: 2, actName: "THE SHATTERED SPIRE", waves: [], elite: true, reward: "relic" },
   { name: "The Spire Crown", theme: "tempest", act: 2, actName: "THE SHATTERED SPIRE", waves: [], bossKind: "spire", reward: "card" },
+  // --- Act III
   { name: "The Slag Fields", theme: "forge", act: 3, actName: "THE MOLTEN CORE", waves: [], reward: "card" },
+  {
+    name: "The Cinder Maze", theme: "forge", act: 3, actName: "THE MOLTEN CORE", waves: [], reward: "card",
+    obstacles: [
+      { x: 0, z: 0, r: 1.6 }, { x: -9, z: -5, r: 1.2 }, { x: 9, z: -5, r: 1.2 },
+      { x: -7, z: 8, r: 1.1 }, { x: 7, z: 8, r: 1.1 },
+    ],
+  },
   { name: "Furnace Approach", theme: "forge", act: 3, actName: "THE MOLTEN CORE", waves: [], elite: true, reward: "relic" },
   { name: "The Core", theme: "core", act: 3, actName: "THE MOLTEN CORE", waves: [], bossKind: "colossus", reward: "card" },
 ];
 // Wave tables (kept out of the literals so the room list reads at a glance).
-// Act I — the original roster, gentle ramp.
+// Act I — gentle ramp.
 ROOMS[0].waves = [[["husk", 3]], [["husk", 2], ["spitter", 1]]];
 ROOMS[1].waves = [
+  [["spitter", 2], ["swarmer", 3]],
+  [["husk", 2], ["bomber", 1], ["spitter", 1]],
+];
+ROOMS[2].waves = [
   [["swarmer", 4], ["bomber", 1]],
   [["sentinel", 1, "elite"], ["husk", 2], ["spitter", 1]],
 ];
-// Act II — glass spire roster (wisp/tether/leaper/mirror land with enemies2).
-ROOMS[3].waves = [
+// Act II — glass spire roster; shades and bastions enter.
+ROOMS[4].waves = [
   [["wisp", 3], ["husk", 2]],
   [["tether", 2], ["swarmer", 3]],
 ];
-ROOMS[4].waves = [
+ROOMS[5].waves = [
+  [["bastion", 1], ["wisp", 2], ["shade", 1]],
+  [["shade", 2], ["tether", 2]],
+];
+ROOMS[6].waves = [
   [["leaper", 2], ["wisp", 2]],
   [["mirror", 1, "elite"], ["tether", 2], ["wisp", 2]],
 ];
 // Act III — forge roster, everything bites.
-ROOMS[6].waves = [
+ROOMS[8].waves = [
   [["leaper", 3], ["bomber", 2]],
   [["caster", 2], ["swarmer", 4]],
 ];
-ROOMS[7].waves = [
+ROOMS[9].waves = [
+  [["bastion", 2], ["caster", 1], ["shade", 1]],
+  [["shade", 2], ["leaper", 2], ["wisp", 2]],
+];
+ROOMS[10].waves = [
   [["caster", 1, "elite"], ["mirror", 1], ["leaper", 2]],
-  [["sentinel", 1], ["caster", 1], ["tether", 2], ["swarmer", 3]],
+  [["bastion", 1, "elite"], ["caster", 1], ["tether", 2], ["swarmer", 3]],
 ];
 
 /** Elite anchors: a normal enemy scaled into a chunkier, slower threat. */
@@ -153,6 +185,7 @@ export class RunManager {
 
     const room = ROOMS[index];
     ctx.arena.applyTheme(THEMES[room.theme]);
+    ctx.arena.setObstacles(room.obstacles ?? [], THEMES[room.theme].crystal);
     ctx.fx.ambientColor = THEMES[room.theme].ember;
     ctx.fx.ambientRate = room.bossKind ? 14 : 7;
     ctx.stats.actReached = Math.max(ctx.stats.actReached, room.act);
@@ -186,12 +219,13 @@ export class RunManager {
         // Ring placement, kept away from the player
         let x = 0;
         let z = 0;
-        for (let attempt = 0; attempt < 12; attempt++) {
+        for (let attempt = 0; attempt < 16; attempt++) {
           const a = ctx.rng.range(0, Math.PI * 2);
           const r = ctx.rng.range(5, ARENA_RADIUS - 3);
           x = Math.sin(a) * r;
           z = Math.cos(a) * r;
-          if (Math.hypot(x - p.x, z - p.z) > 7) break;
+          const clearOfPillars = ctx.arena.obstacles.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + 1.2);
+          if (Math.hypot(x - p.x, z - p.z) > 7 && clearOfPillars) break;
         }
         const delay = 0.8 + ctx.rng.range(0, 0.6);
         if (eliteFlag === "elite") {

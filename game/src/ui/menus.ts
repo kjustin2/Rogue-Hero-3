@@ -1,14 +1,17 @@
 import type { Ctx, RunStats } from "../game/ctx";
 import type { CardDef } from "../game/cards";
 import type { RelicDef } from "../game/relics";
-import { CARDS } from "../game/cards";
+import { CARDS, cardById } from "../game/cards";
 import { RELICS } from "../game/relics";
+import { HEROES, type HeroDef } from "../game/heroes";
+import { COSMETICS } from "../game/cosmetics";
 import { ROMAN } from "../game/run";
 import type { UnlockedItem } from "../game/profile";
 
 export interface Settings {
   volume: number;
   shake: number;
+  quality: "low" | "medium" | "high";
 }
 
 const SETTINGS_KEY = "rh3v2-settings";
@@ -16,17 +19,19 @@ const SETTINGS_KEY = "rh3v2-settings";
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { volume: 0.7, shake: 1, ...JSON.parse(raw) };
+    if (raw) return { volume: 0.7, shake: 1, quality: "high", ...JSON.parse(raw) };
   } catch { /* fall through */ }
-  return { volume: 0.7, shake: 1 };
+  return { volume: 0.7, shake: 1, quality: "high" };
 }
 
 export interface MenuCallbacks {
-  onStartRun(): void;
+  onStartRun(hero: HeroDef): void;
+  onContinueRun(): void;
   onResume(): void;
   onAbandon(): void;
   onRetry(): void;
   onMenu(): void;
+  hasSave(): boolean;
 }
 
 /**
@@ -46,6 +51,7 @@ export class Menus {
   applySettings(): void {
     this.ctx.sfx.setVolume(this.settings.volume);
     this.ctx.cam.shakeScale = this.settings.shake;
+    this.ctx.stage.applyQuality(this.settings.quality);
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
     } catch { /* private mode */ }
@@ -81,14 +87,17 @@ export class Menus {
     const unlockedCount = p.unlocks.length;
     const totalCount = CARDS.length + RELICS.length;
     const strip = p.runs > 0
-      ? `WINS ${p.wins} &nbsp;·&nbsp; RUNS ${p.runs} &nbsp;·&nbsp; FURTHEST: ACT ${ROMAN[Math.max(0, p.furthestAct - 1)]} &nbsp;·&nbsp; ARSENAL ${unlockedCount}/${totalCount}`
+      ? `WINS ${p.wins} &nbsp;·&nbsp; RUNS ${p.runs} &nbsp;·&nbsp; FURTHEST: ACT ${ROMAN[Math.max(0, p.furthestAct - 1)]} &nbsp;·&nbsp; ARSENAL ${unlockedCount}/${totalCount} &nbsp;·&nbsp; ◆ ${p.shards}`
       : `THE RIFT AWAITS ITS FIRST CHALLENGER`;
+    const hasSave = this.cb.hasSave();
     s.innerHTML = `
       <div class="title">ROGUE<br>HERO</div>
       <div class="title-rule"><span class="subtitle">III &nbsp;·&nbsp; The Ember Rift</span></div>
       <div class="menu-strip">${strip}</div>
       <div class="menu-buttons">
-        <button class="btn btn--primary" data-act="start">Begin Run</button>
+        ${hasSave ? '<button class="btn btn--primary" data-act="continue">Continue Run</button>' : ""}
+        <button class="btn${hasSave ? "" : " btn--primary"}" data-act="start">${hasSave ? "New Run" : "Begin Run"}</button>
+        <button class="btn" data-act="armory">Armory</button>
         <button class="btn" data-act="progress">Progress</button>
         <button class="btn" data-act="howto">How to Play</button>
         <button class="btn" data-act="settings">Settings</button>
@@ -96,10 +105,116 @@ export class Menus {
       <div class="menu-footer">THREE ACTS &nbsp;·&nbsp; FORGED IN THE RIFT</div>
     `;
     this.wireButtons(s);
-    s.querySelector('[data-act="start"]')!.addEventListener("click", () => this.cb.onStartRun());
+    s.querySelector('[data-act="continue"]')?.addEventListener("click", () => this.cb.onContinueRun());
+    s.querySelector('[data-act="start"]')!.addEventListener("click", () => this.showHeroSelect());
+    s.querySelector('[data-act="armory"]')!.addEventListener("click", () => this.showArmory(() => this.showMain()));
     s.querySelector('[data-act="progress"]')!.addEventListener("click", () => this.showProgress(() => this.showMain()));
     s.querySelector('[data-act="howto"]')!.addEventListener("click", () => this.showHowTo(() => this.showMain()));
     s.querySelector('[data-act="settings"]')!.addEventListener("click", () => this.showSettings(() => this.showMain()));
+  }
+
+  // ---------------------------------------------------------------- hero select
+  showHeroSelect(): void {
+    const s = this.screen();
+    s.innerHTML = `
+      <div class="draft-title">CHOOSE YOUR HERO</div>
+      <div class="draft-sub">EACH FIGHTS THE RIFT THEIR OWN WAY</div>
+      <div class="hero-row"></div>
+      <button class="draft-skip">BACK</button>
+    `;
+    const row = s.querySelector(".hero-row")!;
+    const bars = (n: number) =>
+      Array.from({ length: 5 }, (_, i) => `<span class="hbar${i < n ? " hbar--on" : ""}"></span>`).join("");
+
+    for (const hero of HEROES) {
+      const unlocked = this.ctx.profile.isUnlocked(`hero:${hero.id}`);
+      const el = document.createElement("div");
+      el.className = `hero-card${unlocked ? "" : " hero-card--locked"}`;
+      el.style.setProperty("--accent", hero.color);
+      const handIcons = hero.startingHand.map((id) => {
+        const c = cardById(id);
+        return `<span class="hero-hand__icon" style="--accent:${c.color}" title="${c.name}">${c.icon}</span>`;
+      }).join("");
+      el.innerHTML = unlocked
+        ? `
+          <div class="hero-card__icon">${hero.icon}</div>
+          <div class="hero-card__name">${hero.name}</div>
+          <div class="hero-card__title">${hero.title}</div>
+          <div class="hero-card__desc">${hero.desc}</div>
+          <div class="hero-stats">
+            <div class="hero-stat"><span>VIT</span>${bars(hero.bars.vitality)}</div>
+            <div class="hero-stat"><span>SPD</span>${bars(hero.bars.speed)}</div>
+            <div class="hero-stat"><span>PWR</span>${bars(hero.bars.power)}</div>
+          </div>
+          <div class="hero-passive"><b>${hero.passiveName}</b> — ${hero.passiveDesc}</div>
+          <div class="hero-hand">${handIcons}</div>`
+        : `
+          <div class="hero-card__icon">🔒</div>
+          <div class="hero-card__name">???</div>
+          <div class="hero-card__title">${hero.title}</div>
+          <div class="hero-card__desc hero-card__desc--hint">${this.ctx.profile.unlockHintFor(`hero:${hero.id}`)}</div>`;
+      if (unlocked) {
+        el.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
+        el.addEventListener("click", () => {
+          this.ctx.events.emit("UI_CLICK", {});
+          this.cb.onStartRun(hero);
+        });
+      }
+      row.appendChild(el);
+    }
+    this.wireButtons(s);
+    s.querySelector(".draft-skip")!.addEventListener("click", () => this.showMain());
+  }
+
+  // ---------------------------------------------------------------- armory
+  showArmory(back: () => void): void {
+    const s = this.screen();
+    const p = this.ctx.profile;
+    const section = (slot: "cape" | "blade") =>
+      COSMETICS.filter((c) => c.slot === slot).map((c) => {
+        const owned = p.ownsCosmetic(c.id);
+        const equipped = p.data.equipped[slot] === c.id;
+        const hex = `#${c.color.toString(16).padStart(6, "0")}`;
+        return `
+          <div class="shop-item${equipped ? " shop-item--equipped" : ""}${owned ? " shop-item--owned" : ""}" data-id="${c.id}" data-slot="${slot}" data-price="${c.price}">
+            <div class="shop-item__swatch" style="--swatch:${hex}"></div>
+            <div class="shop-item__name">${c.name}</div>
+            <div class="shop-item__state">${equipped ? "EQUIPPED" : owned ? "OWNED" : `◆ ${c.price}`}</div>
+          </div>`;
+      }).join("");
+
+    s.innerHTML = `
+      <div class="panel panel--progress">
+        <h2>ARMORY</h2>
+        <div class="armory-shards">◆ <b>${p.data.shards}</b> RIFT SHARDS — earned by slaying, clearing, and sealing</div>
+        <h3 class="prog-h3">CAPES</h3>
+        <div class="shop-grid">${section("cape")}</div>
+        <h3 class="prog-h3">BLADE ENERGY</h3>
+        <div class="shop-grid">${section("blade")}</div>
+        <button class="btn">Back</button>
+      </div>
+    `;
+    this.wireButtons(s);
+    s.querySelectorAll<HTMLElement>(".shop-item").forEach((item) => {
+      item.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
+      item.addEventListener("click", () => {
+        const id = item.dataset.id!;
+        const slot = item.dataset.slot as "cape" | "blade";
+        const price = parseInt(item.dataset.price!, 10);
+        if (p.ownsCosmetic(id)) {
+          p.equipCosmetic(slot, id);
+          this.ctx.events.emit("UI_CLICK", {});
+        } else if (p.buyCosmetic(id, price)) {
+          p.equipCosmetic(slot, id);
+          this.ctx.sfx.relicPickup();
+        } else {
+          this.ctx.sfx.deny();
+          return;
+        }
+        this.showArmory(back);
+      });
+    });
+    s.querySelector(".btn")!.addEventListener("click", back);
   }
 
   // ---------------------------------------------------------------- progress
@@ -108,7 +223,7 @@ export class Menus {
     const p = this.ctx.profile.data;
     const mins = (t: number) => `${Math.floor(t / 60)}:${Math.floor(t % 60).toString().padStart(2, "0")}`;
 
-    const gridItem = (kind: "card" | "relic", def: CardDef | RelicDef): string => {
+    const gridItem = (kind: "card" | "relic" | "hero", def: { id: string; icon: string; name: string; color: string }): string => {
       const key = `${kind}:${def.id}`;
       const unlocked = this.ctx.profile.isUnlocked(key);
       const hint = unlocked ? def.name : this.ctx.profile.unlockHintFor(key);
@@ -144,6 +259,8 @@ export class Menus {
           <div class="stat"><div class="stat__value">${p.bestTime !== null ? mins(p.bestTime) : "—"}</div><div class="stat__label">Best Clear</div></div>
           <div class="stat"><div class="stat__value">${ROMAN[Math.max(0, p.furthestAct - 1)]}</div><div class="stat__label">Furthest Act</div></div>
         </div>
+        <h3 class="prog-h3">HEROES</h3>
+        <div class="prog-grid">${HEROES.map((h) => gridItem("hero", h)).join("")}</div>
         <h3 class="prog-h3">CARDS</h3>
         <div class="prog-grid">${CARDS.map((c) => gridItem("card", c)).join("")}</div>
         <h3 class="prog-h3">RELICS</h3>
@@ -194,6 +311,14 @@ export class Menus {
           <span>SCREEN SHAKE</span>
           <input type="range" min="0" max="1.5" step="0.1" value="${this.settings.shake}" data-set="shake">
         </div>
+        <div class="setting-row">
+          <span>GRAPHICS QUALITY</span>
+          <div class="quality-row">
+            ${(["low", "medium", "high"] as const).map((q) =>
+              `<button class="qbtn${this.settings.quality === q ? " qbtn--on" : ""}" data-q="${q}">${q.toUpperCase()}</button>`
+            ).join("")}
+          </div>
+        </div>
         <button class="btn">Back</button>
       </div>
     `;
@@ -203,6 +328,13 @@ export class Menus {
         if (inp.dataset.set === "volume") this.settings.volume = parseFloat(inp.value);
         if (inp.dataset.set === "shake") this.settings.shake = parseFloat(inp.value);
         this.applySettings();
+      });
+    });
+    s.querySelectorAll<HTMLButtonElement>(".qbtn").forEach((b) => {
+      b.addEventListener("click", () => {
+        this.settings.quality = b.dataset.q as Settings["quality"];
+        this.applySettings();
+        this.showSettings(back);
       });
     });
     s.querySelector(".btn")!.addEventListener("click", back);

@@ -21,6 +21,24 @@ interface Shot {
   color: number;
 }
 
+let glowTexture: THREE.CanvasTexture | null = null;
+
+/** Shared radial-falloff sprite texture for projectile glows. */
+function getGlowTexture(): THREE.CanvasTexture {
+  if (glowTexture) return glowTexture;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 64;
+  const g = cv.getContext("2d")!;
+  const grad = g.createRadialGradient(32, 32, 2, 32, 32, 32);
+  grad.addColorStop(0, "rgba(255,255,255,0.9)");
+  grad.addColorStop(0.35, "rgba(255,255,255,0.32)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  glowTexture = new THREE.CanvasTexture(cv);
+  return glowTexture;
+}
+
 function makePool(scene: THREE.Scene, count: number): Shot[] {
   const geo = new THREE.SphereGeometry(1, 10, 8);
   const pool: Shot[] = [];
@@ -34,6 +52,14 @@ function makePool(scene: THREE.Scene, count: number): Shot[] {
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.visible = false;
+    // Soft halo around the core — makes every bullet read as a light source
+    const glowMat = new THREE.SpriteMaterial({
+      map: getGlowTexture(), color: 0xffffff, transparent: true, opacity: 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const glow = new THREE.Sprite(glowMat);
+    glow.scale.setScalar(7);
+    mesh.add(glow);
     scene.add(mesh);
     pool.push({
       active: false, mesh, mat,
@@ -73,6 +99,8 @@ function fire(pool: Shot[], x: number, z: number, angle: number, opts: ShotOpts)
   s.trailAcc = 0;
   s.color = opts.color;
   s.mat.color.set(opts.color);
+  const glow = s.mesh.children[0] as THREE.Sprite | undefined;
+  if (glow) (glow.material as THREE.SpriteMaterial).color.set(opts.color);
   s.mesh.visible = true;
   s.mesh.position.set(x, s.y, z);
   // Stretch along travel direction for motion read
@@ -96,6 +124,18 @@ function stepShot(s: Shot, dt: number, ctx: Ctx): boolean {
   }
   const r = Math.hypot(s.x, s.z);
   if (s.traveled > s.range || r > ARENA_RADIUS + 4) return false;
+  // Pillars stop bullets (cover is real)
+  for (const o of ctx.arena.obstacles) {
+    const dx = s.x - o.x;
+    const dz = s.z - o.z;
+    if (dx * dx + dz * dz < (o.r + s.radius) * (o.r + s.radius)) {
+      ctx.fx.burst({
+        x: s.x, y: s.y, z: s.z, count: 6, color: s.color,
+        speed: [1, 5], up: 0.5, size: [0.25, 0.5], life: [0.15, 0.3], gravity: -3, drag: 3,
+      });
+      return false;
+    }
+  }
   return true;
 }
 

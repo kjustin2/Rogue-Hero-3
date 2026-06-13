@@ -24,10 +24,13 @@ await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(2500);
 await page.screenshot({ path: join(OUT, "1-menu.png") });
 
-// Start a run
-const begin = page.locator("button", { hasText: "Begin Run" });
+// Start a run (Begin Run → hero select → pick The Blade)
+await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+const begin = page.locator("button", { hasText: /Begin Run|New Run/ });
 if (await begin.count()) {
   await begin.click();
+  await page.waitForTimeout(700);
+  await page.locator(".hero-card").first().click();
   await page.waitForTimeout(3500); // act card + spawn-in
   await page.screenshot({ path: join(OUT, "2-gameplay.png") });
 

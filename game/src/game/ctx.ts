@@ -1,6 +1,7 @@
 import type { Stage } from "../render/stage";
 import type { CameraRig } from "../render/cameraRig";
 import type { Particles } from "../render/particles";
+import type { SwordTrail } from "../render/trail";
 import type { Telegraphs } from "../render/telegraphs";
 import type { Floaters } from "../render/floaters";
 import type { Arena } from "../render/arena";
@@ -30,12 +31,14 @@ export interface RunStats {
   bestStreak: number;
   crashes: number;
   actReached: number;
+  /** Rift shards earned this run (banked into the profile at run end). */
+  shards: number;
 }
 
 export function freshStats(): RunStats {
   return {
     kills: 0, damageDealt: 0, damageTaken: 0, perfectDodges: 0,
-    roomsCleared: 0, time: 0, bestStreak: 0, crashes: 0, actReached: 1,
+    roomsCleared: 0, time: 0, bestStreak: 0, crashes: 0, actReached: 1, shards: 0,
   };
 }
 
@@ -48,6 +51,7 @@ export interface Ctx {
   stage: Stage;
   cam: CameraRig;
   fx: Particles;
+  trail: SwordTrail;
   tele: Telegraphs;
   floaters: Floaters;
   arena: Arena;

@@ -1,5 +1,5 @@
 import type { Ctx } from "./ctx";
-import { CARDS, STARTING_HAND, cardById, type CardDef } from "./cards";
+import { CARDS, cardById, type CardDef } from "./cards";
 
 export const HAND_SIZE = 3;
 
@@ -17,7 +17,7 @@ export class Deck {
   resetForRun(): void {
     this.slots = [null, null, null];
     this.cooldowns = [0, 0, 0];
-    STARTING_HAND.forEach((id, i) => (this.slots[i] = cardById(id)));
+    this.ctx.player.hero.startingHand.forEach((id, i) => (this.slots[i] = cardById(id)));
   }
 
   get hasEmptySlot(): boolean {
@@ -59,7 +59,7 @@ export class Deck {
       return;
     }
     if (this.ctx.caster.cast(card)) {
-      this.cooldowns[slot] = card.cooldown * this.ctx.relics.cooldownMult(card);
+      this.cooldowns[slot] = card.cooldown * this.ctx.relics.cooldownMult(card) * this.ctx.player.hero.cooldownMult;
     } else {
       this.ctx.events.emit("CARD_FAIL", { slot });
       this.ctx.sfx.deny();
