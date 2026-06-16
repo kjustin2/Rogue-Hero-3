@@ -20,6 +20,29 @@ export const ZONES: ZoneDef[] = [
 
 export const CRASH_THRESHOLD = 85;
 
+// Default zone palette (cyan→green→orange→red) is hard for red-green colorblindness;
+// the alternate ramp (blue→ice→amber→magenta) keeps hue AND brightness distinct.
+const ZONE_PALETTE = {
+  default: [
+    { color: 0x4488ff, css: "#4f8dff" },
+    { color: 0x44ff88, css: "#3df59a" },
+    { color: 0xff8822, css: "#ffa028" },
+    { color: 0xff3344, css: "#ff4252" },
+  ],
+  colorblind: [
+    { color: 0x2f7dff, css: "#3a8dff" },
+    { color: 0x9fd8ff, css: "#a6dcff" },
+    { color: 0xffd23a, css: "#ffd23a" },
+    { color: 0xff5ce0, css: "#ff5ce0" },
+  ],
+};
+
+/** Swap the tempo-zone palette for the colorblind-safe ramp (mutates ZONES in place). */
+export function setTempoPalette(colorblind: boolean): void {
+  const pal = colorblind ? ZONE_PALETTE.colorblind : ZONE_PALETTE.default;
+  ZONES.forEach((z, i) => { z.color = pal[i].color; z.css = pal[i].css; });
+}
+
 /**
  * The signature mechanic: a 0–100 flow meter that drifts back toward its
  * resting point. Aggression pushes it hot (more damage, more speed); passivity
@@ -35,8 +58,27 @@ export class Tempo {
   private zoneIdx = 1;
   /** Injected by main.ts — relics scale (or zero out) the drift rate. */
   decayScale: (value: number) => number = () => 1;
+  /** Ascension: >1 makes tempo bleed back toward rest faster (harder to hold heat). */
+  drainMult = 1;
+  /** Hero identity: <1 holds heat longer (e.g. Tempest surfs the rhythm). Set at run start. */
+  heroDecayMult = 1;
+
+  // Crescendo: sustaining the Critical zone stacks a damage bonus (max 3), reset on cooling.
+  private crescendoStacks = 0;
+  private crescendoTimer = 0;
+  private static CRESCENDO_STEP = 2.6;
 
   constructor(private events: EventBus) {}
+
+  /** 0–3 — how long Critical has been held. */
+  get crescendo(): number {
+    return this.crescendoStacks;
+  }
+
+  /** Damage multiplier from the current Crescendo (1.0 → 1.36 at 3 stacks). */
+  get crescendoMult(): number {
+    return 1 + this.crescendoStacks * 0.12;
+  }
 
   get zone(): ZoneDef {
     return ZONES[this.zoneIdx];
@@ -86,18 +128,36 @@ export class Tempo {
   }
 
   update(dt: number): void {
+    this.updateCrescendo(dt);
     if (this.sustainTimer > 0) {
       this.sustainTimer -= dt;
       return;
     }
     if (Math.abs(this.value - this.resting) < 0.01) return;
-    const rate = this.decayRate * this.decayScale(this.value);
-    if (rate <= 0) return;
     const dir = this.value > this.resting ? -1 : 1;
+    // Ascension's drainMult + the hero's identity both scale the cool-DOWN from heat (not cold recovery).
+    const rate = this.decayRate * this.decayScale(this.value) * (dir === -1 ? this.drainMult * this.heroDecayMult : 1);
+    if (rate <= 0) return;
     this.value = clamp(this.value + dir * rate * dt, 0, 100);
     // Don't overshoot the resting point
     if (dir === -1 && this.value < this.resting) this.value = this.resting;
     if (dir === 1 && this.value > this.resting) this.value = this.resting;
     this.refreshZone();
+  }
+
+  /** Build Crescendo while held at Critical; drop it the moment heat cools. */
+  private updateCrescendo(dt: number): void {
+    if (this.zone.zone === "critical") {
+      this.crescendoTimer += dt;
+      if (this.crescendoStacks < 3 && this.crescendoTimer >= Tempo.CRESCENDO_STEP) {
+        this.crescendoTimer = 0;
+        this.crescendoStacks++;
+        this.events.emit("CRESCENDO", { stacks: this.crescendoStacks });
+      }
+    } else if (this.crescendoStacks > 0 || this.crescendoTimer > 0) {
+      this.crescendoStacks = 0;
+      this.crescendoTimer = 0;
+      this.events.emit("CRESCENDO", { stacks: 0 });
+    }
   }
 }

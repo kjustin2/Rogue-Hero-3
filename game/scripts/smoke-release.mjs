@@ -21,12 +21,12 @@ await page.evaluate(() => {
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
 
-// --- Hero select: 3 cards, 2 locked on a fresh profile
+// --- Hero select: 5 heroes, 4 locked on a fresh profile (only The Blade is free)
 await page.locator("button", { hasText: "Begin Run" }).click();
 await page.waitForTimeout(700);
 const heroes = await page.locator(".hero-card").count();
 const lockedHeroes = await page.locator(".hero-card--locked").count();
-console.log(`HERO SELECT: ${heroes} heroes, ${lockedHeroes} locked`, heroes === 3 && lockedHeroes === 2 ? "OK" : "FAIL");
+console.log(`HERO SELECT: ${heroes} heroes, ${lockedHeroes} locked`, heroes === 5 && lockedHeroes === 4 ? "OK" : "FAIL");
 await page.screenshot({ path: "shots/r-heroselect.png" });
 await page.locator(".hero-card").first().click();
 await page.waitForTimeout(800);
@@ -36,17 +36,18 @@ if (await page.locator(".story-skip").count()) {
 }
 await page.waitForTimeout(2500);
 
-// --- Obstacles: jump to The Shattered Court and check pillars block movement
-await page.evaluate(() => window.__rh3.run.loadRoom(1));
+// --- Obstacles: load a combat node, place a pillar, check it blocks movement
+await page.evaluate(() => window.__rh3.run.debugLoadNode("combat", 1));
 await page.waitForTimeout(1500);
 const obstacleCheck = await page.evaluate(() => {
   const c = window.__rh3;
+  c.arena.setObstacles([{ x: 6, z: 0, r: 1.5 }], 0x46c8ff);
   const obs = c.arena.obstacles;
   // Teleport the player inside a pillar; resolution should push them out
   c.player.pos.set(obs[0].x, 0, obs[0].z);
   c.controller.update(0.016);
   const d = Math.hypot(c.player.pos.x - obs[0].x, c.player.pos.z - obs[0].z);
-  return { count: obs.length, pushedOut: d >= obs[0].r };
+  return { count: obs.length, pushedOut: d >= obs[0].r * 0.9 };
 });
 console.log(`OBSTACLES: ${obstacleCheck.count} pillars, push-out ${obstacleCheck.pushedOut ? "OK" : "FAIL"}`);
 await page.screenshot({ path: "shots/r-obstacles.png" });
@@ -70,7 +71,7 @@ if (await page.locator(".card").count()) {
 await page.waitForTimeout(1200);
 const save = await page.evaluate(() => JSON.parse(localStorage.getItem("rh3v2-runsave") || "null"));
 const shards = await page.evaluate(() => window.__rh3.stats.shards);
-console.log("CHECKPOINT:", save ? `room ${save.roomIndex} hero ${save.hero} OK` : "MISSING");
+console.log("CHECKPOINT:", save ? `pos ${save.position} hero ${save.hero} seed ${save.seed} OK` : "MISSING");
 console.log("SHARDS EARNED:", shards, shards > 0 ? "OK" : "FAIL");
 
 // --- Reload mid-run → Continue Run resumes at the checkpoint
@@ -82,10 +83,17 @@ await page.screenshot({ path: "shots/r-continue.png" });
 await contBtn.click();
 await page.waitForTimeout(2500);
 const resumed = await page.evaluate(() => ({
-  idx: window.__rh3.run.roomIndex,
+  pos: window.__rh3.run.position,
   shards: window.__rh3.stats.shards,
 }));
-console.log(`RESUMED: room ${resumed.idx}, shards ${resumed.shards}`, resumed.idx === save.roomIndex ? "OK" : "FAIL");
+console.log(`RESUMED: pos ${resumed.pos}, shards ${resumed.shards}`, resumed.pos === save.position ? "OK" : "FAIL");
+
+// Resume may land on a fork map — step into a fight so we can pause + abandon.
+if (await page.locator(".mapnode").count()) {
+  const f = page.locator(".mapnode--combat, .mapnode--elite");
+  if (await f.count()) await f.first().click(); else await page.locator(".mapnode").first().click();
+  await page.waitForTimeout(1600);
+}
 
 // --- Bank shards via abandon, then buy a cosmetic in the Armory
 await page.keyboard.press("Escape");

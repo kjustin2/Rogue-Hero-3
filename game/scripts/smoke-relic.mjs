@@ -25,8 +25,8 @@ if (await page.locator(".story-skip").count()) {
 }
 await page.waitForTimeout(2500);
 
-// Jump to the elite chamber (room 2) and clear it
-await page.evaluate(() => window.__rh3.run.loadRoom(2));
+// Jump to an elite node and clear it (elite → relic draft)
+await page.evaluate(() => window.__rh3.run.debugLoadNode("elite", 1));
 for (let tries = 0; tries < 16; tries++) {
   const state = await page.evaluate(() => {
     const c = window.__rh3;

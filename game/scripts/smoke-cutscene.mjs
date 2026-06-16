@@ -28,7 +28,7 @@ await page.locator(".story-skip").click();
 await page.waitForTimeout(2200);
 
 // Jump to the Act I boss — entrance cutscene
-await page.evaluate(() => window.__rh3.run.loadRoom(3));
+await page.evaluate(() => window.__rh3.run.debugLoadNode("boss", 1));
 await page.waitForTimeout(1300);
 await page.screenshot({ path: "shots/c-boss-dolly.png" });
 const letterboxOn = await page.evaluate(
@@ -46,9 +46,9 @@ await page.screenshot({ path: "shots/c-boss-fight.png" });
 await page.evaluate(() => {
   const c = window.__rh3;
   c.player.hp = c.player.maxHp;
-  c.run.loadRoom(7);
+  c.run.debugLoadNode("boss", 2);
 });
-await page.waitForTimeout(600);
+await page.waitForTimeout(850); // past the skip-grace window
 await page.mouse.click(800, 450);
 await page.waitForTimeout(400);
 const skipped = await page.evaluate(() => !document.querySelector(".letterbox--top").classList.contains("letterbox--on"));

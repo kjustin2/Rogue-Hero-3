@@ -39,30 +39,43 @@ if (await page.locator(".story-skip").count()) {
   await page.waitForTimeout(600);
 }
 await page.waitForTimeout(2500);
-const N = await page.evaluate(() => window.__rh3.run.totalRooms);
-for (let room = 0; room < N; room++) {
-  let st = null;
-  for (let tries = 0; tries < 16; tries++) {
-    st = await page.evaluate(() => {
-      const c = window.__rh3;
-      for (const e of c.enemies.living()) e.takeDamage(99999);
-      return c.run.state;
-    });
-    if (st !== "fighting") break;
-    await page.waitForTimeout(450);
-  }
-  if (st === "victory") break;
-  await page.waitForTimeout(1900);
-  if (await page.locator(".card").count()) {
-    await page.locator(".card").first().click();
-    await page.waitForTimeout(450);
+// Navigate the forked map to victory (always take a fight).
+let victory = false;
+for (let step = 0; step < 420 && !victory; step++) {
+  const st = await page.evaluate(() => {
+    const c = window.__rh3;
+    if (c.run.state === "fighting") for (const e of c.enemies.living()) e.takeDamage(99999);
+    return c.run.state;
+  });
+  if (st === "victory") { victory = true; break; }
+  await page.waitForTimeout(330);
+  if (await page.locator(".story-skip").count()) {
+    await page.locator(".story-skip").click(); await page.waitForTimeout(350); // act-transition cutscene
+  } else if (await page.locator(".mapnode").count()) {
+    const f = page.locator(".mapnode--combat, .mapnode--elite");
+    if (await f.count()) await f.first().click(); else await page.locator(".mapnode").first().click();
+    await page.waitForTimeout(400);
+  } else if (await page.locator("button", { hasText: "Leave the Shop" }).count()) {
+    await page.locator("button", { hasText: "Leave the Shop" }).click(); await page.waitForTimeout(350);
+  } else if (await page.locator("button", { hasText: "Move On" }).count()) {
+    await page.locator("button", { hasText: "Move On" }).click(); await page.waitForTimeout(350);
+  } else if (await page.locator(".card").count()) {
+    await page.locator(".card").first().click(); await page.waitForTimeout(300);
     if (await page.locator(".card").count()) await page.locator(".card").first().click();
+    await page.waitForTimeout(300);
   } else if (await page.locator(".draft-skip").count()) {
-    await page.locator(".draft-skip").click();
+    await page.locator(".draft-skip").click(); await page.waitForTimeout(300);
+  } else if (await page.locator(".panel .menu-buttons .btn").count()) {
+    await page.locator(".panel .menu-buttons .btn").first().click(); await page.waitForTimeout(300);
   }
-  await page.waitForTimeout(2800);
 }
-await page.waitForTimeout(3500);
+// Skip the bittersweet ending cutscene, then read the end screen.
+for (let i = 0; i < 40; i++) {
+  if (await page.locator(".story-skip").count()) { await page.locator(".story-skip").click(); }
+  if (await page.locator(".end-title--victory").count()) break;
+  await page.waitForTimeout(400);
+}
+await page.waitForTimeout(500);
 const toasts = await page.locator(".unlock-toast").count();
 console.log("UNLOCK TOASTS ON VICTORY:", toasts, toasts > 0 ? "OK" : "FAIL");
 await page.screenshot({ path: "shots/meta-victory.png" });
@@ -80,7 +93,7 @@ await page.locator("button", { hasText: "Progress" }).click();
 await page.waitForTimeout(700);
 const items = await page.locator(".prog-item").count();
 const lockedItems = await page.locator(".prog-item--locked").count();
-console.log(`PROGRESS GRID: ${items} items (${lockedItems} locked)`, items === 39 ? "OK" : "CHECK");
+console.log(`PROGRESS GRID: ${items} items (${lockedItems} locked)`, items >= 51 ? "OK" : "CHECK");
 await page.screenshot({ path: "shots/meta-progress.png" });
 
 console.log(errors.length ? `CONSOLE ERRORS:\n` + errors.join("\n") : "NO CONSOLE ERRORS");

@@ -9,7 +9,7 @@ const PHASE_LINES = [
   "ALL LANCES SEEK ONE HEART",
 ];
 
-type SpireState = "idle" | "track" | "channel" | "recover" | "phaseShift";
+type SpireState = "idle" | "track" | "channel" | "recover" | "phaseShift" | "guard";
 
 interface PendingLance {
   x: number;
@@ -35,6 +35,8 @@ interface Beam {
 
 const LANCE_LEN = 18;
 const LANCE_TELL = 0.45;
+/** Shared beam geometry — reused for every lance (no per-shot allocation). */
+const LANCE_GEO = new THREE.BoxGeometry(0.45, 0.45, LANCE_LEN);
 
 /**
  * Act II boss: a kiting glass artillerist. Phase 1 telegraphed hitscan
@@ -47,9 +49,10 @@ export class SpireCaster extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: SpireState = "idle";
-  private timer = 2.0;
-  private attackCd = 2.4;
+  private timer = 1.4;
+  private attackCd = 1.7;
   private lanceCount = 0;
+  private attacksSinceGuard = 0;
   private blinkCd = 0;
   private pending: PendingLance[] = [];
   private echoes: Echo[] = [];
@@ -59,19 +62,28 @@ export class SpireCaster extends Enemy {
   private channelFired = false;
   private orbGroup: THREE.Group;
   private coreMat: THREE.MeshStandardMaterial;
+  private trimMat: THREE.MeshStandardMaterial;
+  private robeMat: THREE.MeshStandardMaterial;
   private playerVel = new THREE.Vector2();
   private lastPlayer = new THREE.Vector2();
   private channelsSinceShift = 0;
+  // Per-phase appearance escalation (built once, revealed on transition).
+  private shardRing: THREE.Group;
+  private p2Shards: THREE.Object3D[] = [];
+  private p3Crown: THREE.Object3D[] = [];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 440;
-    this.speed = 2.7;
+    this.hp = this.maxHp = 1550;
+    this.speed = 3.3;
     this.radius = 1.0;
+    this.wardColor = 0x3effd2;
 
     const robeMat = this.stdMat(0x0c2a24, 0x14705c, 0.7);
     const trimMat = this.stdMat(0x081a16, 0x2affc8, 1.2);
     this.coreMat = this.stdMat(0x06201a, 0x3effd2, 2.4);
+    this.robeMat = robeMat;
+    this.trimMat = trimMat;
 
     const robe = this.addMesh(new THREE.CylinderGeometry(0.35, 1.05, 2.6, 6), robeMat, 0, 1.3);
     robe.castShadow = true;
@@ -89,6 +101,61 @@ export class SpireCaster extends Enemy {
     }
 
     this.lastPlayer.set(ctx.player.pos.x, ctx.player.pos.z);
+
+    // Phase shard-ring orbits the spire's waist; parented to root so dispose() frees it.
+    this.shardRing = new THREE.Group();
+    this.shardRing.position.y = 1.6;
+    this.root.add(this.shardRing);
+    this.buildPhaseLooks();
+  }
+
+  /** Pre-build the escalation geometry hidden until its phase unveils it. */
+  private buildPhaseLooks(): void {
+    // Phase 2: a slow ring of glass shards splits off and orbits the body.
+    const shardMat = this.stdMat(0x0a3a30, 0x2affc8, 1.6);
+    const shardGeo = new THREE.OctahedronGeometry(0.28);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const sh = this.addMesh(shardGeo, shardMat, Math.sin(a) * 1.7, 0, Math.cos(a) * 1.7, this.shardRing);
+      sh.rotation.y = a;
+      sh.visible = false;
+      this.p2Shards.push(sh);
+    }
+
+    // Phase 3: a jagged glass crown of upward lances flares around the head.
+    const crownMat = this.stdMat(0x0a4438, 0xbfffe8, 2.8);
+    const spikeGeo = new THREE.ConeGeometry(0.13, 0.9, 4);
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const sp = this.addMesh(spikeGeo, crownMat, Math.sin(a) * 0.45, 3.35, Math.cos(a) * 0.45);
+      sp.rotation.x = Math.cos(a) * 0.45;
+      sp.rotation.z = -Math.sin(a) * 0.45;
+      sp.visible = false;
+      this.p3Crown.push(sp);
+    }
+  }
+
+  /** Visibly escalate the boss at each phase transition. */
+  private applyPhaseLook(phase: number): void {
+    if (phase === 2) {
+      this.root.scale.setScalar(1.08);
+      for (const s of this.p2Shards) s.visible = true;
+      this.robeMat.emissive.set(0x1aa884);
+      this.robeMat.emissiveIntensity = 1.0;
+      this.trimMat.emissive.set(0x6affe0);
+      this.coreMat.emissive.set(0x8affe8);
+    } else if (phase === 3) {
+      this.root.scale.setScalar(1.15);
+      for (const s of this.p3Crown) s.visible = true;
+      this.robeMat.color.set(0x103a4a);
+      this.trimMat.emissive.set(0xbfffe8);
+      this.trimMat.emissiveIntensity = 1.8;
+      this.coreMat.emissive.set(0xdcffff);
+    }
+    for (const f of this.flashMats) {
+      f.baseEmissive.copy(f.mat.emissive);
+      f.baseIntensity = f.mat.emissiveIntensity;
+    }
   }
 
   protected deathColor(): number {
@@ -110,9 +177,16 @@ export class SpireCaster extends Enemy {
       this.state = "phaseShift";
       this.timer = 1.2;
       this.channelsSinceShift = 0;
+      this.applyPhaseLook(this.phase);
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 8, color: 0x3effd2, duration: 0.7 });
+      this.ctx.fx.burst({
+        x: this.pos.x, y: 2.2, z: this.pos.z,
+        count: 46, color: [0x3effd2, 0xbfffe8, 0xffffff],
+        speed: [4, 12], up: 0.8, size: [0.4, 1.0], life: [0.4, 0.9], gravity: -3, drag: 2.5,
+      });
       this.ctx.cam.addTrauma(0.45);
+      this.ctx.stage.punch(0.3);
       this.ctx.sfx.bossRoar();
       if (this.phase === 2) {
         this.spawnEchoes();
@@ -156,8 +230,7 @@ export class SpireCaster extends Enemy {
     this.echoes = [];
     for (const b of this.beams) {
       this.ctx.stage.scene.remove(b.mesh);
-      b.mesh.geometry.dispose();
-      b.mat.dispose();
+      b.mat.dispose(); // geometry is shared (LANCE_GEO) — never disposed
     }
     this.beams = [];
     this.pending = [];
@@ -207,7 +280,7 @@ export class SpireCaster extends Enemy {
     const mat = new THREE.MeshBasicMaterial({
       color: 0xaaffe8, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
     });
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, LANCE_LEN), mat);
+    const mesh = new THREE.Mesh(LANCE_GEO, mat);
     mesh.position.set(l.x + sx * LANCE_LEN * 0.5, 1.2, l.z + cz * LANCE_LEN * 0.5);
     mesh.rotation.y = l.angle;
     this.ctx.stage.scene.add(mesh);
@@ -266,6 +339,15 @@ export class SpireCaster extends Enemy {
     this.ctx.sfx.beamCharge();
   }
 
+  /** Glass ward: invulnerable behind a shard shell, then a close shard-burst punish. */
+  private beginGuard(): void {
+    this.setInvuln(1.5);
+    this.state = "guard";
+    this.timer = 0.65; // wind-up = telegraph duration
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.4, 0.65, 0x3effd2);
+    this.ctx.sfx.beamCharge();
+  }
+
   // ---------------------------------------------------------------- channel
   private beginChannel(): void {
     this.state = "channel";
@@ -303,7 +385,7 @@ export class SpireCaster extends Enemy {
     }
     if (this.channelStep >= 3) {
       this.state = "recover";
-      this.timer = 0.9;
+      this.timer = 0.65;
     }
   }
 
@@ -315,6 +397,7 @@ export class SpireCaster extends Enemy {
     this.timer -= dt;
     this.blinkCd -= dt;
     this.orbGroup.rotation.y += dt * (1.2 + this.phase * 0.5);
+    this.shardRing.rotation.y -= dt * (0.8 + this.phase * 0.4);
     this.coreMat.emissiveIntensity = 2.4 + Math.sin(this.t * (2 + this.phase)) * 0.8;
     this.pos.y = Math.sin(this.t * 1.8) * 0.12;
 
@@ -341,8 +424,7 @@ export class SpireCaster extends Enemy {
       b.mat.opacity = Math.max(0, b.fade);
       if (b.fade <= 0) {
         this.ctx.stage.scene.remove(b.mesh);
-        b.mesh.geometry.dispose();
-        b.mat.dispose();
+        b.mat.dispose(); // shared geometry (LANCE_GEO) is not disposed
         this.beams.splice(i, 1);
       }
     }
@@ -363,8 +445,12 @@ export class SpireCaster extends Enemy {
         if (d < 5.5 && this.blinkCd <= 0) this.blink();
 
         if (this.timer <= 0) {
-          // Channel periodically from phase 2 on
-          if (this.phase >= 2 && this.channelsSinceShift === 0) {
+          this.attacksSinceGuard++;
+          // A glass ward every 3rd action — invulnerable while it punishes anyone point-blank.
+          if (this.attacksSinceGuard >= 3) {
+            this.attacksSinceGuard = 0;
+            this.beginGuard();
+          } else if (this.phase >= 2 && this.channelsSinceShift === 0) {
             this.beginChannel();
           } else {
             this.state = "track";
@@ -378,18 +464,31 @@ export class SpireCaster extends Enemy {
         if (this.timer <= 0) {
           this.beginLanceVolley();
           this.state = "recover";
-          this.timer = 0.7;
+          this.timer = 0.5;
         }
         break;
       case "channel":
         this.facePlayer(dt * 0.5);
         this.tickChannel(dt);
         break;
+      case "guard":
+        this.facePlayer(dt * 0.5);
+        if (this.timer <= 0) {
+          this.wardShock(4.4, 16, 0x3effd2);
+          // A radial shard burst so rushing the glass crown point-blank is punished.
+          for (let i = 0; i < 8; i++) {
+            this.ctx.hostiles.fire(this.pos.x, this.pos.z, (i / 8) * Math.PI * 2, { speed: 8, dmg: 7, color: 0x55ffcc, radius: 0.28 });
+          }
+          this.ctx.sfx.enemyShoot();
+          this.state = "recover";
+          this.timer = 0.6;
+        }
+        break;
       case "recover":
       case "phaseShift":
         if (this.timer <= 0) {
           this.state = "idle";
-          const base = this.phase >= 3 ? 1.5 : this.phase === 2 ? 1.9 : 2.3;
+          const base = this.phase >= 3 ? 1.1 : this.phase === 2 ? 1.4 : 1.7;
           // Roughly every 4th attack in P2+ is a channel
           if (this.phase >= 2 && this.lanceCount % 4 === 3) this.channelsSinceShift = 0;
           this.attackCd = base;

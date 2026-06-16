@@ -1,5 +1,7 @@
-// Full-run smoke: walks all 9 rooms across 3 acts via the dev __rh3 hook,
-// clicking through every draft, ending on the victory screen. Then a death.
+// Full-run smoke: navigates the generated forked map to victory, then a death.
+// State-driven: each tick it kills any enemies, then resolves whatever screen is up
+// (map fork, draft, shop, treasure, rest, event). Always picks a combat/elite path
+// so it reaches each act boss.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -20,69 +22,70 @@ await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
 await page.waitForTimeout(700);
 await page.locator(".hero-card").first().click();
 await page.waitForTimeout(800);
-if (await page.locator(".story-skip").count()) {
-  await page.locator(".story-skip").click();
-  await page.waitForTimeout(600);
-}
+if (await page.locator(".story-skip").count()) { await page.locator(".story-skip").click(); await page.waitForTimeout(600); }
 await page.waitForTimeout(2500);
 
-const ROOM_COUNT = await page.evaluate(() => window.__rh3.run.totalRooms);
-console.log("rooms:", ROOM_COUNT);
+const click = async (loc) => { if (await loc.count()) { await loc.first().click(); await page.waitForTimeout(400); return true; } return false; };
 
-for (let room = 0; room < ROOM_COUNT; room++) {
-  // Kill everything (pending spawns take a few seconds to materialize)
-  let st = null;
-  for (let tries = 0; tries < 16; tries++) {
-    st = await page.evaluate(() => {
-      const c = window.__rh3;
-      for (const e of c.enemies.living()) e.takeDamage(99999);
-      return { state: c.run.state, idx: c.run.roomIndex };
-    });
-    if (st.state !== "fighting") break;
-    await page.waitForTimeout(450);
-  }
-  console.log(`room ${room}: idx=${st.idx} state=${st.state}`);
-  if (st.state === "victory") break;
-  if (st.state !== "cleared") {
-    console.log(`FAIL: room ${room} never cleared`);
-    break;
-  }
+let victory = false;
+let mapsSeen = 0, shopsSeen = 0, lastPos = -1, stuck = 0;
+let actStories = 0;
+for (let step = 0; step < 420 && !victory; step++) {
+  const st = await page.evaluate(() => {
+    const c = window.__rh3;
+    if (c.run.state === "fighting") for (const e of c.enemies.living()) e.takeDamage(99999);
+    return { state: c.run.state, pos: c.run.position, total: c.run.totalForks };
+  });
+  if (st.state === "victory") { victory = true; break; }
+  if (st.pos === lastPos) stuck++; else { stuck = 0; lastPos = st.pos; }
+  await page.waitForTimeout(330);
 
-  await page.screenshot({ path: `shots/flow-${room}-cleared.png` });
-  await page.waitForTimeout(1900); // draft opens at +1.5s
-
-  // Click through the draft (pick → optional swap stage)
-  if (await page.locator(".card").count()) {
-    await page.screenshot({ path: `shots/flow-${room}-draft.png` });
-    await page.locator(".card").first().click();
-    await page.waitForTimeout(450);
-    if (await page.locator(".card").count()) {
-      await page.locator(".card").first().click();
-      await page.waitForTimeout(450);
-    }
+  // Resolve whatever screen is up (priority order)
+  if (await page.locator(".story-skip").count()) {
+    actStories++;
+    await click(page.locator(".story-skip")); // act-transition cutscene
+  } else if (await page.locator(".mapnode").count()) {
+    mapsSeen++;
+    const fight = page.locator(".mapnode--combat, .mapnode--elite");
+    if (!(await click(fight))) await click(page.locator(".mapnode"));
+  } else if (await page.locator("button", { hasText: "Leave the Shop" }).count()) {
+    shopsSeen++;
+    await click(page.locator("button", { hasText: "Leave the Shop" }));
+  } else if (await page.locator("button", { hasText: "Move On" }).count()) {
+    await click(page.locator("button", { hasText: "Move On" }));
+  } else if (await page.locator(".card").count()) {
+    await click(page.locator(".card"));
+    if (await page.locator(".card").count()) await click(page.locator(".card")); // swap stage
   } else if (await page.locator(".draft-skip").count()) {
-    await page.locator(".draft-skip").click();
-  } else {
-    console.log(`WARN: room ${room} no draft UI found`);
+    await click(page.locator(".draft-skip"));
+  } else if (await page.locator(".panel .menu-buttons .btn").count()) {
+    await click(page.locator(".panel .menu-buttons .btn")); // event choice
   }
-  await page.waitForTimeout(2800); // room load + act intro card
 }
 
-await page.waitForTimeout(3500);
-await page.screenshot({ path: "shots/flow-victory.png" });
-const victoryShown = await page.locator(".end-title--victory").count();
+console.log(`maps seen: ${mapsSeen}, shops: ${shopsSeen}, act stories: ${actStories}, final pos: ${lastPos}`);
+console.log("VICTORY:", victory ? "OK" : "FAIL (never reached)");
+// The bittersweet ending cutscene plays before the end screen — skip through it.
+let victoryShown = 0, endingSkips = 0;
+for (let i = 0; i < 40; i++) {
+  if (await page.locator(".story-skip").count()) { await page.locator(".story-skip").click(); endingSkips++; }
+  victoryShown = await page.locator(".end-title--victory").count();
+  if (victoryShown > 0) break;
+  await page.waitForTimeout(400);
+}
+console.log(`ENDING CUTSCENE: ${endingSkips > 0 ? "played" : "none"}`);
 console.log("VICTORY SCREEN:", victoryShown > 0 ? "OK" : "MISSING");
 
-// Death screen path
+// Death path
 const again = page.locator("button", { hasText: "Run It Back" });
 if (await again.count()) {
   await again.click();
   await page.waitForTimeout(2500);
   await page.evaluate(() => window.__rh3.combat.damagePlayer(99999, 3, 3));
   await page.waitForTimeout(2400);
-  const deathShown = await page.locator(".end-title--death").count();
-  console.log("DEATH SCREEN:", deathShown > 0 ? "OK" : "MISSING");
+  console.log("DEATH SCREEN:", (await page.locator(".end-title--death").count()) > 0 ? "OK" : "MISSING");
 }
 
 console.log(errors.length ? `CONSOLE ERRORS (${errors.length}):\n` + errors.slice(0, 10).join("\n") : "NO CONSOLE ERRORS");
 await browser.close();
+process.exit(victory && errors.length === 0 ? 0 : 1);

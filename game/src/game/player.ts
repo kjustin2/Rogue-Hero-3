@@ -116,61 +116,242 @@ export class Player {
       parent.add(mesh);
       return mesh;
     };
+    const spike = (
+      r: number, h: number, seg: number,
+      mat: THREE.MeshStandardMaterial,
+      x = 0, y = 0, z = 0,
+      parent: THREE.Object3D = this.body
+    ) => {
+      const mesh = new THREE.Mesh(new THREE.ConeGeometry(r, h, seg), mat);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true;
+      parent.add(mesh);
+      return mesh;
+    };
+
+    // --- Per-hero silhouette profile: proportions the rig is built around.
+    const id = hero.id;
+    const P = {
+      torsoW: 0.64, torsoH: 0.62, torsoD: 0.42,
+      shoulderX: 0.46, shoulderW: 0.26, shoulderH: 0.2, shoulderD: 0.34,
+      armX: 0.46, armW: 0.17, armH: 0.52,
+      legX: 0.17, legW: 0.19, legH: 0.52,
+      headW: 0.4, headH: 0.38, headD: 0.4,
+    };
+    if (id === "bulwark") {
+      // Broad, heavy, blocky — a walking wall.
+      P.torsoW = 0.86; P.torsoH = 0.7; P.torsoD = 0.52;
+      P.shoulderX = 0.6; P.shoulderW = 0.4; P.shoulderH = 0.3; P.shoulderD = 0.46;
+      P.armX = 0.6; P.armW = 0.24; P.armH = 0.5;
+      P.legX = 0.22; P.legW = 0.26; P.legH = 0.46;
+      P.headW = 0.46; P.headH = 0.4; P.headD = 0.46;
+    } else if (id === "sparkmage") {
+      // Slender, robed, small frame.
+      P.torsoW = 0.5; P.torsoH = 0.56; P.torsoD = 0.34;
+      P.shoulderX = 0.36; P.shoulderW = 0.18; P.shoulderH = 0.14; P.shoulderD = 0.26;
+      P.armX = 0.38; P.armW = 0.13; P.armH = 0.52;
+      P.legX = 0.13; P.legW = 0.15; P.legH = 0.54;
+      P.headW = 0.34; P.headH = 0.36; P.headD = 0.34;
+    } else if (id === "reaver") {
+      // Hulking, brutish, asymmetric (heavier right side).
+      P.torsoW = 0.78; P.torsoH = 0.66; P.torsoD = 0.48;
+      P.shoulderX = 0.56; P.shoulderW = 0.34; P.shoulderH = 0.26; P.shoulderD = 0.42;
+      P.armX = 0.56; P.armW = 0.22; P.armH = 0.56;
+      P.legX = 0.2; P.legW = 0.24; P.legH = 0.48;
+      P.headW = 0.38; P.headH = 0.34; P.headD = 0.38;
+    } else if (id === "tempest") {
+      // Thin, tall, streamlined.
+      P.torsoW = 0.48; P.torsoH = 0.6; P.torsoD = 0.32;
+      P.shoulderX = 0.34; P.shoulderW = 0.16; P.shoulderH = 0.12; P.shoulderD = 0.26;
+      P.armX = 0.36; P.armW = 0.12; P.armH = 0.56;
+      P.legX = 0.13; P.legW = 0.14; P.legH = 0.58;
+      P.headW = 0.32; P.headH = 0.36; P.headD = 0.32;
+    } else if (id === "revenant") {
+      // Gaunt and tall — a hollow, hooded thing with long reaching arms.
+      P.torsoW = 0.5; P.torsoH = 0.66; P.torsoD = 0.34;
+      P.shoulderX = 0.42; P.shoulderW = 0.22; P.shoulderH = 0.16; P.shoulderD = 0.3;
+      P.armX = 0.42; P.armW = 0.13; P.armH = 0.62;
+      P.legX = 0.14; P.legW = 0.15; P.legH = 0.6;
+      P.headW = 0.34; P.headH = 0.38; P.headD = 0.34;
+    }
 
     // Torso group (twists during swings)
     this.torso = new THREE.Group();
     this.torso.position.y = 1.0;
     this.body.add(this.torso);
-    box(0.64, 0.62, 0.42, plate, 0, 0.1, 0, this.torso);
-    box(0.52, 0.16, 0.46, gold, 0, -0.26, 0, this.torso); // belt
-    box(0.7, 0.1, 0.46, gold, 0, 0.38, 0, this.torso); // collar trim
+    box(P.torsoW, P.torsoH, P.torsoD, plate, 0, 0.1, 0, this.torso);
+    box(P.torsoW * 0.81, 0.16, P.torsoD * 1.1, gold, 0, -0.26, 0, this.torso); // belt
+    box(P.torsoW * 1.09, 0.1, P.torsoD * 1.1, gold, 0, 0.38, 0, this.torso); // collar trim
+
+    // Bulwark: a heavy chest plate + central rivet for mass.
+    if (id === "bulwark") {
+      box(P.torsoW * 0.7, 0.5, 0.1, plateDark, 0, 0.16, P.torsoD * 0.5 + 0.02, this.torso);
+      box(0.12, 0.12, 0.08, gold, 0, 0.22, P.torsoD * 0.5 + 0.06, this.torso);
+    }
+    // Reaver: ragged plates strapped across an exposed torso.
+    if (id === "reaver") {
+      box(P.torsoW * 0.85, 0.14, P.torsoD * 1.06, plateDark, -0.04, 0.24, 0, this.torso).rotation.z = 0.22;
+      box(P.torsoW * 0.6, 0.12, P.torsoD * 1.06, plateDark, 0.06, -0.04, 0, this.torso).rotation.z = -0.18;
+    }
+    // Sparkmage: long robe skirt below the torso.
+    if (id === "sparkmage") {
+      box(P.torsoW * 1.05, 0.62, P.torsoD * 1.15, cloth, 0, -0.5, 0, this.torso);
+    }
+    // Revenant: a tattered, hanging shroud + a sunken dark chest.
+    if (id === "revenant") {
+      box(P.torsoW * 1.0, 0.7, P.torsoD * 1.1, cloth, 0, -0.56, 0, this.torso);
+      box(P.torsoW * 0.55, 0.36, 0.06, plateDark, 0, 0.12, P.torsoD * 0.5 + 0.02, this.torso);
+    }
 
     // Head + visor
     const head = new THREE.Group();
     head.position.y = 0.66;
     this.torso.add(head);
-    box(0.4, 0.38, 0.4, plateDark, 0, 0.08, 0, head);
+    box(P.headW, P.headH, P.headD, plateDark, 0, 0.08, 0, head);
     this.visorMat = new THREE.MeshStandardMaterial({
       color: 0x111111, emissive: 0x55ddff, emissiveIntensity: 2.4, roughness: 0.3,
     });
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.07, 0.05), this.visorMat);
-    visor.position.set(0, 0.1, 0.21);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(P.headW * 0.75, 0.07, 0.05), this.visorMat);
+    visor.position.set(0, 0.1, P.headD * 0.52);
     head.add(visor);
-    box(0.14, 0.3, 0.14, gold, 0, 0.32, -0.08, head); // crest
+    // Per-hero headgear shape.
+    if (id === "bulwark") {
+      // Blocky great-helm with a wide horizontal brow and short stubby crest.
+      box(P.headW * 1.12, 0.12, P.headD * 1.05, plateDark, 0, 0.26, 0, head);
+      box(0.14, 0.18, 0.14, gold, 0, 0.36, -0.04, head);
+    } else if (id === "sparkmage") {
+      // Pointed hood + a hovering arcane orb above the head.
+      spike(P.headW * 0.62, 0.42, 4, cloth, 0, 0.36, -0.04, head);
+      const orbMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, emissive: this.bladeColor, emissiveIntensity: 2.6, roughness: 0.2,
+      });
+      this.armorMats.push(orbMat);
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 10), orbMat);
+      orb.position.set(0.34, 0.5, 0.1);
+      head.add(orb);
+    } else if (id === "reaver") {
+      // Asymmetric brute helm: one jagged horn off the right side.
+      box(P.headW, 0.1, P.headD, plateDark, 0, 0.24, 0, head);
+      const horn = spike(0.09, 0.34, 4, gold, 0.2, 0.42, -0.02, head);
+      horn.rotation.z = -0.5;
+    } else if (id === "tempest") {
+      // Swept-back twin fins for a streamlined, fast read.
+      const finL = box(0.06, 0.16, 0.34, gold, -0.13, 0.26, -0.1, head);
+      finL.rotation.x = 0.6;
+      const finR = box(0.06, 0.16, 0.34, gold, 0.13, 0.26, -0.1, head);
+      finR.rotation.x = 0.6;
+    } else if (id === "revenant") {
+      // A deep cowl that overhangs the brow — the face lost in shadow.
+      const cowl = spike(P.headW * 0.78, 0.5, 4, cloth, 0, 0.34, -0.06, head);
+      cowl.rotation.x = 0.18;
+      box(P.headW * 1.04, 0.1, P.headD * 0.5, cloth, 0, 0.16, P.headD * 0.36, head).rotation.x = 0.5; // brim
+    } else {
+      // Blade: the classic vertical crest.
+      box(0.14, 0.3, 0.14, gold, 0, 0.32, -0.08, head);
+    }
 
-    // Shoulders
-    box(0.26, 0.2, 0.34, gold, -0.46, 0.34, 0, this.torso);
-    box(0.26, 0.2, 0.34, gold, 0.46, 0.34, 0, this.torso);
+    // Shoulders (pauldrons) — size scales with the silhouette.
+    box(P.shoulderW, P.shoulderH, P.shoulderD, gold, -P.shoulderX, 0.34, 0, this.torso);
+    box(P.shoulderW, P.shoulderH, P.shoulderD, gold, P.shoulderX, 0.34, 0, this.torso);
+    if (id === "bulwark") {
+      // Oversized angular pauldrons capped with spikes.
+      const capL = spike(0.2, 0.26, 4, plateDark, -P.shoulderX - 0.02, 0.5, 0, this.torso);
+      capL.rotation.z = 0.3;
+      const capR = spike(0.2, 0.26, 4, plateDark, P.shoulderX + 0.02, 0.5, 0, this.torso);
+      capR.rotation.z = -0.3;
+    } else if (id === "reaver") {
+      // One huge spiked pauldron on the right — asymmetric brute.
+      box(0.34, 0.34, 0.5, plateDark, P.shoulderX + 0.04, 0.4, 0, this.torso);
+      const s1 = spike(0.07, 0.26, 4, gold, P.shoulderX + 0.04, 0.6, 0.12, this.torso);
+      s1.rotation.x = -0.4;
+      const s2 = spike(0.07, 0.24, 4, gold, P.shoulderX + 0.18, 0.5, 0, this.torso);
+      s2.rotation.z = -0.7;
+    }
 
-    // Arms (pivot at shoulder)
+    // Arms (pivot at shoulder) — KEEP armR/armL groups; they drive the rig.
     this.armR = new THREE.Group();
-    this.armR.position.set(0.46, 0.26, 0);
+    this.armR.position.set(P.armX, 0.26, 0);
     this.torso.add(this.armR);
-    box(0.17, 0.52, 0.17, plate, 0, -0.3, 0, this.armR);
+    box(P.armW, P.armH, P.armW, plate, 0, -P.armH * 0.58, 0, this.armR);
 
     this.armL = new THREE.Group();
-    this.armL.position.set(-0.46, 0.26, 0);
+    this.armL.position.set(-P.armX, 0.26, 0);
     this.torso.add(this.armL);
-    box(0.17, 0.52, 0.17, plate, 0, -0.3, 0, this.armL);
+    box(P.armW, P.armH, P.armW, plate, 0, -P.armH * 0.58, 0, this.armL);
 
-    // Sword: emissive blade reads as a light source under bloom
+    // Sword: emissive blade reads as a light source under bloom.
+    // Per-hero weapon profile, but the sword GROUP + tip/base markers are
+    // invariant so getBladePoints and the swing rig keep working.
     this.sword = new THREE.Group();
     this.sword.position.set(0, -0.56, 0.05);
     this.armR.add(this.sword);
     const bladeMat = new THREE.MeshStandardMaterial({
       color: 0x99ddff, emissive: this.bladeColor, emissiveIntensity: 2.0, roughness: 0.2, metalness: 0.6,
     });
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 1.3), bladeMat);
-    blade.position.z = 0.78;
-    this.sword.add(blade);
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.22, 4), bladeMat);
-    tip.rotation.x = Math.PI / 2;
-    tip.position.z = 1.54;
-    this.sword.add(tip);
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.08), gold);
-    guard.position.z = 0.1;
-    this.sword.add(guard);
-    // Invisible markers for the trail ribbon
+    if (id === "reaver") {
+      // Heavy, broad cleaver-blade.
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 1.3), bladeMat);
+      blade.position.z = 0.78;
+      this.sword.add(blade);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.26, 4), bladeMat);
+      tip.rotation.x = Math.PI / 2;
+      tip.position.z = 1.56;
+      this.sword.add(tip);
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.07, 0.1), gold);
+      guard.position.z = 0.1;
+      this.sword.add(guard);
+    } else if (id === "bulwark") {
+      // Stout broadsword + a tower-shield strapped to the left arm.
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 1.1), bladeMat);
+      blade.position.z = 0.68;
+      this.sword.add(blade);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.24, 4), bladeMat);
+      tip.rotation.x = Math.PI / 2;
+      tip.position.z = 1.35;
+      this.sword.add(tip);
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.07, 0.1), gold);
+      guard.position.z = 0.1;
+      this.sword.add(guard);
+      box(0.06, 0.7, 0.5, plateDark, 0.04, -0.3, 0.12, this.armL);
+      box(0.04, 0.5, 0.12, gold, 0.06, -0.3, 0.12, this.armL);
+    } else if (id === "sparkmage") {
+      // The "sword is a wand": thin staff with a glowing emissive core + crystal tip.
+      const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 6), gold);
+      staff.rotation.x = Math.PI / 2;
+      staff.position.z = 0.7;
+      this.sword.add(staff);
+      const core = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 1.0), bladeMat);
+      core.position.z = 0.7;
+      this.sword.add(core);
+      const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.13), bladeMat);
+      crystal.position.z = 1.5;
+      this.sword.add(crystal);
+    } else if (id === "tempest") {
+      // Long, whip-thin rapier.
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 1.5), bladeMat);
+      blade.position.z = 0.88;
+      this.sword.add(blade);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.24, 4), bladeMat);
+      tip.rotation.x = Math.PI / 2;
+      tip.position.z = 1.74;
+      this.sword.add(tip);
+      const guard = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.02, 6, 12), gold);
+      guard.position.z = 0.14;
+      this.sword.add(guard);
+    } else {
+      // Blade: the classic balanced longsword.
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 1.3), bladeMat);
+      blade.position.z = 0.78;
+      this.sword.add(blade);
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.22, 4), bladeMat);
+      tip.rotation.x = Math.PI / 2;
+      tip.position.z = 1.54;
+      this.sword.add(tip);
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.08), gold);
+      guard.position.z = 0.1;
+      this.sword.add(guard);
+    }
+    // Invisible markers for the trail ribbon — invariant anchors.
     this.bladeTipMarker = new THREE.Object3D();
     this.bladeTipMarker.position.z = 1.6;
     this.bladeBaseMarker = new THREE.Object3D();
@@ -178,22 +359,27 @@ export class Player {
     this.sword.add(this.bladeTipMarker, this.bladeBaseMarker);
 
     // Hips + legs
-    box(0.5, 0.24, 0.36, plateDark, 0, 0.62, 0);
+    box(P.torsoW * 0.78, 0.24, P.torsoD * 0.86, plateDark, 0, 0.62, 0);
     this.legR = new THREE.Group();
-    this.legR.position.set(0.17, 0.55, 0);
+    this.legR.position.set(P.legX, 0.55, 0);
     this.body.add(this.legR);
-    box(0.19, 0.52, 0.22, cloth, 0, -0.28, 0, this.legR);
+    box(P.legW, P.legH, P.legW * 1.16, cloth, 0, -P.legH * 0.54, 0, this.legR);
     this.legL = new THREE.Group();
-    this.legL.position.set(-0.17, 0.55, 0);
+    this.legL.position.set(-P.legX, 0.55, 0);
     this.body.add(this.legL);
-    box(0.19, 0.52, 0.22, cloth, 0, -0.28, 0, this.legL);
+    box(P.legW, P.legH, P.legW * 1.16, cloth, 0, -P.legH * 0.54, 0, this.legL);
 
-    // Cape (cosmetic color)
+    // Cape (cosmetic color) — robe-like for the mage, streamer-thin for tempest.
+    let capeW = 0.66, capeH = 0.95;
+    if (id === "bulwark") { capeW = 0.82; capeH = 1.05; }
+    else if (id === "sparkmage") { capeW = 0.58; capeH = 1.25; }
+    else if (id === "tempest") { capeW = 0.4; capeH = 1.15; }
+    else if (id === "reaver") { capeW = 0.7; capeH = 0.78; }
     const capeMat = new THREE.MeshStandardMaterial({ color: capeColor, roughness: 0.9, side: THREE.DoubleSide });
-    const capeGeo = new THREE.PlaneGeometry(0.66, 0.95);
-    capeGeo.translate(0, -0.475, 0);
+    const capeGeo = new THREE.PlaneGeometry(capeW, capeH);
+    capeGeo.translate(0, -capeH * 0.5, 0);
     this.cape = new THREE.Mesh(capeGeo, capeMat);
-    this.cape.position.set(0, 0.42, -0.24);
+    this.cape.position.set(0, 0.42, -P.torsoD * 0.57);
     this.cape.castShadow = true;
     this.torso.add(this.cape);
 

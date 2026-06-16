@@ -117,30 +117,37 @@ export class Sfx {
 
   // ---------------------------------------------------------------- combat
   swing(stage: number, connected: boolean): void {
-    this.noise({ dur: 0.12, freq: 1200 + stage * 500, freq2: 300, q: 1.6, gain: 0.12 });
-    if (stage === 2) this.noise({ dur: 0.2, freq: 700, freq2: 180, q: 1.2, gain: 0.15 });
+    // A clean air-whoosh; the 360° finisher adds a low body sweep.
+    this.noise({ dur: 0.13, freq: 900 + stage * 350, freq2: 2400, q: 1.1, gain: 0.07, type: "bandpass" });
+    if (stage === 2) this.noise({ dur: 0.22, freq: 520, freq2: 140, q: 0.9, gain: 0.13, type: "lowpass" });
     if (connected) void 0; // hit sounds come from ENEMY_HIT
   }
 
   private hit(): void {
-    this.tone({ f: 180, f2: 70, dur: 0.09, type: "square", gain: 0.14 });
-    this.noise({ dur: 0.07, freq: 2400, q: 0.8, gain: 0.1 });
+    // Crisp thwack: a short tonal knock + a tight transient + a touch of sub.
+    this.tone({ f: 240, f2: 120, dur: 0.05, type: "triangle", gain: 0.12 });
+    this.noise({ dur: 0.045, freq: 3200, q: 1.2, gain: 0.08 });
+    this.tone({ f: 95, f2: 55, dur: 0.07, type: "sine", gain: 0.1 });
   }
 
   private hitHeavy(): void {
-    this.tone({ f: 130, f2: 45, dur: 0.18, type: "square", gain: 0.22 });
-    this.noise({ dur: 0.16, freq: 900, freq2: 200, q: 1, gain: 0.18 });
+    // Deeper, weightier impact — body + crack + sub.
+    this.tone({ f: 150, f2: 55, dur: 0.16, type: "sine", gain: 0.26 });
+    this.tone({ f: 300, f2: 150, dur: 0.06, type: "triangle", gain: 0.12 });
+    this.noise({ dur: 0.14, freq: 800, freq2: 220, q: 0.9, gain: 0.14, type: "lowpass" });
   }
 
   private kill(): void {
-    this.tone({ f: 340, f2: 60, dur: 0.25, type: "sawtooth", gain: 0.16 });
-    this.noise({ dur: 0.3, freq: 3000, freq2: 400, q: 0.7, gain: 0.14 });
-    this.tone({ f: 520, f2: 780, dur: 0.12, type: "sine", gain: 0.08, delay: 0.03 });
+    // A satisfying pop: quick downward chirp, airy burst, soft thump.
+    this.tone({ f: 520, f2: 120, dur: 0.13, type: "triangle", gain: 0.13 });
+    this.noise({ dur: 0.2, freq: 2400, freq2: 500, q: 0.7, gain: 0.1, type: "bandpass" });
+    this.tone({ f: 110, f2: 45, dur: 0.16, type: "sine", gain: 0.12, delay: 0.01 });
   }
 
   private hurt(): void {
-    this.tone({ f: 220, f2: 90, dur: 0.22, type: "sawtooth", gain: 0.2 });
-    this.noise({ dur: 0.18, freq: 500, q: 0.8, gain: 0.16, type: "lowpass" });
+    // A dull, sickening thud — less buzz, more body.
+    this.tone({ f: 190, f2: 70, dur: 0.2, type: "sine", gain: 0.22 });
+    this.noise({ dur: 0.16, freq: 420, freq2: 160, q: 0.7, gain: 0.13, type: "lowpass" });
   }
 
   private dodge(): void {
@@ -174,6 +181,15 @@ export class Sfx {
     const base = 520 + Math.min(count, 10) * 60;
     this.tone({ f: base, dur: 0.07, type: "triangle", gain: 0.1 });
     this.tone({ f: base * 1.5, dur: 0.1, type: "triangle", gain: 0.09, delay: 0.05 });
+  }
+
+  /** Rising chime as the hit-combo crosses each 10. */
+  comboMilestone(count: number): void {
+    const step = Math.min(8, Math.floor(count / 10));
+    const base = 540 + step * 70;
+    this.tone({ f: base, dur: 0.08, type: "triangle", gain: 0.08 });
+    this.tone({ f: base * 1.26, dur: 0.1, type: "triangle", gain: 0.07, delay: 0.05 });
+    this.tone({ f: base * 1.5, dur: 0.14, type: "sine", gain: 0.06, delay: 0.1 });
   }
 
   // ---------------------------------------------------------------- cards
@@ -251,6 +267,67 @@ export class Sfx {
       case "starfall":
         for (let i = 0; i < 3; i++) this.tone({ f: 1600 - i * 280, f2: 500, dur: 0.2, type: "sine", gain: 0.07, delay: i * 0.12 });
         break;
+      case "spectral-volley":
+        this.noise({ dur: 0.16, freq: 2600, freq2: 700, q: 3, gain: 0.1 });
+        for (let i = 0; i < 3; i++) this.tone({ f: 760 + i * 180, f2: 1500, dur: 0.12, type: "sawtooth", gain: 0.07, delay: i * 0.03 });
+        break;
+      case "seismic-slam":
+        this.tone({ f: 84, f2: 28, dur: 0.45, type: "sine", gain: 0.3 });
+        this.noise({ dur: 0.4, freq: 1000, freq2: 90, q: 0.6, gain: 0.22, type: "lowpass" });
+        break;
+      case "glacial-lance":
+        this.tone({ f: 1500, f2: 320, dur: 0.35, type: "sine", gain: 0.12 });
+        this.noise({ dur: 0.3, freq: 5200, freq2: 900, q: 3, gain: 0.12 });
+        break;
+      case "soul-harvest":
+        this.tone({ f: 420, f2: 180, dur: 0.4, type: "sawtooth", gain: 0.12 });
+        this.tone({ f: 630, f2: 280, dur: 0.45, type: "sine", gain: 0.08, delay: 0.06 });
+        this.noise({ dur: 0.35, freq: 1600, freq2: 400, q: 1.4, gain: 0.1, type: "lowpass" });
+        break;
+      case "warcry":
+        this.tone({ f: 180, f2: 320, dur: 0.5, type: "sawtooth", gain: 0.18 });
+        this.tone({ f: 270, f2: 480, dur: 0.45, type: "sawtooth", gain: 0.12, delay: 0.04 });
+        break;
+      case "seeker-swarm":
+        for (let i = 0; i < 5; i++) this.tone({ f: 900 + i * 90, f2: 1700, dur: 0.1, type: "triangle", gain: 0.06, delay: i * 0.03 });
+        this.noise({ dur: 0.18, freq: 3200, freq2: 900, q: 3, gain: 0.07 });
+        break;
+      case "singularity":
+        this.tone({ f: 240, f2: 40, dur: 0.7, type: "sine", gain: 0.18 });
+        this.tone({ f: 380, f2: 70, dur: 0.6, type: "sawtooth", gain: 0.08 });
+        this.noise({ dur: 0.6, freq: 600, freq2: 120, q: 2, gain: 0.1, type: "lowpass" });
+        break;
+      case "tempest-storm":
+        this.noise({ dur: 0.4, freq: 4500, freq2: 1200, q: 4, gain: 0.1 });
+        this.tone({ f: 220, f2: 90, dur: 0.5, type: "sine", gain: 0.14 });
+        this.tone({ f: 1600, f2: 400, dur: 0.18, type: "sawtooth", gain: 0.08, delay: 0.1 });
+        break;
+      case "flame-channel":
+        this.noise({ dur: 0.5, freq: 500, freq2: 1400, q: 0.7, gain: 0.16, type: "bandpass" });
+        this.tone({ f: 140, f2: 90, dur: 0.45, type: "sawtooth", gain: 0.1 });
+        break;
+      case "decoy-totem":
+        this.tone({ f: 500, f2: 760, dur: 0.18, type: "triangle", gain: 0.1 });
+        this.tone({ f: 760, f2: 1100, dur: 0.16, type: "triangle", gain: 0.07, delay: 0.09 });
+        break;
+      case "leech-orb":
+        this.tone({ f: 300, f2: 520, dur: 0.4, type: "sine", gain: 0.12 });
+        this.noise({ dur: 0.35, freq: 1400, freq2: 400, q: 1.4, gain: 0.07, type: "lowpass" });
+        break;
+      case "shield-bash":
+        this.tone({ f: 200, f2: 70, dur: 0.3, type: "sine", gain: 0.26 });
+        this.noise({ dur: 0.22, freq: 1200, freq2: 250, q: 0.8, gain: 0.16, type: "lowpass" });
+        this.tone({ f: 520, f2: 320, dur: 0.12, type: "triangle", gain: 0.1 });
+        break;
+      case "rend-boomerang":
+        this.noise({ dur: 0.3, freq: 800, freq2: 2200, q: 1.4, gain: 0.12 });
+        this.noise({ dur: 0.3, freq: 2200, freq2: 800, q: 1.4, gain: 0.1, delay: 0.42 });
+        this.tone({ f: 360, f2: 160, dur: 0.16, type: "sawtooth", gain: 0.08 });
+        break;
+      case "tempo-edge":
+        for (let i = 0; i < 4; i++) this.noise({ dur: 0.12, freq: 1100 + i * 200, freq2: 300, q: 2, gain: 0.09, delay: i * 0.065 });
+        this.tone({ f: 700, f2: 1500, dur: 0.18, type: "triangle", gain: 0.07, delay: 0.2 });
+        break;
     }
   }
 
@@ -261,6 +338,19 @@ export class Sfx {
   cardReady(): void {
     this.tone({ f: 660, dur: 0.06, type: "triangle", gain: 0.06 });
     this.tone({ f: 990, dur: 0.1, type: "triangle", gain: 0.05, delay: 0.04 });
+  }
+
+  /** A bright rising triad when the player hits the Critical tempo zone. */
+  critical(): void {
+    const f = [523, 659, 784, 1047];
+    f.forEach((hz, i) => this.tone({ f: hz, dur: 0.16, type: "triangle", gain: 0.06, delay: i * 0.05 }));
+  }
+
+  /** A deep, resonant sting under the Overdrive ignition. */
+  overdrive(): void {
+    this.tone({ f: 130, f2: 65, dur: 0.5, type: "sawtooth", gain: 0.16 });
+    this.tone({ f: 523, f2: 1047, dur: 0.35, type: "triangle", gain: 0.1, delay: 0.04 });
+    this.noise({ dur: 0.3, freq: 600, freq2: 4000, q: 1.2, gain: 0.1 });
   }
 
   // ---------------------------------------------------------------- enemies
@@ -319,9 +409,19 @@ export class Sfx {
 
   // ---------------------------------------------------------------- boss
   bossRoar(): void {
-    this.tone({ f: 90, f2: 60, dur: 0.8, type: "sawtooth", gain: 0.25 });
-    this.tone({ f: 135, f2: 80, dur: 0.7, type: "sawtooth", gain: 0.18 });
-    this.noise({ dur: 0.7, freq: 300, q: 0.7, gain: 0.18, type: "lowpass" });
+    this.tone({ f: 85, f2: 58, dur: 0.85, type: "sawtooth", gain: 0.22 });
+    this.tone({ f: 128, f2: 86, dur: 0.7, type: "sawtooth", gain: 0.13 });
+    this.tone({ f: 44, f2: 32, dur: 0.9, type: "sine", gain: 0.2 });
+    this.noise({ dur: 0.7, freq: 280, q: 0.6, gain: 0.13, type: "lowpass" });
+  }
+
+  /** A huge, layered detonation when a boss falls. */
+  bossDeath(): void {
+    this.tone({ f: 80, f2: 22, dur: 0.7, type: "sine", gain: 0.34 });
+    this.noise({ dur: 0.6, freq: 1600, freq2: 70, q: 0.5, gain: 0.26, type: "lowpass" });
+    this.noise({ dur: 0.4, freq: 4200, freq2: 900, q: 0.8, gain: 0.12, delay: 0.04 });
+    this.tone({ f: 360, f2: 60, dur: 0.4, type: "sawtooth", gain: 0.12, delay: 0.02 });
+    this.tone({ f: 58, f2: 26, dur: 0.5, type: "sine", gain: 0.22, delay: 0.2 }); // second concussion
   }
 
   bossDash(): void {
@@ -343,7 +443,8 @@ export class Sfx {
   }
 
   private uiClick(): void {
-    this.tone({ f: 880, f2: 1100, dur: 0.07, type: "triangle", gain: 0.08 });
+    this.tone({ f: 600, f2: 920, dur: 0.06, type: "sine", gain: 0.06 });
+    this.tone({ f: 1200, dur: 0.03, type: "sine", gain: 0.03, delay: 0.01 });
   }
 
   private heal(): void {
@@ -368,9 +469,12 @@ export class Sfx {
   }
 
   bossIntroSting(): void {
-    this.tone({ f: 110, dur: 0.6, type: "sawtooth", gain: 0.16 });
-    this.tone({ f: 110 * 1.06, dur: 0.6, type: "sawtooth", gain: 0.12 });
-    this.tone({ f: 55, dur: 1.0, type: "sine", gain: 0.2, delay: 0.1 });
+    // Cinematic riser → low impact. A slow swell of two low sines a fifth apart,
+    // a filtered noise rise, then a sub drop — tense, not the old buzzy detune.
+    this.tone({ f: 70, dur: 1.5, type: "sine", gain: 0.22, attack: 0.55 });
+    this.tone({ f: 105, dur: 1.4, type: "sine", gain: 0.13, attack: 0.65 });
+    this.noise({ dur: 1.2, freq: 200, freq2: 1500, q: 0.5, gain: 0.05, type: "bandpass" });
+    this.tone({ f: 50, f2: 30, dur: 1.0, type: "sine", gain: 0.22, delay: 1.15 });
   }
 
   victory(): void {

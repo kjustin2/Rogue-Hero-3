@@ -7,7 +7,7 @@ export interface EventMap {
   KILL: { x: number; z: number; kind: string };
   COMBO_HIT: { count: number };
   KILL_STREAK: { count: number };
-  PLAYER_HIT: { dmg: number };
+  PLAYER_HIT: { dmg: number; srcX: number; srcZ: number };
   PLAYER_DIED: Record<string, never>;
   DODGE: Record<string, never>;
   PERFECT_DODGE: { x: number; z: number };
@@ -16,9 +16,12 @@ export interface EventMap {
   TEMPO_ZONE: { zone: TempoZone; prev: TempoZone };
   CRASH: { x: number; z: number };
   COLD_CRASH: { x: number; z: number };
+  OVERDRIVE_START: { hero: string; name: string };
+  OVERDRIVE_END: Record<string, never>;
+  CRESCENDO: { stacks: number };
   SHIELD_GAINED: { amount: number };
   SHIELD_BROKEN: Record<string, never>;
-  ROOM_START: { index: number; name: string; isBoss: boolean };
+  ROOM_START: { index: number; name: string; isBoss: boolean; act: number; elite: boolean };
   ROOM_CLEARED: { index: number; reward: "card" | "relic" };
   ACT_START: { act: number; name: string };
   RELIC_ADDED: { id: string };

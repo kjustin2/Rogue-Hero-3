@@ -8,7 +8,11 @@ export interface RelicDef {
   desc: string;
   icon: string;
   color: string;
-  rarity: "common" | "rare";
+  rarity: "common" | "rare" | "legendary";
+  /** Cursed relics are powerful but carry a drawback (shown with a warning tint). */
+  cursed?: boolean;
+  /** Warden boons are auto-granted on boss kills, not drafted — hidden from the draft pool + grid. */
+  boon?: boolean;
   /** Milestone text shown while locked (profile system). */
   unlockHint?: string;
 }
@@ -33,7 +37,30 @@ export const RELICS: RelicDef[] = [
   { id: "lucky-coin", name: "Lucky Coin", desc: "Earn 50% more rift shards.", icon: "◆", color: "#ffc266", rarity: "common" },
   { id: "resonant-bell", name: "Resonant Bell", desc: "Crashing also resets every card cooldown.", icon: "♪", color: "#c9a8ff", rarity: "rare" },
   { id: "thorn-plate", name: "Thorn Plate", desc: "Enemies that hurt you up close take 6 damage back.", icon: "✶", color: "#ff9a5f", rarity: "common" },
+  // Expansion III
+  { id: "siphon-sigil", name: "Siphon Sigil", desc: "Every kill shaves 0.6s off all card cooldowns.", icon: "⌛", color: "#9fd8ff", rarity: "rare" },
+  { id: "molten-heart", name: "Molten Heart", desc: "Deal 18% more damage while Hot or Critical.", icon: "♨", color: "#ff8a4d", rarity: "rare" },
+  { id: "tempo-capacitor", name: "Tempo Capacitor", desc: "Perfect dodges surge an extra 8 tempo.", icon: "↯", color: "#66ffee", rarity: "common" },
+  { id: "executioner", name: "Executioner", desc: "Deal 30% more damage to enemies below 35% HP.", icon: "☠", color: "#d0d0d8", rarity: "rare" },
+  { id: "rampart", name: "Rampart", desc: "While you hold a shield, take 30% less damage.", icon: "⊞", color: "#7fc8ff", rarity: "common" },
+  // --- Expansion V: status combos, tiers, curses
+  { id: "shatterglass", name: "Shatterglass", desc: "Striking a frozen enemy shatters it for a frost burst.", icon: "✦", color: "#bfeaff", rarity: "rare" },
+  { id: "hex-brand", name: "Hex Brand", desc: "Crashing marks every enemy caught Vulnerable — +35% damage taken for 4s.", icon: "ʘ", color: "#ff8adf", rarity: "rare" },
+  { id: "ember-codex", name: "Ember Codex", desc: "Bleeds and burns tick 60% harder.", icon: "♨", color: "#ff8a4d", rarity: "rare" },
+  { id: "overcharger", name: "Overcharger", desc: "Every 3rd card you cast costs no cooldown.", icon: "⚛", color: "#9fffe0", rarity: "legendary" },
+  { id: "tempo-engine", name: "Tempo Engine", desc: "Begin every chamber already Hot — tempo starts at 70.", icon: "♔", color: "#ffd24a", rarity: "legendary" },
+  { id: "featherbone", name: "Featherbone", desc: "Deal 30% more damage — but take 50% more. A glass dagger.", icon: "⩙", color: "#ff6b7a", rarity: "rare", cursed: true },
+  // --- Warden boons (auto-granted when you break a warden — you carry them in their memory)
+  { id: "warden-heart", name: "Warden's Heart", desc: "The Pit Warden's gift: +16 max HP, mended in full.", icon: "♥", color: "#ff9a6a", rarity: "legendary", boon: true },
+  { id: "spire-spark", name: "Spire's Spark", desc: "The Spire Caster's gift: perfect dodges surge +6 tempo.", icon: "ϟ", color: "#aaffee", rarity: "legendary", boon: true },
+  { id: "colossus-might", name: "Colossus' Might", desc: "The Colossus' gift: deal 10% more damage.", icon: "⛰", color: "#ffaa44", rarity: "legendary", boon: true },
+  { id: "tyrant-ward", name: "Tyrant's Ward", desc: "The Rift Tyrant's gift: begin each chamber with an 8-point shield.", icon: "♛", color: "#cbb6ff", rarity: "legendary", boon: true },
 ];
+
+/** Boss kind → the boon relic you carry away from it. */
+export const WARDEN_BOONS: Record<string, string> = {
+  warden: "warden-heart", spire: "spire-spark", colossus: "colossus-might", tyrant: "tyrant-ward",
+};
 
 export function relicById(id: string): RelicDef {
   const r = RELICS.find((r) => r.id === id);
@@ -55,6 +82,7 @@ export class Relics {
   constructor(private ctx: Ctx) {
     ctx.events.on("KILL", () => {
       if (this.has("bloodthirst")) this.heal(2);
+      if (this.has("siphon-sigil")) this.ctx.deck.reduceCooldowns(0.6);
       if (this.has("co-aggro-pact")) {
         this.killCounter++;
         if (this.killCounter % 4 === 0) {
@@ -107,8 +135,20 @@ export class Relics {
 
   /** Un-owned (and, once the profile lands, unlocked) relics — up to 3. May be fewer. */
   draftChoices(): RelicDef[] {
-    const pool = RELICS.filter((r) => !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
+    const pool = RELICS.filter((r) => !r.boon && !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
     return this.ctx.rng.shuffle([...pool]).slice(0, 3);
+  }
+
+  /** Carry away a fallen warden's boon (auto-granted, with its one-time effect). */
+  grantBoon(bossKind: string): void {
+    const id = WARDEN_BOONS[bossKind];
+    if (!id || this.has(id)) return;
+    this.add(relicById(id));
+    if (id === "warden-heart") {
+      this.ctx.player.maxHp += 16;
+      this.ctx.player.hp = Math.min(this.ctx.player.maxHp, this.ctx.player.hp + 16);
+    }
+    this.ctx.floaters.spawn(this.ctx.player.pos.x, 2.6, this.ctx.player.pos.z, "BOON CARRIED", "label");
   }
 
   // ------------------------------------------------------------- hooks
@@ -116,6 +156,13 @@ export class Relics {
     let m = 1;
     if (e.frozen > 0 && this.has("frost-chord")) m *= 1.3;
     if (this.has("glass-cannon")) m *= 1.25;
+    if (this.has("featherbone")) m *= 1.3;
+    if (this.has("colossus-might")) m *= 1.1;
+    if (this.has("executioner") && e.hp <= e.maxHp * 0.35) m *= 1.3;
+    if (this.has("molten-heart")) {
+      const z = this.ctx.tempo.zone.zone;
+      if (z === "hot" || z === "critical") m *= 1.18;
+    }
     return m;
   }
 
@@ -124,6 +171,8 @@ export class Relics {
     let m = 1;
     if (this.has("ironclad") && p.hp < p.maxHp * 0.3) m *= 0.75;
     if (this.has("glass-cannon")) m *= 1.25;
+    if (this.has("featherbone")) m *= 1.5;
+    if (this.has("rampart") && p.shield > 0) m *= 0.7;
     return m;
   }
 
@@ -152,6 +201,17 @@ export class Relics {
       this.ctx.deck.reduceCooldowns(99);
       this.ctx.floaters.spawn(this.ctx.player.pos.x, 2.4, this.ctx.player.pos.z, "RESONANCE", "tempo");
     }
+    if (this.has("hex-brand")) {
+      const p = this.ctx.player;
+      for (const e of this.ctx.enemies.living()) {
+        if (Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) < 7 + e.radius) e.applyVulnerable(4, 1.35);
+      }
+    }
+  }
+
+  /** Extra DoT scaling for bleed/burn ticks (Ember Codex). */
+  dotMult(): number {
+    return this.has("ember-codex") ? 1.6 : 1;
   }
 
   tempoDecayMult(value: number): number {
@@ -175,6 +235,12 @@ export class Relics {
     if (this.has("adrenal-surge")) {
       this.ctx.deck.reduceCooldowns(1.5);
     }
+    if (this.has("tempo-capacitor")) {
+      this.ctx.tempo.gain(8);
+    }
+    if (this.has("spire-spark")) {
+      this.ctx.tempo.gain(6);
+    }
   }
 
   onRoomStart(): void {
@@ -183,5 +249,16 @@ export class Relics {
       p.shield = Math.max(p.shield, 10);
       this.ctx.events.emit("SHIELD_GAINED", { amount: 10 });
     }
+    if (this.has("tempo-engine")) this.ctx.tempo.gain(70 - this.ctx.tempo.value);
+    if (this.has("tyrant-ward")) {
+      const p = this.ctx.player;
+      p.shield = Math.max(p.shield, 8);
+      this.ctx.events.emit("SHIELD_GAINED", { amount: 8 });
+    }
+  }
+
+  /** Overcharger (legendary): every 3rd cast is free. Counted in deck.tryCast. */
+  freeCastReady(castCount: number): boolean {
+    return this.has("overcharger") && castCount % 3 === 0;
   }
 }

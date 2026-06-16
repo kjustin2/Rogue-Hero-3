@@ -29,6 +29,38 @@ npm run build
 npm run electron       # opens the window using the existing dist/
 ```
 
+## Build a Windows installer (.exe) to share
+
+To make a single double-click installer that anyone can run to **install and
+play** — no Node, no terminal, no dev setup on their machine:
+
+```bash
+cd game
+npm install            # first time only — pulls in electron-builder
+npm run dist           # builds the game + packages a Windows installer
+```
+
+The installer lands in **`game/release/`** as **`Rogue Hero 3 Setup 2.0.0.exe`**
+(the version tracks `package.json`). Hand that one file to anyone on Windows —
+running it installs the game (they can choose the folder), adds a **Rogue Hero 3**
+desktop shortcut, and from then on it launches like any normal app. Everything
+(the engine, the soundtrack, all art) is bundled inside; nothing else to download.
+
+- **Quick test build (no installer):** `npm run dist:dir` produces a runnable
+  unpacked app at `game/release/win-unpacked/Rogue Hero 3.exe` — faster, for
+  checking the package before cutting a full installer.
+- **SmartScreen note:** the build is **unsigned**, so the first time someone runs
+  it Windows may show a blue "Windows protected your PC" prompt — they click
+  **More info → Run anyway**. To remove that warning you'd need a paid code-signing
+  certificate (configure it via electron-builder's `win.certificateFile`).
+- **Custom icon (optional):** drop a 256×256 `build/icon.ico` in `game/` and
+  electron-builder picks it up automatically; otherwise the default Electron icon
+  is used.
+
+> The installer config lives in the `"build"` block of `game/package.json`
+> (electron-builder, NSIS target). Cross-building a macOS/Linux package must be
+> done on that OS (or in CI); `--win` is the Windows target.
+
 ## Run in a browser (development)
 
 ```bash

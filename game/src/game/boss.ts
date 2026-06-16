@@ -11,7 +11,7 @@ interface FirePatch {
   acc: number;
 }
 
-type BossState = "idle" | "dashTell" | "dashing" | "leap" | "slamTell" | "recover" | "phaseShift";
+type BossState = "idle" | "dashTell" | "dashing" | "leap" | "slamTell" | "recover" | "phaseShift" | "guard";
 
 const PHASE_LINES = [
   "THE PIT WARDEN STIRS",
@@ -27,7 +27,7 @@ export class PitWarden extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: BossState = "idle";
-  private timer = 2.2;
+  private timer = 1.5;
   private dashDir = new THREE.Vector2();
   private dashesLeft = 0;
   private dashHit = false;
@@ -35,23 +35,31 @@ export class PitWarden extends Enemy {
   private leapTo = new THREE.Vector3();
   private leapT = 0;
   private slamCount = 0;
-  private attackCd = 2.2;
+  private attackCd = 1.5;
   private coreMat: THREE.MeshStandardMaterial;
   private eyeMat: THREE.MeshStandardMaterial;
   private patches: FirePatch[] = [];
   private patchGeo: THREE.CircleGeometry;
+  // Per-phase appearance escalation (built once, revealed on transition).
+  private hide: THREE.MeshStandardMaterial;
+  private plate: THREE.MeshStandardMaterial;
+  private p2Spikes: THREE.Object3D[] = [];
+  private p3Crown: THREE.Object3D[] = [];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 380;
-    this.speed = 3.0;
+    this.hp = this.maxHp = 1300;
+    this.speed = 3.7;
     this.radius = 1.4;
+    this.wardColor = 0xff7a3a;
 
     const hide = this.stdMat(0x4a1d1d, 0x550808, 0.3);
     const plate = this.stdMat(0x2a1518);
     const horn = this.stdMat(0xc9b8a0);
     this.coreMat = this.stdMat(0x331111, 0xff4422, 1.8);
     this.eyeMat = this.stdMat(0x000000, 0xffaa22, 3);
+    this.hide = hide;
+    this.plate = plate;
 
     // Massive torso, hunched forward
     const torso = this.addMesh(new THREE.BoxGeometry(2.2, 1.7, 1.5), hide, 0, 1.7);
@@ -79,6 +87,71 @@ export class PitWarden extends Enemy {
 
     this.patchGeo = new THREE.CircleGeometry(1.2, 24);
     this.patchGeo.rotateX(-Math.PI / 2);
+
+    this.buildPhaseLooks();
+  }
+
+  /** Pre-build the escalation geometry hidden until its phase unveils it. */
+  private buildPhaseLooks(): void {
+    // Phase 2: ridge of jagged ember spikes erupts across the back/shoulders.
+    const spikeMat = this.stdMat(0x3a0a06, 0xff5522, 1.4);
+    const spikeGeo = new THREE.ConeGeometry(0.16, 0.95, 5);
+    const ridge: [number, number, number, number][] = [
+      [-0.85, 2.3, -0.5, -0.5], [0, 2.55, -0.55, 0], [0.85, 2.3, -0.5, 0.5],
+      [-1.35, 1.55, -0.2, -0.7], [1.35, 1.55, -0.2, 0.7],
+    ];
+    for (const [x, y, z, tilt] of ridge) {
+      const sp = this.addMesh(spikeGeo, spikeMat, x, y, z);
+      sp.rotation.x = -0.6;
+      sp.rotation.z = tilt;
+      sp.visible = false;
+      this.p2Spikes.push(sp);
+    }
+
+    // Phase 3: a molten crown of fangs rings the head + glowing knuckle plates.
+    const crownMat = this.stdMat(0x4a0d06, 0xffdd66, 2.6);
+    const fangGeo = new THREE.ConeGeometry(0.12, 0.6, 4);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      const fang = this.addMesh(fangGeo, crownMat, Math.sin(a) * 0.62, 2.95, 0.55 + Math.cos(a) * 0.4);
+      fang.rotation.x = Math.cos(a) * 0.35;
+      fang.rotation.z = -Math.sin(a) * 0.35;
+      fang.visible = false;
+      this.p3Crown.push(fang);
+    }
+    const knuckleGeo = new THREE.BoxGeometry(0.95, 0.3, 0.95);
+    for (const fx of [-1.35, 1.35]) {
+      const k = this.addMesh(knuckleGeo, crownMat, fx, 0.7, 0.2);
+      k.visible = false;
+      this.p3Crown.push(k);
+    }
+  }
+
+  /** Visibly escalate the boss at each phase transition. */
+  private applyPhaseLook(phase: number): void {
+    if (phase === 2) {
+      this.root.scale.setScalar(1.08);
+      for (const s of this.p2Spikes) s.visible = true;
+      // Hide darkens to char, core burns hotter and shifts toward orange-white.
+      this.hide.color.set(0x5a1410);
+      this.hide.emissive.set(0x8a1606);
+      this.hide.emissiveIntensity = 0.5;
+      this.coreMat.emissive.set(0xff6622);
+      this.eyeMat.emissive.set(0xffcc33);
+    } else if (phase === 3) {
+      this.root.scale.setScalar(1.15);
+      for (const s of this.p3Crown) s.visible = true;
+      this.plate.emissive.set(0x551200);
+      this.plate.emissiveIntensity = 0.6;
+      this.coreMat.emissive.set(0xffaa44);
+      this.eyeMat.emissive.set(0xffffff);
+      this.eyeMat.emissiveIntensity = 4.5;
+    }
+    // Re-baseline flash registration so hit-flash settles to the NEW look.
+    for (const f of this.flashMats) {
+      f.baseEmissive.copy(f.mat.emissive);
+      f.baseIntensity = f.mat.emissiveIntensity;
+    }
   }
 
   protected deathColor(): number {
@@ -107,6 +180,7 @@ export class PitWarden extends Enemy {
       this.phase = targetPhase;
       this.state = "phaseShift";
       this.timer = 1.2;
+      this.applyPhaseLook(this.phase);
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 8, color: 0xff5522, duration: 0.7 });
       this.ctx.fx.burst({
@@ -147,12 +221,15 @@ export class PitWarden extends Enemy {
 
     switch (this.state) {
       case "idle": {
-        const d = this.seek(p.pos.x, p.pos.z, dt, 0.9 + this.phase * 0.12);
+        const d = this.seek(p.pos.x, p.pos.z, dt, 1.05 + this.phase * 0.14);
         this.tryContactDamageBoss();
         this.attackCd -= dt;
         if (this.attackCd <= 0) {
-          // Pick an attack: slams enter the pool at phase 2
-          if (this.phase >= 2 && (this.slamCount % 2 === 0 || d > 9)) {
+          // Pick an attack: an armored brace every 3rd swing (can't be bursted down),
+          // slams enter the pool at phase 2.
+          if (this.slamCount % 3 === 2) {
+            this.beginGuard();
+          } else if (this.phase >= 2 && (this.slamCount % 2 === 0 || d > 9)) {
             this.beginLeap();
           } else {
             this.beginDashCombo();
@@ -189,7 +266,7 @@ export class PitWarden extends Enemy {
             this.timer = 0.3;
           } else {
             this.state = "recover";
-            this.timer = 0.8;
+            this.timer = 0.55;
           }
         }
         break;
@@ -208,16 +285,36 @@ export class PitWarden extends Enemy {
         break;
       }
 
+      case "guard":
+        // Planted, invulnerable brace — back off, the quake punishes hugging.
+        this.facePlayer(dt);
+        if (this.timer <= 0) {
+          this.wardShock(4.8, 18, 0xff7a3a);
+          this.ctx.sfx.bossSlam();
+          this.state = "recover";
+          this.timer = 0.6;
+        }
+        break;
+
       case "slamTell":
       case "recover":
       case "phaseShift":
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.7, 2.4 - this.phase * 0.45);
+          this.attackCd = Math.max(0.5, 1.7 - this.phase * 0.38);
         }
         break;
     }
+  }
+
+  /** An armored ground-brace: invulnerable through a telegraphed quake that punishes melee. */
+  private beginGuard(): void {
+    this.setInvuln(1.4);
+    this.state = "guard";
+    this.timer = 0.7; // wind-up = telegraph duration
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.7, 0xff7a3a);
+    this.ctx.sfx.bossRoar();
   }
 
   private tryContactDamageBoss(): void {
@@ -283,7 +380,7 @@ export class PitWarden extends Enemy {
       }
     }
     this.state = "recover";
-    this.timer = 1.0;
+    this.timer = 0.7;
   }
 
   private dropPatch(): void {

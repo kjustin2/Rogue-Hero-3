@@ -31,8 +31,8 @@ const godmode = () => page.evaluate(() => {
   c.player.hp = c.player.maxHp;
 });
 
-const boss = async (room, tag, phaseDmg) => {
-  await page.evaluate((r) => window.__rh3.run.loadRoom(r), room);
+const boss = async (act, tag, phaseDmg) => {
+  await page.evaluate((a) => window.__rh3.run.debugLoadNode("boss", a), act);
   await page.waitForTimeout(3400); // intro + spawn
   for (let i = 0; i < 3; i++) {
     await godmode();
@@ -64,8 +64,8 @@ const boss = async (room, tag, phaseDmg) => {
   await godmode();
 };
 
-await boss(7, "spire", 160);
-await boss(11, "colossus", 230);
+await boss(2, "spire", 160);
+await boss(3, "colossus", 230);
 
 console.log(errors.length ? `CONSOLE ERRORS (${errors.length}):\n` + errors.slice(0, 10).join("\n") : "NO CONSOLE ERRORS");
 await browser.close();

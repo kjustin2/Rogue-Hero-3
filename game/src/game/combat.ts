@@ -15,9 +15,9 @@ interface SwingStage {
 
 /** Light, light, 360° finisher. Clicking mid-swing buffers the next stage. */
 const CHAIN: SwingStage[] = [
-  { dur: 0.26, dmg: 9, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.24, dmg: 9, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.36, dmg: 18, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
+  { dur: 0.26, dmg: 7, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
+  { dur: 0.24, dmg: 7, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
+  { dur: 0.36, dmg: 15, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
 ];
 
 const STRIKE_POINT = 0.3; // fraction of swing where the hit lands
@@ -31,6 +31,10 @@ interface SlashArc {
 }
 
 export type PlayerDamageResult = "hit" | "dodged" | "shielded" | "invulnerable";
+
+// Scratch vectors for charge-glow blade points (avoid per-frame allocation).
+const _chTip = new THREE.Vector3();
+const _chBase = new THREE.Vector3();
 
 /**
  * Hit resolution for everything: the player's melee chain, the central
@@ -46,11 +50,27 @@ export class Combat {
   private chainReset = 0;
   private lastFinished = -1;
   private slashes: SlashArc[] = [];
+  /** Cached slash-arc geometries keyed by (range,width) — reused across swings (no per-swing alloc). */
+  private slashGeoCache = new Map<string, THREE.RingGeometry>();
   private coldCrashLatch = false;
   /** Brief invulnerability after crashing. */
   private crashIframes = 0;
   /** Enemies hit by the current swing (for combo tempo). */
   private swingHits = 0;
+  /** In-run passive growth (Ascendant ranks) — a damage multiplier that climbs with kills. */
+  runRankMult = 1;
+  /** Charged-heavy state: how long attack has been held, and whether a charge is winding up. */
+  private chargeT = 0;
+  private charging = false;
+
+  /** Parry window: the opening beat of any swing — meeting a hit here deflects it. */
+  get parryActive(): boolean {
+    return this.stageIdx >= 0 && this.swingT < 0.16;
+  }
+  /** True while a heavy strike is fully charged and ready to release. */
+  get charged(): boolean {
+    return this.chargeT >= 0.4;
+  }
 
   constructor(private ctx: Ctx) {
     for (let i = 0; i < 5; i++) {
@@ -73,6 +93,16 @@ export class Combat {
     return this.stageIdx >= 0;
   }
 
+  /** Clear transient swing/charge state at a room boundary (so nothing carries across). */
+  clearTransient(): void {
+    this.chargeT = 0;
+    this.charging = false;
+    this.stageIdx = -1;
+    this.swingT = 0;
+    this.buffered = false;
+    this.ctx.player.animSwing = null;
+  }
+
   // ----------------------------------------------------------- player damage
   /**
    * Single entry point for damage to the player. Returns how it resolved so
@@ -82,6 +112,16 @@ export class Combat {
     const { player, controller, tempo, events, stats } = this.ctx;
     if (!player.alive) return "invulnerable";
     if (this.crashIframes > 0) return "invulnerable";
+
+    // Parry: meeting a frontal blow in the opening beat of a swing deflects it.
+    if (this.parryActive) {
+      const dx = srcX - player.pos.x;
+      const dz = srcZ - player.pos.z;
+      if (Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) < 1.1) {
+        this.parryRiposte(srcX, srcZ);
+        return "shielded";
+      }
+    }
 
     if (controller.invulnerable) {
       if (controller.inPerfectWindow) {
@@ -101,20 +141,23 @@ export class Combat {
       return "dodged";
     }
 
-    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult() * player.hero.dmgTakenMult));
+    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult() * player.hero.dmgTakenMult * this.ctx.difficulty.enemyDmgMult * this.ctx.overdrive.damageTakenMult));
 
     // Riposte stance: negate the hit and answer with a nova
     if (this.ctx.caster.riposteActive) {
+      const honed = this.ctx.caster.riposteUpgradedActive;
       this.ctx.caster.consumeRiposte();
+      const novaR = honed ? 5.5 : 4;
+      const novaDmg = honed ? 40 : 25;
       for (const e of this.ctx.enemies.living()) {
         const dx = e.pos.x - player.pos.x;
         const dz = e.pos.z - player.pos.z;
-        if (Math.hypot(dx, dz) < 4 + e.radius) {
-          this.dealDamage(e, 25, { kbX: dx, kbZ: dz, kb: 7, heavy: true });
+        if (Math.hypot(dx, dz) < novaR + e.radius) {
+          this.dealDamage(e, novaDmg, { kbX: dx, kbZ: dz, kb: 7, heavy: true });
         }
       }
       tempo.gain(10);
-      this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 4, color: 0xffe066, duration: 0.45 });
+      this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: novaR, color: 0xffe066, duration: 0.45 });
       this.ctx.fx.burst({
         x: player.pos.x, y: 1.1, z: player.pos.z,
         count: 26, color: [0xffe066, 0xffffff],
@@ -154,7 +197,7 @@ export class Combat {
       this.ctx.floaters.spawn(player.pos.x, 2.2, player.pos.z, "SECOND WIND", "heal");
       this.ctx.stage.punch(0.6);
       this.ctx.sfx.coldCrash();
-      events.emit("PLAYER_HIT", { dmg });
+      events.emit("PLAYER_HIT", { dmg, srcX, srcZ });
       return "hit";
     }
 
@@ -162,7 +205,7 @@ export class Combat {
     stats.damageTaken += dmg;
     player.flashHit();
     tempo.drain(10);
-    events.emit("PLAYER_HIT", { dmg });
+    events.emit("PLAYER_HIT", { dmg, srcX, srcZ });
     this.ctx.relics.onDamageTaken(srcX, srcZ);
 
     const dx = player.pos.x - srcX;
@@ -192,8 +235,26 @@ export class Combat {
   dealDamage(e: Enemy, baseDmg: number, opts: DamageOpts & { countCombo?: boolean } = {}): void {
     const { tempo, stats, events } = this.ctx;
     const zone = tempo.zone;
-    const dmg = Math.max(1, Math.round(baseDmg * zone.damageMult * this.ctx.relics.damageDealtMult(e)));
+    const wasFrozen = e.frozen > 0;
+    const dmg = Math.max(1, Math.round(
+      baseDmg * zone.damageMult * tempo.crescendoMult * this.ctx.overdrive.damageMult * this.runRankMult * e.vulnerableMult * this.ctx.relics.damageDealtMult(e)
+    ));
     const killed = e.takeDamage(dmg, opts);
+    this.ctx.overdrive.onDamageDealt(e.lastHitShielded ? e.lastBodyDamage : dmg);
+    // Shatterglass: a blow on a frozen foe shatters the ice for a frost burst.
+    if (!opts.noDetonate && wasFrozen && this.ctx.relics.has("shatterglass")) {
+      this.shatter(e);
+    }
+    // Execution: a heavy blow finishes a badly-wounded foe outright — tempo + a sliver of heal.
+    if (!killed && opts.heavy && e.kind !== "boss" && e.alive && e.hp <= e.maxHp * 0.12) {
+      e.takeDamage(99999);
+      tempo.gain(6);
+      const p = this.ctx.player;
+      if (p.alive && p.hp < p.maxHp) { p.hp = Math.min(p.maxHp, p.hp + 2); events.emit("HEAL", { amount: 2 }); }
+      this.ctx.floaters.spawn(e.pos.x, 2.3, e.pos.z, "EXECUTE", "tempo");
+      this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: 2.4, color: 0xffffff, duration: 0.3 });
+      this.ctx.cam.addTrauma(0.16);
+    }
     // A shielded hit drains the guard (the enemy spawns its own chip floater + sparks);
     // only what reached the BODY counts toward the stat and the generic FX.
     const bodyDmg = e.lastHitShielded ? e.lastBodyDamage : dmg;
@@ -215,6 +276,50 @@ export class Combat {
     }
     events.emit("ENEMY_HIT", { x: e.pos.x, y: 1, z: e.pos.z, dmg: bodyDmg, heavy: !!opts.heavy, killed });
     if (opts.countCombo) this.swingHits++;
+  }
+
+  /** Parry: negate the blow, surge tempo, and counter the attacker. */
+  private parryRiposte(srcX: number, srcZ: number): void {
+    const p = this.ctx.player;
+    this.ctx.tempo.gain(14);
+    this.ctx.cam.addTrauma(0.2);
+    this.ctx.stage.punch(0.3);
+    this.ctx.fx.ring(p.pos.x, p.pos.z, { radius: 2.4, color: 0xffe066, duration: 0.35 });
+    this.ctx.fx.burst({
+      x: p.pos.x, y: 1.1, z: p.pos.z,
+      count: 20, color: [0xffe066, 0xffffff], speed: [4, 11], up: 0.5, size: [0.35, 0.8], life: [0.2, 0.45], gravity: -2, drag: 3,
+    });
+    this.ctx.floaters.spawn(p.pos.x, 2.0, p.pos.z, "PARRY", "tempo");
+    this.ctx.sfx.shieldHit();
+    // Counter the nearest foe to the blow's source.
+    let best: Enemy | null = null;
+    let bestD = 4;
+    for (const e of this.ctx.enemies.living()) {
+      const d = Math.hypot(e.pos.x - srcX, e.pos.z - srcZ);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    if (best) this.dealDamage(best, 24, { kbX: best.pos.x - p.pos.x, kbZ: best.pos.z - p.pos.z, kb: 8, heavy: true });
+  }
+
+  /** Shatterglass detonation: clear the freeze and blast nearby foes with frost. */
+  private shatter(src: Enemy): void {
+    src.frozen = 0;
+    const R = 3.2;
+    for (const e of this.ctx.enemies.living()) {
+      if (e === src) continue;
+      const dx = e.pos.x - src.pos.x;
+      const dz = e.pos.z - src.pos.z;
+      if (Math.hypot(dx, dz) < R + e.radius) {
+        this.dealDamage(e, 14, { kbX: dx, kbZ: dz, kb: 5, heavy: true, noDetonate: true });
+      }
+    }
+    this.ctx.fx.ring(src.pos.x, src.pos.z, { radius: R, color: 0xbfeaff, duration: 0.4 });
+    this.ctx.fx.burst({
+      x: src.pos.x, y: 1, z: src.pos.z,
+      count: 24, color: [0xbfeaff, 0xffffff], speed: [4, 12], up: 0.5, size: [0.3, 0.8], life: [0.2, 0.5], gravity: -3, drag: 3,
+    });
+    this.ctx.sfx.coldCrash();
+    this.ctx.cam.addTrauma(0.18);
   }
 
   /** Sweep all living enemies inside an arc. Returns number hit. */
@@ -251,11 +356,14 @@ export class Combat {
   crashNova(): void {
     const { tempo, player } = this.ctx;
     if (!tempo.crashReady) return;
-    const mult = tempo.zone.damageMult;
+    // Crash mastery: cashing out near the very top (≥95) is a "perfect crash" —
+    // a wider, harder nova that refunds a little heat back.
+    const perfect = tempo.value >= 95;
+    const mult = tempo.zone.damageMult * (perfect ? 1.5 : 1);
     tempo.crash(this.ctx.relics.crashResetValue() ?? undefined);
     this.crashIframes = 0.45;
     this.ctx.stats.crashes++;
-    const R = 6;
+    const R = perfect ? 8 : 6;
     this.ctx.events.emit("CRASH", { x: player.pos.x, z: player.pos.z });
     for (const e of this.ctx.enemies.living()) {
       const dx = e.pos.x - player.pos.x;
@@ -263,6 +371,10 @@ export class Combat {
       if (Math.hypot(dx, dz) < R + e.radius) {
         this.dealDamage(e, 15 * mult, { kbX: dx, kbZ: dz, kb: 12, heavy: true });
       }
+    }
+    if (perfect) {
+      tempo.gain(15);
+      this.ctx.floaters.spawn(player.pos.x, 2.1, player.pos.z, "PERFECT CRASH", "tempo");
     }
     this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0xff4252, duration: 0.55 });
     this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: R * 0.6, color: 0xffffff, duration: 0.4 });
@@ -276,6 +388,30 @@ export class Combat {
     this.ctx.stage.punch(0.5);
     this.ctx.sfx.crash();
     this.ctx.relics.onCrash();
+  }
+
+  /** Released charged heavy: a wide guard-breaking sweep that leaves foes Vulnerable. */
+  private chargedHeavy(): void {
+    const p = this.ctx.player;
+    const hero = p.hero;
+    const range = 4.2;
+    const hits = this.meleeSweep(p.facing, Math.PI * 2, range, 40 * hero.meleeDmgMult, 14 * hero.kbMult, true);
+    for (const e of this.ctx.enemies.living()) {
+      if (Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) < range + e.radius) e.applyVulnerable(3, 1.25);
+    }
+    this.slashVisual(Math.PI * 2, range, true);
+    this.ctx.tempo.gain(10);
+    this.ctx.cam.addTrauma(0.42);
+    this.ctx.cam.kick(Math.sin(p.facing), Math.cos(p.facing), 5);
+    this.ctx.stage.punch(0.5);
+    this.ctx.cam.pulseFov(0.6);
+    this.ctx.fx.ring(p.pos.x, p.pos.z, { radius: range, color: 0xffcc66, duration: 0.45 });
+    this.ctx.fx.burst({
+      x: p.pos.x, y: 1, z: p.pos.z,
+      count: 40, color: [0xffcc66, 0xffffff], speed: [5, 15], up: 0.7, size: [0.4, 1.1], life: [0.3, 0.7], gravity: -4, drag: 2.5,
+    });
+    this.ctx.sfx.swing(2, hits > 0);
+    this.ctx.floaters.spawn(p.pos.x, 2.1, p.pos.z, "HEAVY", "crit");
   }
 
   private coldCrash(): void {
@@ -310,13 +446,18 @@ export class Combat {
     if (this.ctx.tempo.value > 5) this.coldCrashLatch = false;
 
     // Crash input
-    if (input.pressed("KeyF") && this.ctx.tempo.crashReady) {
+    if (input.actionPressed("crash") && this.ctx.tempo.crashReady) {
       this.crashNova();
+    }
+
+    // Overdrive input — spend Critical heat for the hero super
+    if (input.actionPressed("overdrive")) {
+      this.ctx.overdrive.tryActivate();
     }
 
     // Melee chain
     this.chainReset -= dt;
-    if (input.mousePressed[0] && !this.ctx.controller.dodging) {
+    if (input.actionPressed("attack") && !this.ctx.controller.dodging) {
       if (this.stageIdx < 0) {
         // Within the chain window, the combo resumes where it left off
         const next = this.chainReset > 0 ? (this.lastFinished + 1) % CHAIN.length : 0;
@@ -324,6 +465,21 @@ export class Combat {
       } else if (this.swingT / CHAIN[this.stageIdx].dur > 0.45) {
         this.buffered = true;
       }
+    }
+
+    // Charged heavy: holding attack between swings winds up a guard-breaking blow.
+    const attackDown = input.actionDown("attack");
+    if (attackDown && this.stageIdx < 0 && !this.ctx.controller.dodging) {
+      this.chargeT += dt;
+      this.charging = this.chargeT > 0.18;
+      if (this.charging && Math.random() < dt * 26) {
+        player.getBladePoints(_chTip, _chBase);
+        this.ctx.fx.burst({ x: _chTip.x, y: _chTip.y, z: _chTip.z, count: 2, color: [0xffcc66, 0xffffff], speed: [0.5, 2], up: 1, size: [0.2, 0.5], life: [0.2, 0.5], gravity: -1, drag: 2 });
+      }
+    } else {
+      if (this.charged) this.chargedHeavy();
+      this.charging = false;
+      this.chargeT = 0;
     }
 
     if (this.stageIdx >= 0) {
@@ -400,9 +556,14 @@ export class Combat {
     // RingGeometry sector is drawn in the XY plane starting at +X; lay it flat
     // and rotate so it's centered on the facing direction.
     const width = Math.min(stage.arc, Math.PI * 1.9);
-    s.mesh.geometry.dispose();
-    s.mesh.geometry = new THREE.RingGeometry(stage.range * 0.45, stage.range * 0.95, 36, 1, 0, width);
-    s.mesh.geometry.rotateX(-Math.PI / 2);
+    const key = `${stage.range.toFixed(2)}|${width.toFixed(3)}`;
+    let geo = this.slashGeoCache.get(key);
+    if (!geo) {
+      geo = new THREE.RingGeometry(stage.range * 0.45, stage.range * 0.95, 36, 1, 0, width);
+      geo.rotateX(-Math.PI / 2);
+      this.slashGeoCache.set(key, geo);
+    }
+    s.mesh.geometry = geo; // shared/cached — never disposed per-swing
     s.mesh.position.set(p.pos.x, 1.0, p.pos.z);
     // Flattened sector spans planar angles [0, width] from local +X; center it on facing.
     s.mesh.rotation.set(-0.12, p.facing - Math.PI / 2 - width / 2, 0);

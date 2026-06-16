@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
 import { clamp01, damp } from "../core/math";
 import type { Ctx } from "./ctx";
+import type { Enemy } from "./enemies";
 
 const DODGE_DURATION = 0.22;
 const DODGE_SPEED = 17;
@@ -26,7 +27,20 @@ export class Controller {
   /** While >0, normal input movement is suppressed (dash cards). */
   externalMoveTimer = 0;
 
+  // --- Gamepad auto-aim / lock-on
+  /** Auto-aim ON (Settings): face & target the focused enemy when the right stick is idle. */
+  autoAim = true;
+  /** The enemy auto-aim currently locks onto (gamepad only). null on mouse/keyboard. */
+  private target: Enemy | null = null;
+  private reticle: THREE.Mesh | null = null;
+  private reticleSpin = 0;
+
   constructor(private ctx: Ctx) {}
+
+  /** The locked-on enemy, for HUD / reticle consumers. */
+  get focusTarget(): Enemy | null {
+    return this.target && this.target.alive ? this.target : null;
+  }
 
   get dodging(): boolean {
     return this.dodgeTimer >= 0 && this.dodgeTimer < DODGE_DURATION;
@@ -37,7 +51,9 @@ export class Controller {
   }
 
   get inPerfectWindow(): boolean {
-    return this.dodging && this.dodgeTimer < PERFECT_WINDOW && !this.perfectConsumed;
+    // Ascension can shrink the window (dodgeWindowMult < 1) to demand tighter timing.
+    const window = PERFECT_WINDOW * this.ctx.difficulty.dodgeWindowMult;
+    return this.dodging && this.dodgeTimer < window && !this.perfectConsumed;
   }
 
   consumePerfect(): void {
@@ -57,37 +73,53 @@ export class Controller {
       return;
     }
 
-    // Facing: always toward cursor
-    const aim = input.aimPoint;
-    const dx = aim.x - player.pos.x;
-    const dz = aim.z - player.pos.z;
-    if (dx * dx + dz * dz > 0.04) {
-      player.facing = Math.atan2(dx, dz);
-    }
-    this.ctx.cam.aimPoint.copy(aim);
-
-    // Input direction
-    let ix = 0;
-    let iz = 0;
-    if (input.down("KeyW") || input.down("ArrowUp")) iz -= 1;
-    if (input.down("KeyS") || input.down("ArrowDown")) iz += 1;
-    if (input.down("KeyA") || input.down("ArrowLeft")) ix -= 1;
-    if (input.down("KeyD") || input.down("ArrowRight")) ix += 1;
+    // Movement direction (keyboard or analog left stick)
+    const mv = input.moveVector();
+    const ix = mv.x;
+    const iz = mv.z;
     const inputLen = Math.hypot(ix, iz);
-    if (inputLen > 0) {
-      ix /= inputLen;
-      iz /= inputLen;
+
+    // Facing: cursor (mouse) or right-stick / auto-aim (gamepad)
+    if (input.usingGamepad) {
+      if (this.autoAim) {
+        if (this.target && (!this.target.alive || this.target.hp <= 0)) this.target = null;
+        if (input.actionPressed("target")) this.cycleTarget();
+      } else {
+        this.target = null;
+      }
+      const a = input.aimDir();
+      if (a) {
+        // Right stick aims manually; flicking it also re-locks toward the stick.
+        player.facing = Math.atan2(a.x, a.z);
+        if (this.autoAim) this.targetTowardDir(a.x, a.z);
+        input.aimPoint.set(player.pos.x + Math.sin(player.facing) * 8, 0, player.pos.z + Math.cos(player.facing) * 8);
+      } else if (this.autoAim && this.acquireTarget()) {
+        // Auto-aim: face and target-with-cards the locked enemy.
+        const t = this.target!;
+        player.facing = Math.atan2(t.pos.x - player.pos.x, t.pos.z - player.pos.z);
+        input.aimPoint.set(t.pos.x, 0, t.pos.z);
+      } else {
+        if (inputLen > 0.1) player.facing = Math.atan2(ix, iz);
+        input.aimPoint.set(player.pos.x + Math.sin(player.facing) * 8, 0, player.pos.z + Math.cos(player.facing) * 8);
+      }
+      this.updateReticle();
+    } else {
+      this.target = null;
+      if (this.reticle) this.reticle.visible = false;
+      const aim = input.aimPoint;
+      const dx = aim.x - player.pos.x;
+      const dz = aim.z - player.pos.z;
+      if (dx * dx + dz * dz > 0.04) {
+        player.facing = Math.atan2(dx, dz);
+      }
     }
+    this.ctx.cam.aimPoint.copy(input.aimPoint);
 
     this.dodgeCooldown -= dt;
     this.externalMoveTimer = Math.max(0, this.externalMoveTimer - dt);
 
     // Start dodge
-    if (
-      (input.pressed("Space") || input.pressed("ShiftLeft") || input.mousePressed[2]) &&
-      this.dodgeCooldown <= 0 &&
-      !this.dodging
-    ) {
+    if (input.actionPressed("dodge") && this.dodgeCooldown <= 0 && !this.dodging) {
       this.dodgeTimer = 0;
       this.dodgeCooldown = DODGE_DURATION + DODGE_COOLDOWN;
       this.perfectConsumed = false;
@@ -122,7 +154,7 @@ export class Controller {
         player.animDodge = null;
       }
     } else if (this.externalMoveTimer <= 0) {
-      const target = player.hero.speed * speedMult;
+      const target = player.hero.speed * speedMult * this.ctx.overdrive.moveSpeedMult;
       this.vel.x = damp(this.vel.x, ix * target, 11, dt);
       this.vel.y = damp(this.vel.y, iz * target, 11, dt);
     }
@@ -146,5 +178,71 @@ export class Controller {
 
     player.animMoveAmount = clamp01(this.vel.length() / player.hero.speed);
     this.ctx.cam.target.set(player.pos.x, 0, player.pos.z);
+  }
+
+  // ------------------------------------------------------------- lock-on / auto-aim
+  private livingTargets(): Enemy[] {
+    return this.ctx.enemies.living().filter((e) => e.alive && e.hp > 0);
+  }
+
+  /** Ensure a live target, picking the nearest if we have none. Returns whether one exists. */
+  private acquireTarget(): boolean {
+    if (!this.target || !this.target.alive || this.target.hp <= 0) {
+      const p = this.ctx.player.pos;
+      let best: Enemy | null = null, bd = Infinity;
+      for (const e of this.livingTargets()) {
+        const d = (e.pos.x - p.x) ** 2 + (e.pos.z - p.z) ** 2;
+        if (d < bd) { bd = d; best = e; }
+      }
+      this.target = best;
+    }
+    return !!this.target;
+  }
+
+  /** [Y] — cycle to the next enemy by distance (wraps). */
+  private cycleTarget(): void {
+    const p = this.ctx.player.pos;
+    const list = this.livingTargets().sort(
+      (a, b) => ((a.pos.x - p.x) ** 2 + (a.pos.z - p.z) ** 2) - ((b.pos.x - p.x) ** 2 + (b.pos.z - p.z) ** 2)
+    );
+    if (!list.length) { this.target = null; return; }
+    const i = this.target ? list.indexOf(this.target) : -1;
+    this.target = list[(i + 1) % list.length];
+    this.ctx.events.emit("UI_CLICK", {});
+  }
+
+  /** Right-stick flick re-locks onto the enemy best aligned with the aim direction. */
+  private targetTowardDir(ax: number, az: number): void {
+    const p = this.ctx.player.pos;
+    let best: Enemy | null = null, bestDot = 0.35; // require reasonable alignment to switch
+    for (const e of this.livingTargets()) {
+      const ex = e.pos.x - p.x, ez = e.pos.z - p.z;
+      const el = Math.hypot(ex, ez) || 1;
+      const dot = (ex / el) * ax + (ez / el) * az;
+      if (dot > bestDot) { bestDot = dot; best = e; }
+    }
+    if (best) this.target = best;
+  }
+
+  private updateReticle(): void {
+    if (!this.reticle) {
+      const geo = new THREE.RingGeometry(0.78, 0.96, 4, 1); // a diamond bracket
+      geo.rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xff5a6e, transparent: true, opacity: 0.92, depthWrite: false });
+      this.reticle = new THREE.Mesh(geo, mat);
+      this.reticle.renderOrder = 6;
+      this.ctx.stage.scene.add(this.reticle);
+    }
+    const t = this.target;
+    if (t && t.alive) {
+      this.reticle.visible = true;
+      this.reticleSpin += 0.9 * (1 / 60);
+      const s = (t.radius || 0.8) * 2.2;
+      this.reticle.position.set(t.pos.x, 0.07, t.pos.z);
+      this.reticle.rotation.y = this.reticleSpin;
+      this.reticle.scale.setScalar(s);
+    } else {
+      this.reticle.visible = false;
+    }
   }
 }

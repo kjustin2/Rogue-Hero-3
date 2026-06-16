@@ -7,6 +7,8 @@ export type EnemyKind =
   | "husk" | "spitter" | "swarmer" | "bomber" | "sentinel"
   | "wisp" | "leaper" | "tether" | "mirror" | "caster"
   | "shade" | "bastion"
+  | "brute" | "harrier" | "splitter"
+  | "voidling" | "warper"
   | "boss";
 
 let NEXT_ID = 1;
@@ -27,6 +29,8 @@ export interface DamageOpts {
   kbZ?: number;
   kb?: number;
   heavy?: boolean;
+  /** Guards detonator relics (Shatterglass) from recursing on their own AoE. */
+  noDetonate?: boolean;
 }
 
 /**
@@ -43,6 +47,13 @@ export abstract class Enemy {
   speed = 3;
   alive = true;
   frozen = 0;
+  /** Vulnerable status: takes extra damage while >0 (status-combo enabler). */
+  vulnTime = 0;
+  private vulnMult = 1;
+  /** Elite affix ids (hasted/volatile/regenerator/frenzied/siphon) — may carry several. */
+  affixes: string[] = [];
+  protected affixSpeedMult = 1;
+  private affixTimer = 0;
   contactDmg = 0;
   protected contactCd = 0;
 
@@ -66,6 +77,12 @@ export abstract class Enemy {
   protected hitFlash = 0;
   protected flashMats: FlashMat[] = [];
   protected t = Math.random() * 10;
+  /** While >0 the enemy deflects ALL damage — a telegraphed boss ward window. */
+  protected invulnTime = 0;
+  private deflectCd = 0;
+  private wardRing: THREE.Mesh | null = null;
+  /** Ward-aura colour; bosses override to match their palette. */
+  protected wardColor = 0x88ccff;
 
   private hpBg: THREE.Sprite;
   private hpFill: THREE.Sprite;
@@ -133,10 +150,20 @@ export abstract class Enemy {
       this.lastBodyDamage = 0;
       return false;
     }
+    // Warded: the boss is briefly invulnerable — deflect the hit entirely.
+    if (this.invulnTime > 0) {
+      this.lastBodyDamage = 0;
+      this.deflect();
+      return false;
+    }
+    // Ascension: non-boss foes shrug off flat armor (you always land ≥1) and can resist knockback.
+    const diff = this.ctx.difficulty;
+    if (this.kind !== "boss" && diff.enemyArmor > 0) amount = Math.max(1, amount - diff.enemyArmor);
+    const kbResist = this.kind === "boss" ? 0 : diff.enemyKbResist;
     this.lastBodyDamage = Math.min(amount, Math.max(0, this.hp));
     this.hp -= amount;
     this.hitFlash = 1;
-    const kbStrength = (opts.kb ?? 0) * (opts.heavy ? 1.4 : 1);
+    const kbStrength = (opts.kb ?? 0) * (opts.heavy ? 1.4 : 1) * (1 - kbResist);
     if (kbStrength > 0) {
       const len = Math.hypot(opts.kbX ?? 0, opts.kbZ ?? 0) || 1;
       this.kb.x += ((opts.kbX ?? 0) / len) * kbStrength;
@@ -195,6 +222,131 @@ export abstract class Enemy {
     this.frozen = Math.max(this.frozen, duration);
   }
 
+  /** Mark this enemy Vulnerable — it takes `mult`× damage for `seconds`. */
+  applyVulnerable(seconds: number, mult: number): void {
+    this.vulnMult = Math.max(this.vulnTime > 0 ? this.vulnMult : 1, mult);
+    this.vulnTime = Math.max(this.vulnTime, seconds);
+  }
+  get vulnerableMult(): number {
+    return this.vulnTime > 0 ? this.vulnMult : 1;
+  }
+  get isVulnerable(): boolean {
+    return this.vulnTime > 0;
+  }
+
+  // ---------------------------------------------------------------- ward / invuln (bosses)
+  /** Enter a telegraphed invulnerable window — hits are deflected for `seconds`. */
+  protected setInvuln(seconds: number): void {
+    this.invulnTime = Math.max(this.invulnTime, seconds);
+  }
+  get warded(): boolean {
+    return this.invulnTime > 0;
+  }
+
+  /** Feedback when a hit lands on a warded boss: a clink spark + throttled "WARDED" tag. */
+  private deflect(): void {
+    this.hitFlash = Math.max(this.hitFlash, 0.5);
+    if (this.deflectCd > 0) return;
+    this.deflectCd = 0.4;
+    const p = this.ctx.player;
+    const a = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+    const bx = this.pos.x + Math.sin(a) * (this.radius + 0.2);
+    const bz = this.pos.z + Math.cos(a) * (this.radius + 0.2);
+    this.ctx.fx.burst({ x: bx, y: 1.3, z: bz, count: 6, color: [this.wardColor, 0xffffff], speed: [1, 4.5], up: 0.5, size: [0.2, 0.5], life: [0.2, 0.4], gravity: 0, drag: 4 });
+    this.ctx.floaters.spawn(this.pos.x, 2.5, this.pos.z, "WARDED", "shieldbreak", hex(this.wardColor));
+  }
+
+  /** A glowing ward bubble that follows the boss while it's invulnerable. */
+  private updateWard(dt: number): void {
+    if (this.invulnTime <= 0 && !this.wardRing) return;
+    if (!this.wardRing) {
+      const geo = new THREE.TorusGeometry(1, 0.06, 8, 32);
+      geo.rotateX(-Math.PI / 2);
+      const mat = new THREE.MeshBasicMaterial({ color: this.wardColor, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      this.wardRing = new THREE.Mesh(geo, mat);
+      this.root.add(this.wardRing);
+    }
+    const mat = this.wardRing.material as THREE.MeshBasicMaterial;
+    if (this.invulnTime > 0) {
+      this.wardRing.visible = true;
+      const s = this.radius * 1.9;
+      this.wardRing.scale.set(s, s, s);
+      this.wardRing.position.y = 1.4 + Math.sin(this.t * 5) * 0.15;
+      this.wardRing.rotation.y += dt * 2;
+      mat.color.setHex(this.wardColor);
+      mat.opacity = 0.5 + Math.abs(Math.sin(this.t * 6)) * 0.4;
+    } else {
+      this.wardRing.visible = false;
+    }
+  }
+
+  /**
+   * A close-range punish shockwave centered on the boss — discourages hugging.
+   * Bosses fire this (usually under a ward) when their guard telegraph completes.
+   */
+  protected wardShock(radius: number, dmg: number, color: number): void {
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius, color, duration: 0.5 });
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: radius * 0.5, color: 0xffffff, duration: 0.32 });
+    this.ctx.fx.burst({ x: this.pos.x, y: 0.6, z: this.pos.z, count: 30, color: [color, 0xffffff], speed: [4, 13], up: 0.8, size: [0.4, 1.1], life: [0.3, 0.8], gravity: -4, drag: 2.2 });
+    this.ctx.cam.addTrauma(0.4);
+    this.ctx.stage.punch(0.3);
+    const p = this.ctx.player;
+    if (Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < radius + p.radius) {
+      this.ctx.combat.damagePlayer(dmg, this.pos.x, this.pos.z);
+    }
+  }
+
+  /** Apply an elite affix (a foe may stack several): static mods + a persistent tint. */
+  applyAffix(id: string, color: number): void {
+    if (!this.affixes.includes(id)) this.affixes.push(id);
+    // Persistent colored glow so the threat reads at a glance.
+    for (const f of this.flashMats) {
+      f.baseEmissive.lerp(new THREE.Color(color), 0.55);
+      f.baseIntensity = Math.max(f.baseIntensity, 0.5);
+    }
+  }
+
+  /** Per-frame affix behavior, evaluated across every affix the foe carries. */
+  private updateAffix(dt: number): void {
+    // Recompute the speed multiplier from all speed-affecting affixes each frame.
+    let speed = 1;
+    if (this.affixes.includes("hasted")) speed *= 1.45;
+    if (this.affixes.includes("frenzied") && this.hp < this.maxHp * 0.4) speed *= 1.7;
+    this.affixSpeedMult = speed;
+
+    if (this.affixes.includes("regenerator") && this.hp < this.maxHp) {
+      this.hp = Math.min(this.maxHp, this.hp + 4 * dt);
+    }
+    if (this.affixes.includes("siphon")) {
+      this.affixTimer -= dt;
+      if (this.affixTimer <= 0) {
+        this.affixTimer = 2;
+        for (const o of this.ctx.enemies.living()) {
+          if (o === this || o.kind === "boss" || !o.alive) continue;
+          if (Math.hypot(o.pos.x - this.pos.x, o.pos.z - this.pos.z) < 5) {
+            o.hp = Math.min(o.maxHp, o.hp + 5);
+          }
+        }
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 5, color: 0xff6ba0, duration: 0.4 });
+      }
+    }
+  }
+
+  /** Volatile affix: a damaging burst when the elite dies. */
+  private volatileBurst(): void {
+    const R = 3.4;
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R, color: 0xff7a3a, duration: 0.45 });
+    this.ctx.fx.burst({
+      x: this.pos.x, y: 1, z: this.pos.z,
+      count: 30, color: [0xff7a3a, 0xffcc66, 0xffffff], speed: [4, 13], up: 0.7, size: [0.4, 1.0], life: [0.3, 0.7], gravity: -4, drag: 2.5,
+    });
+    this.ctx.cam.addTrauma(0.22);
+    const p = this.ctx.player;
+    if (p.alive && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < R + p.radius) {
+      this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z);
+    }
+  }
+
   /** Damage-free knockback along (x, z) — pulls when pointed inward. Bosses shrug it off. */
   shove(x: number, z: number, strength: number): void {
     if (this.kind === "boss") return;
@@ -206,6 +358,7 @@ export abstract class Enemy {
   die(): void {
     if (!this.alive) return;
     this.alive = false;
+    if (this.affixes.includes("volatile")) this.volatileBurst();
     this.onDeath();
     this.ctx.events.emit("KILL", { x: this.pos.x, z: this.pos.z, kind: this.kind });
     const c = this.deathColor();
@@ -244,6 +397,11 @@ export abstract class Enemy {
     if (!this.alive) return;
     this.t += dt;
     this.contactCd -= dt;
+    if (this.vulnTime > 0) this.vulnTime -= dt;
+    if (this.invulnTime > 0) this.invulnTime -= dt;
+    if (this.deflectCd > 0) this.deflectCd -= dt;
+    if (this.invulnTime > 0 || this.wardRing) this.updateWard(dt);
+    if (this.affixes.length) this.updateAffix(dt);
 
     this.stagger = Math.max(0, this.stagger - dt);
     if (this.frozen > 0) {
@@ -322,7 +480,7 @@ export abstract class Enemy {
     const dz = tz - this.pos.z;
     const d = Math.hypot(dx, dz);
     if (d > 0.05) {
-      const sp = this.speed * speedScale;
+      const sp = this.speed * speedScale * this.affixSpeedMult * (this.kind === "boss" ? 1 : this.ctx.difficulty.enemySpeedMult) * this.ctx.overdrive.enemySpeedMult;
       this.pos.x += (dx / d) * sp * dt;
       this.pos.z += (dz / d) * sp * dt;
       this.heading = dampAngle(this.heading, Math.atan2(dx, dz), 8, dt);
@@ -376,6 +534,15 @@ export class Husk extends Enemy {
     this.addMesh(new THREE.BoxGeometry(0.5, 0.4, 0.45), bodyMat, 0, 1.15, 0.35); // head
     this.addMesh(new THREE.BoxGeometry(0.1, 0.08, 0.06), this.eyeMat, -0.12, 1.2, 0.59);
     this.addMesh(new THREE.BoxGeometry(0.1, 0.08, 0.06), this.eyeMat, 0.12, 1.2, 0.59);
+    // Gaping bone jaw with a row of teeth
+    this.addMesh(new THREE.BoxGeometry(0.42, 0.12, 0.3), boneMat, 0, 1.0, 0.42);
+    for (let i = 0; i < 4; i++) {
+      const tooth = this.addMesh(new THREE.ConeGeometry(0.035, 0.13, 4), boneMat, (i - 1.5) * 0.1, 1.04, 0.55);
+      tooth.rotation.x = Math.PI;
+    }
+    // Exposed collar-bone ribs across the chest
+    this.addMesh(new THREE.BoxGeometry(0.6, 0.07, 0.07), boneMat, 0, 0.92, 0.34);
+    this.addMesh(new THREE.BoxGeometry(0.5, 0.07, 0.07), boneMat, 0, 0.78, 0.36);
     // Bone spikes along the back
     for (let i = 0; i < 3; i++) {
       const sp = this.addMesh(new THREE.ConeGeometry(0.09, 0.4 - i * 0.07, 4), boneMat, 0, 1.05 - i * 0.2, -0.25 - i * 0.16);
@@ -383,6 +550,11 @@ export class Husk extends Enemy {
     }
     this.addMesh(new THREE.BoxGeometry(0.22, 0.5, 0.25), bodyMat, -0.25, 0.25, 0);
     this.addMesh(new THREE.BoxGeometry(0.22, 0.5, 0.25), bodyMat, 0.25, 0.25, 0);
+    // Jagged bone shards bursting from the shoulders
+    const shl = this.addMesh(new THREE.ConeGeometry(0.08, 0.32, 4), boneMat, -0.4, 1.05, 0);
+    shl.rotation.z = 0.8;
+    const shr = this.addMesh(new THREE.ConeGeometry(0.08, 0.32, 4), boneMat, 0.4, 1.05, 0);
+    shr.rotation.z = -0.8;
   }
 
   protected deathColor(): number {
@@ -456,10 +628,27 @@ export class Spitter extends Enemy {
     this.radius = 0.5;
 
     const robeMat = this.stdMat(0x1c2a4a, 0x223a88, 0.3);
+    const trimMat = this.stdMat(0x2e447a, 0x3366cc, 0.7);
+    const eyeMat = this.stdMat(0x000000, 0x66ccff, 2.6);
     this.orbMat = this.stdMat(0x113355, 0x44aaff, 2.2);
     this.addMesh(new THREE.ConeGeometry(0.5, 1.5, 6), robeMat, 0, 0.75);
-    this.addMesh(new THREE.SphereGeometry(0.22, 8, 6), robeMat, 0, 1.62);
+    // Hem ring + a glowing seam up the robe
+    const hem = this.addMesh(new THREE.TorusGeometry(0.46, 0.05, 6, 12), trimMat, 0, 0.18);
+    hem.rotation.x = Math.PI / 2;
+    this.addMesh(new THREE.BoxGeometry(0.07, 1.0, 0.07), trimMat, 0, 0.85, 0.45);
+    // Cowl: cone hood with a recessed face and twin socket eyes
+    const hood = this.addMesh(new THREE.ConeGeometry(0.3, 0.5, 6), robeMat, 0, 1.65);
+    hood.rotation.x = 0.18;
+    this.addMesh(new THREE.SphereGeometry(0.2, 8, 6), robeMat, 0, 1.55, 0.04);
+    this.addMesh(new THREE.SphereGeometry(0.045, 6, 5), eyeMat, -0.08, 1.58, 0.18);
+    this.addMesh(new THREE.SphereGeometry(0.045, 6, 5), eyeMat, 0.08, 1.58, 0.18);
+    // Outstretched casting arm cradling the orb
+    const arm = this.addMesh(new THREE.CylinderGeometry(0.06, 0.05, 0.55, 5), robeMat, 0.12, 1.3, 0.4);
+    arm.rotation.set(Math.PI / 2.4, 0, -0.3);
     this.orb = this.addMesh(new THREE.SphereGeometry(0.16, 10, 8), this.orbMat, 0, 1.25, 0.55);
+    // Faint orbiting shard around the orb
+    const shard = this.addMesh(new THREE.OctahedronGeometry(0.06), trimMat, 0.22, 1.25, 0.55);
+    shard.rotation.set(0.5, 0.5, 0);
   }
 
   protected deathColor(): number {
@@ -519,12 +708,21 @@ export class Swarmer extends Enemy {
     this.contactDmg = 6;
 
     const bodyMat = this.stdMat(0x3a1410, 0xff5511, 0.8);
-    this.addMesh(new THREE.IcosahedronGeometry(0.32, 0), bodyMat, 0, 0.4);
+    const coreMat = this.stdMat(0x1a0805, 0xff8822, 2.4);
     const spikeMat = this.stdMat(0x221111);
-    for (let i = 0; i < 3; i++) {
-      const sp = this.addMesh(new THREE.ConeGeometry(0.05, 0.3, 4), spikeMat, 0, 0.62, 0);
-      sp.rotation.z = (i - 1) * 0.5;
-      sp.position.x = (i - 1) * 0.14;
+    this.addMesh(new THREE.IcosahedronGeometry(0.32, 0), bodyMat, 0, 0.4);
+    // A single furious ember eye glaring forward
+    this.addMesh(new THREE.SphereGeometry(0.12, 8, 6), coreMat, 0, 0.42, 0.26);
+    // Snapping mandibles below the eye
+    const jl = this.addMesh(new THREE.ConeGeometry(0.05, 0.22, 4), spikeMat, -0.08, 0.3, 0.28);
+    jl.rotation.set(1.3, 0, 0.3);
+    const jr = this.addMesh(new THREE.ConeGeometry(0.05, 0.22, 4), spikeMat, 0.08, 0.3, 0.28);
+    jr.rotation.set(1.3, 0, -0.3);
+    // Crown of back spikes, spread wider for a bristling silhouette
+    for (let i = 0; i < 4; i++) {
+      const sp = this.addMesh(new THREE.ConeGeometry(0.05, 0.3, 4), spikeMat, 0, 0.6, -0.05);
+      sp.rotation.z = (i - 1.5) * 0.45;
+      sp.position.x = (i - 1.5) * 0.13;
     }
   }
 
@@ -566,10 +764,26 @@ export class Bomber extends Enemy {
     this.radius = 0.5;
 
     const shellMat = this.stdMat(0x33231a, 0x331100, 0.2);
+    const ironMat = this.stdMat(0x4a3a2a, 0x442200, 0.3);
     this.coreMat = this.stdMat(0x441100, 0xff6600, 1.6);
     this.addMesh(new THREE.SphereGeometry(0.5, 10, 8), shellMat, 0, 0.55);
+    // Riveted iron bands girdling the casing
+    const band = this.addMesh(new THREE.TorusGeometry(0.5, 0.06, 6, 14), ironMat, 0, 0.55);
+    band.rotation.x = Math.PI / 2;
+    const band2 = this.addMesh(new THREE.TorusGeometry(0.4, 0.05, 6, 14), ironMat, 0, 0.55);
+    band2.rotation.set(Math.PI / 2, 0, 0);
+    band2.rotation.z = Math.PI / 2;
+    // Rivets around the equator
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      this.addMesh(new THREE.SphereGeometry(0.05, 5, 4), ironMat, Math.cos(a) * 0.5, 0.55, Math.sin(a) * 0.5);
+    }
+    // Molten core swelling through a cracked top plate
     this.addMesh(new THREE.SphereGeometry(0.3, 8, 6), this.coreMat, 0, 0.85, 0.15);
-    this.addMesh(new THREE.ConeGeometry(0.08, 0.3, 4), this.coreMat, 0, 1.15, 0.15);
+    // Fuse: an iron collar + tapering fuse cone capped with a sputtering ember
+    this.addMesh(new THREE.CylinderGeometry(0.12, 0.14, 0.12, 6), ironMat, 0, 1.02, 0.15);
+    this.addMesh(new THREE.ConeGeometry(0.08, 0.3, 4), this.coreMat, 0, 1.2, 0.15);
+    this.addMesh(new THREE.SphereGeometry(0.07, 6, 5), this.coreMat, 0, 1.38, 0.15);
   }
 
   protected deathColor(): number {
@@ -655,9 +869,19 @@ export class Sentinel extends Enemy {
     // Trim must protrude well past the tapered body (r≈0.62 at this height)
     // or the coincident walls shimmer.
     this.addMesh(new THREE.CylinderGeometry(0.72, 0.72, 0.18, 6), trimMat, 0, 1.0);
+    // Glowing core slit between the armor bands
+    this.addMesh(new THREE.CylinderGeometry(0.64, 0.64, 0.1, 6), this.tipMat, 0, 0.55);
+    // Hexagonal sensor head with a recessed eye
     this.addMesh(new THREE.SphereGeometry(0.3, 8, 6), armorMat, 0, 1.75);
-    // Lance
+    this.addMesh(new THREE.SphereGeometry(0.1, 8, 6), this.tipMat, 0, 1.78, 0.26);
+    // Cooling vent fins flanking the chassis
+    for (const sx of [-0.62, 0.62]) {
+      const fin = this.addMesh(new THREE.BoxGeometry(0.12, 0.7, 0.5), armorMat, sx, 0.75, -0.1);
+      fin.rotation.z = sx < 0 ? 0.2 : -0.2;
+    }
+    // Lance, braced by a glowing collar at the breech
     this.addMesh(new THREE.CylinderGeometry(0.06, 0.06, 1.6, 6), trimMat, 0.55, 1.3, 0).rotation.x = Math.PI / 2;
+    this.addMesh(new THREE.CylinderGeometry(0.13, 0.13, 0.18, 6), trimMat, 0.55, 1.3, 0.2).rotation.x = Math.PI / 2;
     this.addMesh(new THREE.ConeGeometry(0.12, 0.4, 6), this.tipMat, 0.55, 1.3, 0.95).rotation.x = Math.PI / 2;
 
     this.beamMat = new THREE.MeshBasicMaterial({
@@ -810,6 +1034,47 @@ export class EnemyManager {
         if (this.streakCount > ctx.stats.bestStreak) ctx.stats.bestStreak = this.streakCount;
       }
     });
+    // Reactive AI: foes sidestep a lunge aimed down their lane...
+    ctx.events.on("CARD_CAST", ({ id }) => {
+      if (id === "dash-strike" || id === "phase-step" || id === "shield-bash") this.reactToLunge();
+    });
+    // ...and recoil in fear the moment you hit the Critical zone.
+    ctx.events.on("TEMPO_ZONE", ({ zone, prev }) => {
+      if (zone === "critical" && prev !== "critical") this.flinchNearby();
+    });
+  }
+
+  /** A lunge down the player's facing makes foes in the lane scatter sideways. */
+  private reactToLunge(): void {
+    const p = this.ctx.player;
+    const fx = Math.sin(p.facing);
+    const fz = Math.cos(p.facing);
+    for (const e of this.living()) {
+      if (e.kind === "boss") continue;
+      const dx = e.pos.x - p.pos.x;
+      const dz = e.pos.z - p.pos.z;
+      const along = dx * fx + dz * fz;
+      if (along < 0.5 || along > 9) continue; // ahead of the player, within lunge reach
+      const perp = dx * fz - dz * fx; // signed distance from the lane centerline
+      if (Math.abs(perp) > 2.2) continue;
+      if (Math.random() < 0.6) {
+        const side = perp >= 0 ? 1 : -1;
+        e.shove(fz * side, -fx * side, 9); // dive out of the lane
+      }
+    }
+  }
+
+  /** Hitting Critical tempo sends nearby lesser foes recoiling outward in fear. */
+  private flinchNearby(): void {
+    const p = this.ctx.player;
+    let any = false;
+    for (const e of this.living()) {
+      if (e.kind === "boss") continue;
+      const dx = e.pos.x - p.pos.x;
+      const dz = e.pos.z - p.pos.z;
+      if (Math.hypot(dx, dz) < 7) { e.shove(dx, dz, 6); any = true; }
+    }
+    if (any) this.ctx.fx.ring(p.pos.x, p.pos.z, { radius: 6, color: 0xff4252, duration: 0.4 });
   }
 
   /** Telegraphed spawn: warning ring, then the enemy erupts from the floor. */
@@ -826,6 +1091,21 @@ export class EnemyManager {
 
   add(e: Enemy): void {
     this.enemies.push(e);
+  }
+
+  /**
+   * Boot warm-up: build one of every roster enemy off-screen so the renderer
+   * compiles their shader variants NOW (during load) instead of on first spawn
+   * mid-fight — a real-GPU first-use compile shows up as a frame hitch. The
+   * dummies are added to the scene, compiled via Stage.warmUp(), then disposed.
+   */
+  precompile(): void {
+    const dummies: Enemy[] = [];
+    for (const kind of REGISTRY.keys()) {
+      try { dummies.push(makeEnemy(kind, this.ctx, 0, -1000)); } catch { /* skip a bad ctor */ }
+    }
+    this.ctx.stage.warmUp(); // compiles the whole scene, including the dummies just added
+    for (const e of dummies) e.dispose();
   }
 
   living(): Enemy[] {
@@ -858,6 +1138,10 @@ export class EnemyManager {
       if (s.timer <= 0) {
         this.pending.splice(i, 1);
         const e = s.make ? s.make(this.ctx, s.x, s.z) : makeEnemy(s.kind as Exclude<EnemyKind, "boss">, this.ctx, s.x, s.z);
+        // Ascension: scale max HP at the single materialization choke (covers field, elite, boss).
+        const diff = this.ctx.difficulty;
+        const hpMult = e.kind === "boss" ? diff.enemyHpMult * diff.bossHpMult : diff.enemyHpMult;
+        if (hpMult !== 1) e.hp = e.maxHp = Math.round(e.maxHp * hpMult);
         this.enemies.push(e);
         this.ctx.fx.beam(s.x, s.z, e.kind === "boss" ? 0xff5533 : 0xddddff);
         this.ctx.fx.burst({

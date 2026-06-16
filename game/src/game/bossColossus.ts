@@ -8,7 +8,7 @@ const PHASE_LINES = [
   "THE CORE GOES CRITICAL",
 ];
 
-type ColossusState = "idle" | "poundSeq" | "mines" | "tectonicTell" | "recover" | "phaseShift";
+type ColossusState = "idle" | "poundSeq" | "mines" | "tectonicTell" | "recover" | "phaseShift" | "guard";
 
 interface FirePatch {
   x: number;
@@ -54,7 +54,7 @@ export class Colossus extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: ColossusState = "idle";
-  private timer = 2.4;
+  private timer = 1.7;
   private attackPick = 0;
   private pounds: PendingPound[] = [];
   private poundsLeft = 0;
@@ -66,21 +66,27 @@ export class Colossus extends Enemy {
   private patchGeo: THREE.CircleGeometry;
   private coreMat: THREE.MeshStandardMaterial;
   private veinMat: THREE.MeshStandardMaterial;
+  private slagMat: THREE.MeshStandardMaterial;
   private fistL: THREE.Mesh;
   private fistR: THREE.Mesh;
   private fistAnim = 0;
+  // Per-phase appearance escalation (built once, revealed on transition).
+  private p2Plates: THREE.Object3D[] = [];
+  private p3Crown: THREE.Object3D[] = [];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 620;
+    this.hp = this.maxHp = 2100;
     this.speed = 0; // rooted — it pivots, the arena moves instead
     this.radius = 2.2;
+    this.wardColor = 0xff5522;
 
     const slagMat = this.stdMat(0x241210, 0x440f05, 0.4);
     const plateMat = this.stdMat(0x161009);
     this.coreMat = this.stdMat(0x2a0d05, 0xff5522, 2.6);
     this.veinMat = this.stdMat(0x331105, 0xff7733, 1.6);
     const eyeMat = this.stdMat(0x000000, 0xffcc44, 3.2);
+    this.slagMat = slagMat;
 
     // Mountain body
     const body = this.addMesh(new THREE.CylinderGeometry(1.4, 2.3, 3.6, 7), slagMat, 0, 1.8);
@@ -106,6 +112,59 @@ export class Colossus extends Enemy {
 
     this.patchGeo = new THREE.CircleGeometry(1.3, 24);
     this.patchGeo.rotateX(-Math.PI / 2);
+
+    this.buildPhaseLooks();
+  }
+
+  /** Pre-build the escalation geometry hidden until its phase unveils it. */
+  private buildPhaseLooks(): void {
+    // Phase 2: molten armor plates erupt and ring the shoulders like cooling slag.
+    const plateMat = this.stdMat(0x3a1206, 0xff5522, 1.5);
+    const plateGeo = new THREE.BoxGeometry(0.7, 1.1, 0.4);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      const pl = this.addMesh(plateGeo, plateMat, Math.sin(a) * 2.0, 3.0, Math.cos(a) * 2.0);
+      pl.rotation.y = a;
+      pl.rotation.x = 0.3;
+      pl.visible = false;
+      this.p2Plates.push(pl);
+    }
+
+    // Phase 3: a crown of molten horns blazes from the head as the core goes critical.
+    const crownMat = this.stdMat(0x4a1404, 0xffdd55, 2.8);
+    const hornGeo = new THREE.ConeGeometry(0.22, 1.3, 5);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const h = this.addMesh(hornGeo, crownMat, Math.sin(a) * 0.95, 4.5, Math.cos(a) * 0.95);
+      h.rotation.x = Math.cos(a) * 0.5;
+      h.rotation.z = -Math.sin(a) * 0.5;
+      h.visible = false;
+      this.p3Crown.push(h);
+    }
+  }
+
+  /** Visibly escalate the boss at each phase transition. */
+  private applyPhaseLook(phase: number): void {
+    if (phase === 2) {
+      this.root.scale.setScalar(1.08);
+      for (const s of this.p2Plates) s.visible = true;
+      this.slagMat.emissive.set(0x7a1c08);
+      this.slagMat.emissiveIntensity = 0.7;
+      this.coreMat.emissive.set(0xff7733);
+      this.veinMat.emissive.set(0xff9944);
+    } else if (phase === 3) {
+      this.root.scale.setScalar(1.15);
+      for (const s of this.p3Crown) s.visible = true;
+      this.slagMat.color.set(0x401a12);
+      this.slagMat.emissive.set(0xb83008);
+      this.slagMat.emissiveIntensity = 1.0;
+      this.coreMat.emissive.set(0xffcc66);
+      this.veinMat.emissive.set(0xffdd88);
+    }
+    for (const f of this.flashMats) {
+      f.baseEmissive.copy(f.mat.emissive);
+      f.baseIntensity = f.mat.emissiveIntensity;
+    }
   }
 
   protected deathColor(): number {
@@ -126,8 +185,14 @@ export class Colossus extends Enemy {
       this.phase = targetPhase;
       this.state = "phaseShift";
       this.timer = 1.3;
+      this.applyPhaseLook(this.phase);
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 10, color: 0xff5522, duration: 0.8 });
+      this.ctx.fx.burst({
+        x: this.pos.x, y: 3.0, z: this.pos.z,
+        count: 50, color: [0xff5522, 0xffaa44, 0xffffff],
+        speed: [4, 14], up: 0.9, size: [0.5, 1.2], life: [0.4, 0.9], gravity: -5, drag: 2.5,
+      });
       this.ctx.cam.addTrauma(0.55);
       this.ctx.stage.punch(0.35);
       this.ctx.sfx.bossRoar();
@@ -176,6 +241,16 @@ export class Colossus extends Enemy {
   }
 
   // ---------------------------------------------------------------- attacks
+  /** Stone carapace: armor seals (invulnerable) and a wide ring slam punishes melee range. */
+  private beginGuard(): void {
+    this.setInvuln(1.6);
+    this.state = "guard";
+    this.timer = 0.85; // wind-up = telegraph duration
+    this.fistAnim = 1;
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 5.5, 0.85, 0xff5522);
+    this.ctx.sfx.beamCharge();
+  }
+
   private beginPoundSeq(): void {
     this.state = "poundSeq";
     this.poundsLeft = this.phase >= 3 ? 3 : 2;
@@ -187,7 +262,7 @@ export class Colossus extends Enemy {
     this.ctx.tele.circle(p.pos.x, p.pos.z, 3.0, 0.9, 0xff7733);
     this.pounds.push({ x: p.pos.x, z: p.pos.z, timer: 0.9 });
     this.poundsLeft--;
-    this.poundGap = 0.7;
+    this.poundGap = 0.5;
     this.fistAnim = 1;
     this.ctx.sfx.bossLeap();
   }
@@ -391,9 +466,18 @@ export class Colossus extends Enemy {
       case "idle":
         if (this.timer <= 0) {
           this.attackPick++;
-          if (this.phase >= 2 && this.attackPick % 3 === 0) this.beginTectonic();
+          // Seal the carapace (invulnerable) for a close ring slam every 4th action.
+          if (this.attackPick % 4 === 3) this.beginGuard();
+          else if (this.phase >= 2 && this.attackPick % 3 === 0) this.beginTectonic();
           else if (this.phase >= 2 && this.attackPick % 3 === 2) this.beginMines();
           else this.beginPoundSeq();
+        }
+        break;
+      case "guard":
+        if (this.timer <= 0) {
+          this.wardShock(5.5, 20, 0xff5522);
+          this.state = "recover";
+          this.timer = 0.7;
         }
         break;
       case "poundSeq":
@@ -401,26 +485,26 @@ export class Colossus extends Enemy {
         if (this.poundsLeft > 0 && this.poundGap <= 0) this.aimPound();
         if (this.poundsLeft <= 0 && this.pounds.length === 0) {
           this.state = "recover";
-          this.timer = 0.9;
+          this.timer = 0.65;
         }
         break;
       case "mines":
         if (this.timer <= 0 && this.mines.length === 0) {
           this.state = "recover";
-          this.timer = 0.8;
+          this.timer = 0.58;
         }
         break;
       case "tectonicTell":
         if (this.timer <= 0 && this.rings.length === 0) {
           this.state = "recover";
-          this.timer = 1.0;
+          this.timer = 0.72;
         }
         break;
       case "recover":
       case "phaseShift":
         if (this.timer <= 0) {
           this.state = "idle";
-          this.timer = Math.max(0.6, 2.0 - this.phase * 0.4);
+          this.timer = Math.max(0.4, 1.4 - this.phase * 0.3);
         }
         break;
     }

@@ -3,7 +3,7 @@ import type { Stage } from "./stage";
 
 export const ARENA_RADIUS = 19;
 
-export type Dressing = "rift" | "spire" | "forge";
+export type Dressing = "rift" | "spire" | "forge" | "void";
 
 export interface ArenaTheme {
   name: string;
@@ -122,6 +122,64 @@ export const THEMES: Record<string, ArenaTheme> = {
     ember: 0xff5522,
     gridEmissive: 0x661505,
   },
+  // --- Act IV: The Sundered Abyss — a starless void shot through with rift light
+  abyss: {
+    name: "abyss",
+    dressing: "void",
+    fog: 0x05060f,
+    skyTop: 0x03030a,
+    skyBottom: 0x140a2e,
+    hemiSky: 0x9a88ff,
+    hemiGround: 0x0a0814,
+    key: 0xd8d0ff,
+    rim: 0x7a5cff,
+    crystal: 0x9a7cff,
+    ember: 0x8a6cff,
+    gridEmissive: 0x281a4a,
+  },
+  // --- Act V: The Hollow Star — a collapsing cosmos, white-violet light in a black void
+  hollow: {
+    name: "hollow",
+    dressing: "void",
+    fog: 0x05030a,
+    skyTop: 0x020108,
+    skyBottom: 0x180a2e,
+    hemiSky: 0xc9b8ff,
+    hemiGround: 0x0a0814,
+    key: 0xf2ecff,
+    rim: 0xb98cff,
+    crystal: 0xcdb6ff,
+    ember: 0xb98cff,
+    gridEmissive: 0x2a1a4e,
+  },
+  starfall: {
+    name: "starfall",
+    dressing: "void",
+    fog: 0x06060f,
+    skyTop: 0x03030c,
+    skyBottom: 0x1a1838,
+    hemiSky: 0xeae6ff,
+    hemiGround: 0x0a0a16,
+    key: 0xffffff,
+    rim: 0xe8e0ff,
+    crystal: 0xffffff,
+    ember: 0xd8ccff,
+    gridEmissive: 0x33305e,
+  },
+  voidcrown: {
+    name: "voidcrown",
+    dressing: "void",
+    fog: 0x06080f,
+    skyTop: 0x02040a,
+    skyBottom: 0x0a2a4a,
+    hemiSky: 0x9fe8ff,
+    hemiGround: 0x080a14,
+    key: 0xe8f6ff,
+    rim: 0x37e0ff,
+    crystal: 0x6fe0ff,
+    ember: 0x5fd0ff,
+    gridEmissive: 0x123a52,
+  },
 };
 
 /**
@@ -135,7 +193,7 @@ export class Arena {
   private floorMat: THREE.MeshStandardMaterial;
   private crystalMats: THREE.MeshStandardMaterial[] = [];
   private rocks: { mesh: THREE.Mesh; baseY: number; spin: number; bob: number; phase: number }[] = [];
-  private dressings: Record<Dressing, THREE.Group | null> = { rift: null, spire: null, forge: null };
+  private dressings: Record<Dressing, THREE.Group | null> = { rift: null, spire: null, forge: null, void: null };
   private sharedGeos = new Map<string, THREE.BufferGeometry>();
   private t = 0;
   private themeLerp = 1;
@@ -384,12 +442,32 @@ export class Arena {
         group.add(slab, tip);
       }
     });
+    this.dressings.void = this.buildDressing(scene, (group, mat, dark) => {
+      // Act IV: broken obelisks haloed by floating rift shards
+      const obGeo = this.shareGeo("obelisk", () => new THREE.BoxGeometry(0.9, 1, 0.9));
+      const shardGeo = this.shareGeo("voidshard", () => new THREE.OctahedronGeometry(0.4));
+      const h = 4 + Math.random() * 3.5;
+      const ob = new THREE.Mesh(obGeo, dark);
+      ob.scale.set(1, h, 1);
+      ob.position.set((Math.random() - 0.5) * 1.4, h / 2 - 0.4, (Math.random() - 0.5) * 1.4);
+      ob.rotation.set((Math.random() - 0.5) * 0.18, Math.random() * Math.PI, (Math.random() - 0.5) * 0.18);
+      ob.castShadow = true;
+      group.add(ob);
+      const n = 2 + Math.floor(Math.random() * 3);
+      for (let c = 0; c < n; c++) {
+        const sh = new THREE.Mesh(shardGeo, mat);
+        sh.scale.setScalar(0.5 + Math.random() * 0.8);
+        sh.position.set(ob.position.x + (Math.random() - 0.5) * 2.6, h * 0.5 + Math.random() * h * 0.7, ob.position.z + (Math.random() - 0.5) * 2.6);
+        sh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+        group.add(sh);
+      }
+    });
     this.setDressing("rift");
 
     // --- Floating rocks drifting in the void
     const rockGeo = new THREE.IcosahedronGeometry(1, 0);
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x15151f, roughness: 0.9, flatShading: true });
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 22; i++) {
       const m = new THREE.Mesh(rockGeo, rockMat);
       const a = Math.random() * Math.PI * 2;
       const r = ARENA_RADIUS + 8 + Math.random() * 26;

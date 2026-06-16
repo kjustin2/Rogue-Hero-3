@@ -49,6 +49,11 @@ export class CameraRig {
     this.fovPulse = Math.max(this.fovPulse, amount);
   }
 
+  /** Player FOV preference (degrees) — the resting FOV the rig pulses around. */
+  setBaseFov(deg: number): void {
+    this.baseFov = deg;
+  }
+
   snapTo(x: number, z: number): void {
     this.target.set(x, 0, z);
     this.smoothed.copy(this.target);

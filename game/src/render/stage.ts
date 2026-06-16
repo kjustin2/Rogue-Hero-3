@@ -151,6 +151,11 @@ export class Stage {
     this.buildPost();
   }
 
+  /** Brightness/gamma: `mult` scales the base ACES exposure (1.0 = default). */
+  setExposure(mult: number): void {
+    this.renderer.toneMappingExposure = 1.32 * mult;
+  }
+
   private onResize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -177,5 +182,17 @@ export class Stage {
 
   render(dt: number): void {
     this.composer.render(dt);
+  }
+
+  /**
+   * Pre-compile shaders for everything already in the scene (pooled telegraphs,
+   * projectiles, slash arcs, particles, the hero) plus the full post chain — so
+   * the first time any of them appears in combat there's no synchronous shader
+   * compile stall (the cause of the "first boss shot froze for a second" hitch).
+   * Three's compile() warms in-scene materials regardless of their `visible` flag.
+   */
+  warmUp(): void {
+    try { this.renderer.compile(this.scene, this.camera); } catch { /* headless / lost ctx */ }
+    try { this.composer.render(0.016); } catch { /* noop */ }
   }
 }

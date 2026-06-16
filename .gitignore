@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 build/
+# electron-builder packaged installers (game/package.json "build".directories.output)
+release/
+game/release/
 
 # Bundler / TypeScript caches
 .vite/
