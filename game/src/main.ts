@@ -744,6 +744,60 @@ let musicLament = false;
 let cutsceneSkipReadyTs = 0;
 /** Repeating environmental FX during a boss entrance (cleared on finish). */
 let bossStormInterval: number | null = null;
+/** Temporary meshes owned by the active boss cutscene. Cleared on skip/finish. */
+let cutsceneTemps: THREE.Object3D[] = [];
+
+type BossOmen = "claws" | "mirrors" | "fists" | "reactor" | "star" | "echoes";
+type BossColorRef = "c1" | "c2" | "white" | "phase";
+type BossBurstPreset = "summon" | "pillar" | "reveal" | "shards" | "seismic" | "tear" | "starfall";
+type BossCutsceneBeat =
+  | { at: number; type: "camera"; zoom: number; xOff?: number; zOff?: number }
+  | { at: number; type: "ring"; radius: number; color: BossColorRef; duration: number; startRadius?: number }
+  | { at: number; type: "burst"; preset: BossBurstPreset }
+  | { at: number; type: "prop"; omen: BossOmen }
+  | { at: number; type: "pulse"; trauma?: number; kick?: number; punch?: number; fov?: number }
+  | { at: number; type: "flash"; color: string; intensity: number }
+  | { at: number; type: "sound"; cue: "intro" | "roar" }
+  | { at: number; type: "reveal"; name: string; title: string }
+  | { at: number; type: "faceHero" };
+
+interface BossFxConfig {
+  zoom: number;
+  c1: number;
+  c2: number;
+  hex: string;
+  bannerClass: string;
+  omen: BossOmen;
+  phaseColor: number;
+  phaseHex: string;
+  seismic?: boolean;
+  tear?: boolean;
+  quiet?: boolean;
+}
+
+function disposeMaterial(mat: THREE.Material | THREE.Material[]): void {
+  if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+  else mat.dispose();
+}
+
+function clearCutsceneTemps(): void {
+  for (const obj of cutsceneTemps) {
+    obj.parent?.remove(obj);
+    obj.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.geometry.dispose();
+        disposeMaterial(o.material as THREE.Material | THREE.Material[]);
+      }
+    });
+  }
+  cutsceneTemps = [];
+}
+
+function trackCutsceneTemp<T extends THREE.Object3D>(obj: T): T {
+  cutsceneTemps.push(obj);
+  ctx.stage.scene.add(obj);
+  return obj;
+}
 
 function skipCutscene(): void {
   if (performance.now() < cutsceneSkipReadyTs) return;
@@ -763,22 +817,242 @@ function finishCutscene(): void {
   ctx.music.duckTo(musicLament ? 0.25 : 1); // keep the lament quiet through the fade
   cutsceneFreezeWorld = false;
   if (bossStormInterval !== null) { window.clearInterval(bossStormInterval); bossStormInterval = null; }
+  clearCutsceneTemps();
   if (state === "cutscene") state = "playing";
 }
 
 /** Per-boss entrance palettes — each warden arrives in its own colors + intensity. */
-const BOSS_FX: Record<string, { zoom: number; c1: number; c2: number; hex: string; seismic?: boolean; tear?: boolean }> = {
-  warden: { zoom: 0.55, c1: 0xff6622, c2: 0xffcc66, hex: "#ffcc66" },
-  spire: { zoom: 0.6, c1: 0x3effd2, c2: 0xaaffee, hex: "#aaffee" },
-  colossus: { zoom: 0.5, c1: 0xff3300, c2: 0xffaa44, hex: "#ffaa44", seismic: true },
-  tyrant: { zoom: 0.62, c1: 0x9a5cff, c2: 0xffffff, hex: "#cbb6ff", tear: true },
-  unmaker: { zoom: 0.66, c1: 0xb98cff, c2: 0xffffff, hex: "#e8e0ff", tear: true },
-  echo: { zoom: 0.6, c1: 0x3aa0ff, c2: 0x9fe8ff, hex: "#9fe8ff", tear: true },
+const BOSS_FX: Record<string, BossFxConfig> = {
+  warden: {
+    zoom: 0.55, c1: 0xff6622, c2: 0xffcc66, hex: "#ffcc66",
+    bannerClass: "banner--boss-warden", omen: "claws", phaseColor: 0xff7a3a, phaseHex: "#ff7a3a",
+  },
+  spire: {
+    zoom: 0.6, c1: 0x3effd2, c2: 0xaaffee, hex: "#aaffee",
+    bannerClass: "banner--boss-spire", omen: "mirrors", phaseColor: 0x3effd2, phaseHex: "#aaffee",
+  },
+  colossus: {
+    zoom: 0.5, c1: 0xff3300, c2: 0xffaa44, hex: "#ffaa44",
+    bannerClass: "banner--boss-colossus", omen: "fists", phaseColor: 0xff5500, phaseHex: "#ffaa44", seismic: true,
+  },
+  tyrant: {
+    zoom: 0.62, c1: 0x9a5cff, c2: 0xffffff, hex: "#cbb6ff",
+    bannerClass: "banner--boss-tyrant", omen: "reactor", phaseColor: 0x9a5cff, phaseHex: "#cbb6ff", tear: true,
+  },
+  unmaker: {
+    zoom: 0.66, c1: 0xb98cff, c2: 0xffffff, hex: "#e8e0ff",
+    bannerClass: "banner--boss-unmaker", omen: "star", phaseColor: 0xb98cff, phaseHex: "#e8e0ff", tear: true, quiet: true,
+  },
+  echo: {
+    zoom: 0.6, c1: 0x3aa0ff, c2: 0x9fe8ff, hex: "#9fe8ff",
+    bannerClass: "banner--boss-echo", omen: "echoes", phaseColor: 0x3aa0ff, phaseHex: "#9fe8ff", tear: true,
+  },
 };
+
+function bossColor(cfg: BossFxConfig, ref: BossColorRef): number {
+  if (ref === "c1") return cfg.c1;
+  if (ref === "c2") return cfg.c2;
+  if (ref === "phase") return cfg.phaseColor;
+  return 0xffffff;
+}
+
+function cutsceneMat(color: number, opacity: number): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+function addBossOmen(kind: BossOmen, cfg: BossFxConfig, bx: number, bz: number, phase = 0): void {
+  const root = new THREE.Group();
+  root.position.set(bx, 0, bz);
+  const primary = cutsceneMat(cfg.c1, 0.78);
+  const secondary = cutsceneMat(cfg.c2, 0.48);
+
+  if (kind === "claws") {
+    for (let i = 0; i < 3; i++) {
+      const claw = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.035, 6.2 - i * 0.35), i === 1 ? secondary : primary);
+      claw.position.set((i - 1) * 0.72, 0.08, -0.45 + i * 0.2);
+      claw.rotation.y = -0.28 + i * 0.28;
+      root.add(claw);
+    }
+  } else if (kind === "mirrors") {
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + phase * 0.2;
+      const shard = new THREE.Mesh(new THREE.OctahedronGeometry(0.38 + (i % 3) * 0.08), i % 2 ? secondary : primary);
+      shard.position.set(Math.sin(a) * (1.7 + (i % 2) * 0.5), 0.7 + i * 0.16, Math.cos(a) * (1.7 + (i % 2) * 0.5));
+      shard.rotation.set(a * 0.7, a, 0.5);
+      root.add(shard);
+    }
+  } else if (kind === "fists") {
+    for (const side of [-1, 1]) {
+      const fist = new THREE.Mesh(new THREE.BoxGeometry(1.35, 1.5, 1.55), primary);
+      fist.position.set(side * 1.35, 0.82, -0.25);
+      fist.rotation.set(0.15, side * 0.25, side * 0.16);
+      root.add(fist);
+      const knuckle = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.25, 0.55), secondary);
+      knuckle.position.set(side * 1.35, 1.42, 0.58);
+      knuckle.rotation.y = side * 0.25;
+      root.add(knuckle);
+    }
+  } else if (kind === "reactor") {
+    for (let i = 0; i < 4; i++) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.25 + i * 0.45, 0.035, 8, 72), i % 2 ? secondary : primary);
+      ring.position.y = 1.2 + i * 0.08;
+      ring.rotation.set(i * 0.55, i * 0.82 + phase * 0.2, i * 0.35);
+      root.add(ring);
+    }
+    const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 0), secondary);
+    core.position.y = 1.25;
+    root.add(core);
+  } else if (kind === "star") {
+    const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.62, 1), secondary);
+    core.position.y = 1.3;
+    root.add(core);
+    for (let i = 0; i < 3; i++) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.0 + i * 0.42, 0.025, 8, 80), i % 2 ? secondary : primary);
+      ring.position.y = 1.3;
+      ring.rotation.set(Math.PI / 2 + i * 0.35, i * 0.8, phase * 0.2);
+      root.add(ring);
+    }
+  } else {
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.4;
+      const portal = new THREE.Mesh(new THREE.TorusGeometry(0.8, 0.035, 8, 48), i % 2 ? secondary : primary);
+      portal.position.set(Math.sin(a) * 2.0, 0.9 + i * 0.08, Math.cos(a) * 2.0);
+      portal.rotation.set(Math.PI / 2, a, 0);
+      root.add(portal);
+    }
+  }
+
+  root.scale.setScalar(1 + phase * 0.12);
+  trackCutsceneTemp(root);
+}
+
+function bossBurst(preset: BossBurstPreset, cfg: BossFxConfig, bx: number, bz: number): void {
+  const palette = [cfg.c1, cfg.c2, 0xffffff];
+  if (preset === "summon") {
+    ctx.fx.burst({ x: bx, y: 0.5, z: bz, count: 28, color: palette, speed: [1, 5], up: 1.6, size: [0.3, 0.75], life: [0.4, 0.9], gravity: 0.4, drag: 1.5, jitter: 1.1 });
+  } else if (preset === "pillar") {
+    ctx.fx.burst({ x: bx, y: 0.2, z: bz, count: 44, color: [cfg.c2, 0xffffff], speed: [0.4, 1.7], up: cfg.quiet ? 4.8 : 9, size: [0.25, 0.72], life: [0.65, 1.25], gravity: cfg.quiet ? 0.1 : -1.5, drag: 0.7, jitter: 0.55 });
+  } else if (preset === "reveal") {
+    ctx.fx.burst({ x: bx, y: 1, z: bz, count: cfg.quiet ? 42 : 70, color: palette, speed: cfg.quiet ? [2, 8] : [5, 18], up: cfg.quiet ? 1.6 : 0.8, size: [0.45, 1.3], life: [0.45, 1.0], gravity: cfg.quiet ? -0.3 : -3, drag: cfg.quiet ? 1.5 : 2 });
+  } else if (preset === "shards") {
+    ctx.fx.burst({ x: bx, y: 1.0, z: bz, count: 34, color: [cfg.c1, cfg.c2, 0xffffff], speed: [2, 10], up: 1.1, size: [0.3, 0.9], life: [0.4, 0.85], gravity: -1, drag: 1.7, jitter: 1.4 });
+  } else if (preset === "seismic") {
+    ctx.fx.burst({ x: bx, y: 0.3, z: bz, count: 42, color: [cfg.c1, cfg.c2], speed: [4, 13], up: -0.4, size: [0.5, 1.2], life: [0.5, 1.1], gravity: 0.8, drag: 1.8 });
+  } else if (preset === "starfall") {
+    ctx.fx.burst({ x: bx, y: 2.3, z: bz, count: 36, color: [cfg.c2, 0xffffff], speed: [0.6, 3.5], up: -1.2, size: [0.28, 0.85], life: [0.9, 1.8], gravity: -0.15, drag: 0.9, jitter: 2.2 });
+  } else {
+    ctx.fx.burst({ x: bx, y: 1, z: bz, count: 32, color: [0x9a5cff, 0xffffff], speed: [3, 12], up: 1.4, size: [0.4, 1.0], life: [0.4, 0.9], gravity: -2, drag: 2 });
+  }
+}
+
+function faceHeroToward(x: number, z: number): void {
+  const p = ctx.player.pos;
+  if (Math.hypot(x - p.x, z - p.z) > 0.1) ctx.player.facing = Math.atan2(x - p.x, z - p.z);
+}
+
+function revealBoss(cfg: BossFxConfig, name: string, title: string, bx: number, bz: number): void {
+  if (cfg.quiet) ctx.sfx.bossIntroSting();
+  else ctx.sfx.bossRoar();
+  ctx.cam.addTrauma(cfg.quiet ? 0.22 : cfg.seismic ? 0.82 : 0.55);
+  ctx.cam.kick(0, 1, cfg.quiet ? 2.5 : cfg.seismic ? 7 : 5);
+  ctx.stage.punch(cfg.quiet ? 0.22 : cfg.seismic ? 0.6 : 0.4);
+  ctx.cam.pulseFov(cfg.quiet ? 0.45 : 1);
+  hud.flash(cfg.hex, cfg.quiet ? 0.36 : 0.55);
+  hud.banner(name, title, `banner--boss banner--long banner--cutscene ${cfg.bannerClass}`);
+  ctx.fx.ring(bx, bz, { radius: cfg.quiet ? 7.5 : 10, color: cfg.c1, duration: 0.6 });
+  ctx.fx.ring(bx, bz, { radius: cfg.quiet ? 3.5 : 5, color: 0xffffff, duration: 0.45 });
+  bossBurst("reveal", cfg, bx, bz);
+}
+
+function runBossBeat(beat: BossCutsceneBeat, cfg: BossFxConfig, bx: number, bz: number): void {
+  if (!bossCutscene) return;
+  if (beat.type === "camera") ctx.cam.cinematic(bx + (beat.xOff ?? 0), bz + (beat.zOff ?? 0), beat.zoom);
+  else if (beat.type === "ring") ctx.fx.ring(bx, bz, { radius: beat.radius, color: bossColor(cfg, beat.color), duration: beat.duration, startRadius: beat.startRadius });
+  else if (beat.type === "burst") bossBurst(beat.preset, cfg, bx, bz);
+  else if (beat.type === "prop") addBossOmen(beat.omen, cfg, bx, bz);
+  else if (beat.type === "flash") hud.flash(beat.color, beat.intensity);
+  else if (beat.type === "sound") {
+    if (beat.cue === "intro") ctx.sfx.bossIntroSting();
+    else if (!cfg.quiet) ctx.sfx.bossRoar();
+  } else if (beat.type === "pulse") {
+    if (beat.trauma) ctx.cam.addTrauma(beat.trauma);
+    if (beat.kick) ctx.cam.kick(0, 1, beat.kick);
+    if (beat.punch) ctx.stage.punch(beat.punch);
+    if (beat.fov) ctx.cam.pulseFov(beat.fov);
+  } else if (beat.type === "reveal") revealBoss(cfg, beat.name, beat.title, bx, bz);
+  else faceHeroToward(bx, bz);
+}
+
+function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, title: string): BossCutsceneBeat[] {
+  const beats: BossCutsceneBeat[] = [
+    { at: 0, type: "faceHero" },
+    { at: 180, type: "camera", zoom: cfg.zoom * 0.68, zOff: -0.25 },
+    { at: 300, type: "sound", cue: "intro" },
+    { at: 360, type: "prop", omen: cfg.omen },
+    { at: 500, type: "ring", radius: 15, color: "c1", duration: 0.5, startRadius: 18 },
+    { at: 620, type: "ring", radius: 4, color: "c1", duration: 0.85 },
+    { at: 860, type: "ring", radius: 11, color: "c1", duration: 0.5, startRadius: 14 },
+    { at: 900, type: "camera", zoom: cfg.zoom },
+    { at: 1180, type: "ring", radius: 7.5, color: "c2", duration: 0.45, startRadius: 10 },
+    { at: 1200, type: "burst", preset: "summon" },
+    { at: 1520, type: "ring", radius: 4.5, color: "c2", duration: 0.4, startRadius: 6.5 },
+    { at: 1700, type: "burst", preset: cfg.quiet ? "starfall" : "pillar" },
+    { at: 1900, type: "camera", zoom: cfg.zoom * 1.12 },
+    { at: 1920, type: "ring", radius: 6.5, color: "c2", duration: 0.7 },
+    { at: 1930, type: "burst", preset: kind === "spire" || kind === "echo" ? "shards" : cfg.seismic ? "seismic" : "summon" },
+    { at: 2550, type: "reveal", name, title },
+  ];
+
+  if (kind === "warden") {
+    beats.push(
+      { at: 2860, type: "prop", omen: "claws" },
+      { at: 3180, type: "ring", radius: 9, color: "c2", duration: 0.5 },
+      { at: 3600, type: "ring", radius: 12, color: "c1", duration: 0.5 },
+    );
+  } else if (kind === "spire") {
+    beats.push(
+      { at: 2850, type: "prop", omen: "mirrors" },
+      { at: 3040, type: "burst", preset: "shards" },
+      { at: 3440, type: "ring", radius: 12, color: "c2", duration: 0.55 },
+    );
+  } else if (cfg.seismic) {
+    beats.push(
+      { at: 3050, type: "pulse", trauma: 0.5, punch: 0.35 },
+      { at: 3150, type: "ring", radius: 8.5, color: "c1", duration: 0.55 },
+      { at: 3550, type: "pulse", trauma: 0.35 },
+      { at: 3570, type: "ring", radius: 12, color: "c2", duration: 0.5 },
+      { at: 3850, type: "burst", preset: "seismic" },
+    );
+  } else if (kind === "unmaker") {
+    beats.push(
+      { at: 2920, type: "prop", omen: "star" },
+      { at: 3150, type: "flash", color: "#ffffff", intensity: 0.24 },
+      { at: 3480, type: "ring", radius: 11, color: "white", duration: 0.75 },
+      { at: 3820, type: "burst", preset: "starfall" },
+    );
+  } else if (cfg.tear) {
+    beats.push(
+      { at: 3050, type: "flash", color: "#ffffff", intensity: 0.38 },
+      { at: 3050, type: "ring", radius: 12, color: "phase", duration: 0.6 },
+      { at: 3450, type: "ring", radius: 14, color: "white", duration: 0.5 },
+      { at: 3800, type: "burst", preset: "tear" },
+    );
+  }
+
+  return beats.sort((a, b) => a.at - b.at);
+}
 
 /** Entrance: letterbox in, dolly to the spawn, a themed charge-up, then materialize + roar. */
 function playBossCutscene(kind: string, name: string, title: string, bx: number, bz: number): void {
   const cfg = BOSS_FX[kind] ?? BOSS_FX.warden;
+  if (bossCutscene) finishCutscene();
   bossCutscene = true;
   cutsceneFreezeWorld = false; // entrance: let the boss beam in
   cutsceneSkipReadyTs = performance.now() + 700;
@@ -786,67 +1060,30 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
   ctx.input.enabled = false;
   hud.setLetterbox(true);
   ctx.music.duckTo(0.35);
-  // Establish wide, then dolly in as the rift gathers.
-  ctx.cam.cinematic(bx, bz, cfg.zoom * 0.7);
-  const at = (t: number, fn: () => void) => cutsceneTimers.push(window.setTimeout(fn, t));
+  faceHeroToward(bx, bz);
+  const queueBeat = (t: number, fn: () => void) => cutsceneTimers.push(window.setTimeout(fn, t));
 
-  // A themed storm swirls across the whole arena throughout the entrance.
   bossStormInterval = window.setInterval(() => {
     const a = Math.random() * Math.PI * 2;
     const r = 7 + Math.random() * 10;
     ctx.fx.burst({
       x: Math.sin(a) * r, y: 0.3, z: Math.cos(a) * r,
-      count: 3, color: [cfg.c1, cfg.c2], speed: [0.5, 2.5], up: cfg.seismic ? -0.5 : 2.2, size: [0.3, 0.7], life: [0.6, 1.3], gravity: cfg.seismic ? 0.6 : 0.2, drag: 1.1, jitter: 0.8,
+      count: cfg.quiet ? 2 : 3,
+      color: [cfg.c1, cfg.c2],
+      speed: cfg.quiet ? [0.25, 1.4] : [0.5, 2.5],
+      up: cfg.seismic ? -0.5 : cfg.quiet ? 0.75 : 2.2,
+      size: [0.3, cfg.quiet ? 0.9 : 0.7],
+      life: cfg.quiet ? [1.1, 2.0] : [0.6, 1.3],
+      gravity: cfg.seismic ? 0.6 : cfg.quiet ? 0.05 : 0.2,
+      drag: cfg.quiet ? 0.65 : 1.1,
+      jitter: cfg.quiet ? 1.5 : 0.8,
     });
-  }, 140);
+  }, cfg.quiet ? 180 : 140);
 
-  // Converging shockwaves — the rift visibly COLLAPSES inward toward the spawn
-  // before the boss forms (shrinking start radii read as energy being drawn in).
-  at(500, () => ctx.fx.ring(bx, bz, { radius: 15, color: cfg.c1, duration: 0.5 }));
-  at(850, () => ctx.fx.ring(bx, bz, { radius: 11, color: cfg.c1, duration: 0.5 }));
-  at(1200, () => ctx.fx.ring(bx, bz, { radius: 7.5, color: cfg.c2, duration: 0.45 }));
-  at(1600, () => ctx.fx.ring(bx, bz, { radius: 4.5, color: cfg.c2, duration: 0.4 }));
-
-  at(900, () => ctx.cam.cinematic(bx, bz, cfg.zoom)); // push in
-  // Charge-up: the rift gathers at the spawn before the boss forms
-  at(450, () => ctx.fx.ring(bx, bz, { radius: 4, color: cfg.c1, duration: 0.85 }));
-  at(1200, () => { ctx.fx.burst({ x: bx, y: 0.5, z: bz, count: 26, color: [cfg.c1, cfg.c2], speed: [1, 5], up: 1.5, size: [0.3, 0.7], life: [0.4, 0.9], gravity: 0.5, drag: 1.5, jitter: 1 }); ctx.cam.addTrauma(0.12); });
-  // A column of light erupts from the spawn as the boss draws itself together.
-  at(1700, () => ctx.fx.burst({ x: bx, y: 0.2, z: bz, count: 40, color: [cfg.c2, 0xffffff], speed: [0.4, 1.6], up: 9, size: [0.25, 0.7], life: [0.6, 1.2], gravity: -1.5, drag: 0.7, jitter: 0.5 }));
-  at(1900, () => {
-    ctx.fx.ring(bx, bz, { radius: 6.5, color: cfg.c2, duration: 0.7 });
-    ctx.fx.burst({ x: bx, y: 0.5, z: bz, count: 32, color: [cfg.c1, cfg.c2], speed: [2, 7], up: 1.3, size: [0.4, 0.9], life: [0.4, 1.0], gravity: 0.4, drag: 1.4, jitter: 1 });
-    ctx.cam.addTrauma(0.2);
-    ctx.stage.punch(0.18);
-    ctx.cam.cinematic(bx, bz, cfg.zoom * 1.12); // tighten hard right before the reveal
-  });
-  // Materialize + roar (boss spawns at ~2.4s) — title card slams in with the boss.
-  at(2550, () => {
-    ctx.sfx.bossRoar();
-    ctx.cam.addTrauma(cfg.seismic ? 0.8 : 0.55);
-    ctx.cam.kick(0, 1, cfg.seismic ? 7 : 5);
-    ctx.stage.punch(cfg.seismic ? 0.6 : 0.4);
-    ctx.cam.pulseFov(1);
-    hud.flash(cfg.hex, 0.55);
-    hud.banner(name, title, "banner--boss");
-    ctx.fx.ring(bx, bz, { radius: 10, color: cfg.c1, duration: 0.6 });
-    ctx.fx.ring(bx, bz, { radius: 5, color: 0xffffff, duration: 0.45 });
-    ctx.fx.burst({ x: bx, y: 1, z: bz, count: 64, color: [cfg.c1, cfg.c2, 0xffffff], speed: [5, 17], up: 0.8, size: [0.5, 1.3], life: [0.4, 0.95], gravity: -3, drag: 2 });
-  });
-  // Boss-specific aftershock — distinct flourish per warden
-  if (cfg.tear) {
-    at(3050, () => { hud.flash("#ffffff", 0.42); ctx.fx.ring(bx, bz, { radius: 12, color: 0x9a5cff, duration: 0.6 }); ctx.cam.pulseFov(0.8); });
-    at(3450, () => { ctx.fx.ring(bx, bz, { radius: 14, color: 0xffffff, duration: 0.5 }); ctx.cam.addTrauma(0.3); });
-    at(3800, () => { ctx.fx.burst({ x: bx, y: 1, z: bz, count: 30, color: [0x9a5cff, 0xffffff], speed: [3, 12], up: 1.4, size: [0.4, 1.0], life: [0.4, 0.9], gravity: -2, drag: 2 }); ctx.cam.pulseFov(0.6); });
-  } else if (cfg.seismic) {
-    at(3150, () => { ctx.cam.addTrauma(0.5); ctx.stage.punch(0.35); ctx.fx.ring(bx, bz, { radius: 8.5, color: 0xff5500, duration: 0.55 }); });
-    at(3550, () => { ctx.cam.addTrauma(0.35); ctx.fx.ring(bx, bz, { radius: 12, color: 0xffaa44, duration: 0.5 }); });
-    at(3850, () => { ctx.cam.kick(0, 1, 4); ctx.fx.burst({ x: bx, y: 0.3, z: bz, count: 36, color: [0xff5500, 0xffaa44], speed: [4, 13], up: -0.4, size: [0.5, 1.2], life: [0.5, 1.1], gravity: 0.8, drag: 1.8 }); });
-  } else {
-    at(3250, () => { ctx.fx.ring(bx, bz, { radius: 9, color: cfg.c2, duration: 0.5 }); ctx.cam.addTrauma(0.2); });
-    at(3650, () => { ctx.fx.ring(bx, bz, { radius: 12, color: cfg.c1, duration: 0.5 }); ctx.cam.pulseFov(0.5); });
+  for (const beat of buildBossIntroBeats(kind, cfg, name, title)) {
+    queueBeat(beat.at, () => runBossBeat(beat, cfg, bx, bz));
   }
-  at(4500, () => finishCutscene());
+  queueBeat(cfg.quiet ? 4800 : 4500, () => finishCutscene());
   window.addEventListener("pointerdown", skipCutscene);
   window.addEventListener("keydown", skipCutscene);
 }
@@ -860,6 +1097,8 @@ function playBossPhaseCutscene(phase: number, line: string): void {
   if (state !== "playing") return; // never interrupt the entrance or other states
   const boss = ctx.enemies.living().find((e) => e.kind === "boss");
   if (!boss) return; // HUD still shows the phase banner on its own
+  const kind = ctx.run.currentNode?.bossKind ?? "warden";
+  const cfg = BOSS_FX[kind] ?? BOSS_FX.warden;
   bossCutscene = true;
   cutsceneFreezeWorld = true; // hold the fight — the player can't act, so neither can the boss
   cutsceneSkipReadyTs = performance.now() + (phase >= 4 ? 1100 : 500);
@@ -876,20 +1115,25 @@ function playBossPhaseCutscene(phase: number, line: string): void {
     ctx.music.duckTo(0.22);
     ctx.cam.cinematic(boss.pos.x, boss.pos.z, 0.62);
     ctx.cam.pulseFov(0.35);
-    hud.flash("#9fb4ff", 0.28);
-    hud.banner(line, "", "banner--lament banner--long");
-    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 6, color: 0x8a9ad0, duration: 1.4 });
+    hud.flash(cfg.quiet ? "#ffffff" : "#9fb4ff", cfg.quiet ? 0.22 : 0.28);
+    hud.banner(line, "", `banner--lament banner--long ${cfg.bannerClass}`);
+    addBossOmen(cfg.quiet ? "star" : cfg.omen, cfg, boss.pos.x, boss.pos.z, phase);
+    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 6, color: cfg.quiet ? cfg.c2 : 0x8a9ad0, duration: 1.4 });
+    bossBurst(cfg.quiet ? "starfall" : "tear", cfg, boss.pos.x, boss.pos.z);
     cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 3800));
   } else {
     ctx.music.duckTo(0.5);
-    ctx.cam.cinematic(boss.pos.x, boss.pos.z, 0.7);
+    ctx.cam.cinematic(boss.pos.x, boss.pos.z, cfg.seismic ? 0.58 : 0.7);
     ctx.sfx.bossRoar();
-    ctx.cam.addTrauma(0.5);
-    ctx.stage.punch(0.4);
+    ctx.cam.addTrauma(cfg.seismic ? 0.68 : 0.5);
+    ctx.stage.punch(cfg.seismic ? 0.5 : 0.4);
     ctx.cam.pulseFov(1);
-    hud.flash(PHASE_FLASH[Math.min(phase, PHASE_FLASH.length - 1)] ?? "#ff7a4a", 0.45);
-    hud.banner(line, `PHASE ${phase}`, "banner--boss banner--long");
-    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 5, color: 0xff7a4a, duration: 0.7 });
+    hud.flash(cfg.phaseHex || (PHASE_FLASH[Math.min(phase, PHASE_FLASH.length - 1)] ?? "#ff7a4a"), 0.45);
+    hud.banner(line, `PHASE ${phase}`, `banner--boss banner--long banner--cutscene ${cfg.bannerClass}`);
+    addBossOmen(cfg.omen, cfg, boss.pos.x, boss.pos.z, phase);
+    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 5, color: cfg.phaseColor, duration: 0.7 });
+    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 3.1, color: 0xffffff, duration: 0.45 });
+    bossBurst(cfg.seismic ? "seismic" : cfg.tear ? "tear" : kind === "spire" ? "shards" : "summon", cfg, boss.pos.x, boss.pos.z);
     cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 2900));
   }
   window.addEventListener("pointerdown", skipCutscene);

@@ -191,6 +191,8 @@ export class Arena {
   private skyMat: THREE.ShaderMaterial;
   private rimMat: THREE.MeshStandardMaterial;
   private floorMat: THREE.MeshStandardMaterial;
+  private floorTextures = new Map<string, THREE.CanvasTexture>();
+  private floorTextureTheme = THEMES.rift.name;
   private crystalMats: THREE.MeshStandardMaterial[] = [];
   private rocks: { mesh: THREE.Mesh; baseY: number; spin: number; bob: number; phase: number }[] = [];
   private dressings: Record<Dressing, THREE.Group | null> = { rift: null, spire: null, forge: null, void: null };
@@ -356,7 +358,7 @@ export class Arena {
     scene.add(sky);
 
     // --- Floor: obsidian disc with painted grid texture
-    const floorTex = this.makeFloorTexture();
+    const floorTex = this.getFloorTexture(THEMES.rift);
     this.floorMat = new THREE.MeshStandardMaterial({
       map: floorTex,
       emissiveMap: floorTex,
@@ -486,26 +488,210 @@ export class Arena {
     }
   }
 
-  private makeFloorTexture(): THREE.CanvasTexture {
+  private getFloorTexture(theme: ArenaTheme): THREE.CanvasTexture {
+    let tex = this.floorTextures.get(theme.name);
+    if (!tex) {
+      tex = this.makeFloorTexture(theme);
+      this.floorTextures.set(theme.name, tex);
+    }
+    return tex;
+  }
+
+  private applyFloorTexture(theme: ArenaTheme): void {
+    if (this.floorTextureTheme === theme.name) return;
+    const tex = this.getFloorTexture(theme);
+    this.floorMat.map = tex;
+    this.floorMat.emissiveMap = tex;
+    this.floorMat.needsUpdate = true;
+    this.floorTextureTheme = theme.name;
+  }
+
+  private makeFloorTexture(theme: ArenaTheme): THREE.CanvasTexture {
     const size = 1024;
     const cv = document.createElement("canvas");
     cv.width = cv.height = size;
     const g = cv.getContext("2d")!;
     const c = size / 2;
+    const accent = new THREE.Color(theme.crystal);
+    const ember = new THREE.Color(theme.ember);
+    const grid = new THREE.Color(theme.gridEmissive);
+    const rgba = (color: THREE.Color, alpha: number) =>
+      `rgba(${Math.round(color.r * 255)},${Math.round(color.g * 255)},${Math.round(color.b * 255)},${alpha})`;
+    const family =
+      theme.dressing === "spire" ? "spire" :
+      theme.dressing === "forge" ? "forge" :
+      theme.name === "hollow" || theme.name === "starfall" ? "hollow" :
+      theme.dressing === "void" ? "void" :
+      "rift";
+    const glow = (x: number, y: number, r: number, color: THREE.Color, alpha: number) => {
+      const grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, rgba(color, alpha));
+      grad.addColorStop(0.5, rgba(color, alpha * 0.3));
+      grad.addColorStop(1, rgba(color, 0));
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    };
+    const crack = (x: number, y: number, length: number, angle: number, color: THREE.Color, alpha: number, width: number) => {
+      g.strokeStyle = rgba(color, alpha);
+      g.lineWidth = width;
+      g.beginPath();
+      g.moveTo(x, y);
+      const steps = 4 + Math.floor(Math.random() * 5);
+      for (let i = 0; i < steps; i++) {
+        angle += (Math.random() - 0.5) * 0.65;
+        x += Math.cos(angle) * length / steps;
+        y += Math.sin(angle) * length / steps;
+        g.lineTo(x, y);
+      }
+      g.stroke();
+    };
 
-    g.fillStyle = "#181b2e";
+    g.fillStyle =
+      family === "spire" ? "#101e24" :
+      family === "forge" ? "#21110b" :
+      family === "void" ? "#080711" :
+      family === "hollow" ? "#1b1828" :
+      "#171a2b";
+    g.fillRect(0, 0, size, size);
+
+    const baseGrad = g.createRadialGradient(c, c, 20, c, c, c * 1.02);
+    baseGrad.addColorStop(0, rgba(grid, family === "hollow" ? 0.11 : 0.065));
+    baseGrad.addColorStop(0.68, "rgba(0,0,0,0)");
+    baseGrad.addColorStop(1, "rgba(0,0,0,0.5)");
+    g.fillStyle = baseGrad;
     g.fillRect(0, 0, size, size);
 
     // Subtle noise speckle
     for (let i = 0; i < 2600; i++) {
-      const a = Math.random() * 0.05;
-      g.fillStyle = `rgba(255,255,255,${a})`;
-      g.fillRect(Math.random() * size, Math.random() * size, 1.5, 1.5);
+      const a = Math.random() * (family === "hollow" ? 0.065 : 0.05);
+      g.fillStyle = i % 9 === 0 ? rgba(accent, a * 1.4) : `rgba(255,255,255,${a})`;
+      const s = 1 + Math.random() * 1.4;
+      g.fillRect(Math.random() * size, Math.random() * size, s, s);
+    }
+
+    if (family === "spire") {
+      g.strokeStyle = rgba(accent, 0.1);
+      g.lineWidth = 1.2;
+      const h = 42;
+      for (let y = -h; y < size + h; y += h * 0.86) {
+        for (let x = -h; x < size + h; x += h * 1.5) {
+          const row = Math.floor(y / (h * 0.86));
+          const ox = (row % 2) * h * 0.75;
+          g.beginPath();
+          for (let p = 0; p < 6; p++) {
+            const a = Math.PI / 6 + (p / 6) * Math.PI * 2;
+            const px = x + ox + Math.cos(a) * h * 0.52;
+            const py = y + Math.sin(a) * h * 0.52;
+            if (p === 0) g.moveTo(px, py);
+            else g.lineTo(px, py);
+          }
+          g.closePath();
+          g.stroke();
+        }
+      }
+      for (let i = 0; i < 16; i++) {
+        const a0 = (i / 16) * Math.PI * 2;
+        g.fillStyle = i % 2 ? rgba(accent, 0.035) : rgba(ember, 0.026);
+        g.beginPath();
+        g.moveTo(c, c);
+        g.arc(c, c, c * 0.96, a0, a0 + Math.PI / 16);
+        g.closePath();
+        g.fill();
+      }
+      for (let i = 0; i < 42; i++) crack(Math.random() * size, Math.random() * size, 50 + Math.random() * 170, Math.random() * Math.PI * 2, accent, 0.12, 0.9);
+    } else if (family === "forge") {
+      for (let i = 0; i < 34; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const sides = 5 + Math.floor(Math.random() * 3);
+        const r = 42 + Math.random() * 100;
+        g.fillStyle = i % 2 ? "rgba(0,0,0,0.12)" : rgba(ember, 0.02);
+        g.strokeStyle = rgba(ember, 0.09);
+        g.lineWidth = 1.5;
+        g.beginPath();
+        for (let p = 0; p < sides; p++) {
+          const a = (p / sides) * Math.PI * 2 + Math.random() * 0.35;
+          const px = x + Math.cos(a) * r * (0.7 + Math.random() * 0.45);
+          const py = y + Math.sin(a) * r * (0.7 + Math.random() * 0.45);
+          if (p === 0) g.moveTo(px, py);
+          else g.lineTo(px, py);
+        }
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+      for (let i = 0; i < 22; i++) crack(Math.random() * size, Math.random() * size, 80 + Math.random() * 205, Math.random() * Math.PI * 2, ember, 0.13, 1.4 + Math.random() * 1.8);
+      for (let i = 0; i < 14; i++) glow(Math.random() * size, Math.random() * size, 18 + Math.random() * 32, ember, 0.22);
+    } else if (family === "void") {
+      for (let i = 0; i < 18; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const r = 45 + Math.random() * 120;
+        g.fillStyle = "rgba(0,0,0,0.42)";
+        g.beginPath();
+        for (let p = 0; p < 5; p++) {
+          const a = (p / 5) * Math.PI * 2 + Math.random();
+          const px = x + Math.cos(a) * r * (0.45 + Math.random());
+          const py = y + Math.sin(a) * r * (0.45 + Math.random());
+          if (p === 0) g.moveTo(px, py);
+          else g.lineTo(px, py);
+        }
+        g.closePath();
+        g.fill();
+      }
+      for (let i = 0; i < 95; i++) glow(Math.random() * size, Math.random() * size, 3 + Math.random() * 7, accent, 0.18);
+      for (let i = 0; i < 11; i++) {
+        const a = Math.random() * Math.PI * 2;
+        g.strokeStyle = rgba(accent, 0.1);
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(c, c, 120 + i * 31 + Math.random() * 12, a, a + 0.45 + Math.random() * 0.9);
+        g.stroke();
+      }
+    } else if (family === "hollow") {
+      const eclipse = g.createRadialGradient(c, c, 20, c, c, c * 0.58);
+      eclipse.addColorStop(0, "rgba(255,255,255,0.24)");
+      eclipse.addColorStop(0.28, "rgba(255,255,255,0.08)");
+      eclipse.addColorStop(0.46, "rgba(0,0,0,0.42)");
+      eclipse.addColorStop(0.72, rgba(accent, 0.05));
+      eclipse.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = eclipse;
+      g.fillRect(0, 0, size, size);
+      g.strokeStyle = rgba(accent, 0.18);
+      g.lineWidth = 2.2;
+      g.beginPath();
+      for (let i = 0; i < 420; i++) {
+        const t = i / 36;
+        const r = 8 + t * 17;
+        const a = t * 0.95;
+        const x = c + Math.cos(a) * r;
+        const y = c + Math.sin(a) * r;
+        if (i === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      }
+      g.stroke();
+      for (let i = 0; i < 36; i++) glow(Math.random() * size, Math.random() * size, 5 + Math.random() * 12, new THREE.Color(0xffffff), 0.18);
+    } else {
+      for (let i = 0; i < 34; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 70 + Math.random() * 380;
+        crack(c + Math.cos(a) * r, c + Math.sin(a) * r, 55 + Math.random() * 145, a + Math.PI * 0.5, accent, 0.12, 1.2);
+      }
+      for (let i = 0; i < 8; i++) {
+        const a0 = (i / 8) * Math.PI * 2 + 0.18;
+        g.strokeStyle = rgba(ember, 0.1);
+        g.lineWidth = 4;
+        g.beginPath();
+        g.arc(c, c, 150 + i * 34, a0, a0 + 0.58);
+        g.stroke();
+      }
     }
 
     // Concentric rings
     for (let r = 60; r < c; r += 74) {
-      g.strokeStyle = `rgba(120, 200, 255, ${0.11 + (r === 60 ? 0.06 : 0)})`;
+      g.strokeStyle = rgba(accent, 0.11 + (r === 60 ? 0.06 : 0));
       g.lineWidth = r % 222 < 80 ? 2.5 : 1;
       g.beginPath();
       g.arc(c, c, r, 0, Math.PI * 2);
@@ -513,10 +699,11 @@ export class Arena {
     }
 
     // Radial spokes
-    g.strokeStyle = "rgba(120, 200, 255, 0.08)";
+    g.strokeStyle = rgba(accent, family === "forge" ? 0.065 : 0.08);
     g.lineWidth = 1;
-    for (let i = 0; i < 24; i++) {
-      const a = (i / 24) * Math.PI * 2;
+    const spokes = family === "hollow" ? 18 : family === "spire" ? 32 : 24;
+    for (let i = 0; i < spokes; i++) {
+      const a = (i / spokes) * Math.PI * 2;
       g.beginPath();
       g.moveTo(c + Math.cos(a) * 70, c + Math.sin(a) * 70);
       g.lineTo(c + Math.cos(a) * c, c + Math.sin(a) * c);
@@ -524,21 +711,21 @@ export class Arena {
     }
 
     // Central sigil — bright inner ring pair
-    g.strokeStyle = "rgba(150, 220, 255, 0.16)";
+    g.strokeStyle = rgba(accent, 0.16);
     g.lineWidth = 3;
     g.beginPath();
-    g.arc(c, c, 46, 0, Math.PI * 2);
+    g.arc(c, c, family === "hollow" ? 62 : 46, 0, Math.PI * 2);
     g.stroke();
     g.lineWidth = 1.5;
     g.beginPath();
-    g.arc(c, c, 34, 0, Math.PI * 2);
+    g.arc(c, c, family === "hollow" ? 31 : 34, 0, Math.PI * 2);
     g.stroke();
 
     // Edge glow band
     const grad = g.createRadialGradient(c, c, c * 0.82, c, c, c);
-    grad.addColorStop(0, "rgba(80,160,255,0)");
-    grad.addColorStop(0.92, "rgba(90,180,255,0.13)");
-    grad.addColorStop(1, "rgba(120,210,255,0.25)");
+    grad.addColorStop(0, rgba(accent, 0));
+    grad.addColorStop(0.92, rgba(accent, family === "forge" ? 0.17 : 0.13));
+    grad.addColorStop(1, rgba(accent, family === "hollow" ? 0.3 : 0.25));
     g.fillStyle = grad;
     g.fillRect(0, 0, size, size);
 
@@ -553,6 +740,7 @@ export class Arena {
     this.toTheme = theme;
     this.themeLerp = instant ? 1 : 0;
     this.blendSettled = false;
+    this.applyFloorTexture(theme);
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
     this.setDressing(theme.dressing);
   }

@@ -521,6 +521,7 @@ body {
 .banner--show { animation: banner-in 2.2s ease forwards; }
 /* Boss / act / epitaph text lingers longer so it can actually be read. */
 .banner--long.banner--show { animation-duration: 5.6s; }
+.banner--cutscene.banner--show { animation-duration: 2.25s; }
 .banner__title {
   font-family: var(--font-display);
   font-size: 44px;
@@ -537,6 +538,22 @@ body {
 }
 .banner--boss .banner__title { color: #ffb09a; text-shadow: 0 0 36px rgba(255, 80, 40, 0.5); }
 .banner--clear .banner__title { color: #9affc8; text-shadow: 0 0 30px rgba(80, 255, 160, 0.4); }
+.banner--cutscene .banner__title {
+  display: inline-block;
+  padding: 0 30px 10px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  letter-spacing: 16px;
+}
+.banner--cutscene .banner__sub {
+  color: rgba(235, 244, 255, 0.78);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.85);
+}
+.banner--boss-warden .banner__title { color: #ffd09a; text-shadow: 0 0 34px rgba(255, 92, 28, 0.58), 0 4px 18px rgba(0, 0, 0, 0.9); }
+.banner--boss-spire .banner__title { color: #c4fff2; text-shadow: 0 0 34px rgba(62, 255, 210, 0.55), 0 4px 18px rgba(0, 0, 0, 0.9); }
+.banner--boss-colossus .banner__title { color: #ffc069; text-shadow: 0 0 38px rgba(255, 80, 0, 0.68), 0 4px 18px rgba(0, 0, 0, 0.9); }
+.banner--boss-tyrant .banner__title { color: #ddd0ff; text-shadow: 0 0 38px rgba(154, 92, 255, 0.65), 0 4px 18px rgba(0, 0, 0, 0.9); }
+.banner--boss-unmaker .banner__title { color: #f5f0ff; text-shadow: 0 0 44px rgba(220, 210, 255, 0.72), 0 4px 18px rgba(0, 0, 0, 0.9); }
+.banner--boss-echo .banner__title { color: #ccefff; text-shadow: 0 0 38px rgba(58, 160, 255, 0.62), 0 4px 18px rgba(0, 0, 0, 0.9); }
 
 /* Controller plug/unplug toast — bottom-center, slides up briefly. */
 .pad-toast {
