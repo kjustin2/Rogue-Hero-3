@@ -103,6 +103,22 @@ export class Player {
     const plateDark = armor(hero.plateDark);
     const gold = armor(hero.trim, hero.trimEmissive, 0.35);
     const cloth = armor(0x141824);
+    const heroGlow = new THREE.MeshStandardMaterial({
+      color: 0xeefaff,
+      emissive: this.bladeColor,
+      emissiveIntensity: 2.1,
+      roughness: 0.24,
+      metalness: 0.45,
+      flatShading: true,
+    });
+    const capeTrim = new THREE.MeshStandardMaterial({
+      color: hero.trim,
+      emissive: this.bladeColor,
+      emissiveIntensity: 0.7,
+      roughness: 0.45,
+      metalness: 0.35,
+      flatShading: true,
+    });
 
     const box = (
       w: number, h: number, d: number,
@@ -182,6 +198,21 @@ export class Player {
     box(P.torsoW, P.torsoH, P.torsoD, plate, 0, 0.1, 0, this.torso);
     box(P.torsoW * 0.81, 0.16, P.torsoD * 1.1, gold, 0, -0.26, 0, this.torso); // belt
     box(P.torsoW * 1.09, 0.1, P.torsoD * 1.1, gold, 0, 0.38, 0, this.torso); // collar trim
+    const chestZ = P.torsoD * 0.5 + 0.04;
+    const chestCore = box(P.torsoW * 0.22, 0.24, 0.055, heroGlow, 0, 0.15, chestZ, this.torso);
+    chestCore.rotation.z = Math.PI / 4;
+    const sashA = box(P.torsoW * 0.72, 0.055, 0.055, gold, -P.torsoW * 0.08, 0.1, chestZ + 0.01, this.torso);
+    sashA.rotation.z = 0.58;
+    const sashB = box(P.torsoW * 0.72, 0.045, 0.052, plateDark, P.torsoW * 0.08, -0.02, chestZ + 0.012, this.torso);
+    sashB.rotation.z = -0.5;
+    for (const sx of [-1, 1]) {
+      const rib = box(0.045, P.torsoH * 0.58, 0.055, gold, sx * P.torsoW * 0.34, 0.08, chestZ + 0.006, this.torso);
+      rib.rotation.z = sx * -0.12;
+    }
+    const backHalo = new THREE.Mesh(new THREE.TorusGeometry(P.torsoW * 0.66, 0.018, 6, 44), heroGlow);
+    backHalo.position.set(0, 0.3, -P.torsoD * 0.62);
+    backHalo.rotation.x = Math.PI / 2;
+    this.torso.add(backHalo);
 
     // Bulwark: a heavy chest plate + central rivet for mass.
     if (id === "bulwark") {
@@ -253,6 +284,14 @@ export class Player {
     // Shoulders (pauldrons) — size scales with the silhouette.
     box(P.shoulderW, P.shoulderH, P.shoulderD, gold, -P.shoulderX, 0.34, 0, this.torso);
     box(P.shoulderW, P.shoulderH, P.shoulderD, gold, P.shoulderX, 0.34, 0, this.torso);
+    for (const sx of [-1, 1]) {
+      const lip = box(P.shoulderW * 1.15, 0.055, P.shoulderD * 1.18, plateDark, sx * P.shoulderX, 0.49, 0.02, this.torso);
+      lip.rotation.z = sx * -0.08;
+      if (id !== "sparkmage" && id !== "tempest") {
+        const crest = spike(0.045, 0.18, 4, heroGlow, sx * P.shoulderX, 0.62, -0.02, this.torso);
+        crest.rotation.z = sx * -0.2;
+      }
+    }
     if (id === "bulwark") {
       // Oversized angular pauldrons capped with spikes.
       const capL = spike(0.2, 0.26, 4, plateDark, -P.shoulderX - 0.02, 0.5, 0, this.torso);
@@ -273,11 +312,15 @@ export class Player {
     this.armR.position.set(P.armX, 0.26, 0);
     this.torso.add(this.armR);
     box(P.armW, P.armH, P.armW, plate, 0, -P.armH * 0.58, 0, this.armR);
+    box(P.armW * 1.28, 0.12, P.armW * 1.28, gold, 0, -P.armH * 0.98, 0, this.armR);
+    box(P.armW * 1.05, 0.055, P.armW * 1.35, heroGlow, 0, -P.armH * 0.78, P.armW * 0.2, this.armR);
 
     this.armL = new THREE.Group();
     this.armL.position.set(-P.armX, 0.26, 0);
     this.torso.add(this.armL);
     box(P.armW, P.armH, P.armW, plate, 0, -P.armH * 0.58, 0, this.armL);
+    box(P.armW * 1.28, 0.12, P.armW * 1.28, gold, 0, -P.armH * 0.98, 0, this.armL);
+    box(P.armW * 1.05, 0.055, P.armW * 1.35, heroGlow, 0, -P.armH * 0.78, P.armW * 0.2, this.armL);
 
     // Sword: emissive blade reads as a light source under bloom.
     // Per-hero weapon profile, but the sword GROUP + tip/base markers are
@@ -352,6 +395,15 @@ export class Player {
       this.sword.add(guard);
     }
     // Invisible markers for the trail ribbon — invariant anchors.
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.075, 0.34), plateDark);
+    grip.position.z = -0.02;
+    this.sword.add(grip);
+    const pommel = new THREE.Mesh(new THREE.OctahedronGeometry(0.08), heroGlow);
+    pommel.position.z = -0.23;
+    this.sword.add(pommel);
+    const bladeRune = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.022, 0.72), heroGlow);
+    bladeRune.position.set(0, 0.04, 0.9);
+    this.sword.add(bladeRune);
     this.bladeTipMarker = new THREE.Object3D();
     this.bladeTipMarker.position.z = 1.6;
     this.bladeBaseMarker = new THREE.Object3D();
@@ -364,10 +416,14 @@ export class Player {
     this.legR.position.set(P.legX, 0.55, 0);
     this.body.add(this.legR);
     box(P.legW, P.legH, P.legW * 1.16, cloth, 0, -P.legH * 0.54, 0, this.legR);
+    box(P.legW * 1.22, 0.12, P.legW * 1.34, gold, 0, -P.legH * 0.48, P.legW * 0.16, this.legR);
+    box(P.legW * 1.12, 0.11, P.legW * 1.25, plateDark, 0, -P.legH * 0.96, 0, this.legR);
     this.legL = new THREE.Group();
     this.legL.position.set(-P.legX, 0.55, 0);
     this.body.add(this.legL);
     box(P.legW, P.legH, P.legW * 1.16, cloth, 0, -P.legH * 0.54, 0, this.legL);
+    box(P.legW * 1.22, 0.12, P.legW * 1.34, gold, 0, -P.legH * 0.48, P.legW * 0.16, this.legL);
+    box(P.legW * 1.12, 0.11, P.legW * 1.25, plateDark, 0, -P.legH * 0.96, 0, this.legL);
 
     // Cape (cosmetic color) — robe-like for the mage, streamer-thin for tempest.
     let capeW = 0.66, capeH = 0.95;
@@ -382,6 +438,9 @@ export class Player {
     this.cape.position.set(0, 0.42, -P.torsoD * 0.57);
     this.cape.castShadow = true;
     this.torso.add(this.cape);
+    box(0.035, capeH * 0.82, 0.025, capeTrim, -capeW * 0.43, 0.02 - capeH * 0.45, -P.torsoD * 0.6, this.torso);
+    box(0.035, capeH * 0.82, 0.025, capeTrim, capeW * 0.43, 0.02 - capeH * 0.45, -P.torsoD * 0.6, this.torso);
+    box(capeW * 0.62, 0.035, 0.025, capeTrim, 0, 0.36 - capeH * 0.86, -P.torsoD * 0.6, this.torso);
 
     // Tempo aura ring at the feet
     this.auraMat = new THREE.MeshBasicMaterial({

@@ -90,6 +90,18 @@ export class SpireCaster extends Enemy {
     this.addMesh(new THREE.TorusGeometry(1.05, 0.1, 8, 24), trimMat, 0, 0.18).rotation.x = Math.PI / 2;
     this.addMesh(new THREE.SphereGeometry(0.38, 10, 8), trimMat, 0, 3.0);
     this.addMesh(new THREE.BoxGeometry(0.5, 0.3, 0.3), this.coreMat, 0, 1.7, 0.5);
+    for (const sx of [-1, 1]) {
+      const fin = this.addMesh(new THREE.BoxGeometry(0.12, 1.45, 0.46), trimMat, sx * 0.72, 1.55, 0.05);
+      fin.rotation.z = sx * -0.26;
+      fin.rotation.y = sx * 0.18;
+      const prism = this.addMesh(new THREE.OctahedronGeometry(0.18), this.coreMat, sx * 0.62, 2.35, 0.36);
+      prism.scale.y = 1.55;
+      prism.rotation.z = sx * 0.25;
+    }
+    const lowerHalo = this.addMesh(new THREE.TorusGeometry(0.72, 0.035, 6, 36), trimMat, 0, 2.62);
+    lowerHalo.rotation.x = Math.PI / 2;
+    const crownHalo = this.addMesh(new THREE.TorusGeometry(0.58, 0.025, 6, 36), this.coreMat, 0, 3.14);
+    crownHalo.rotation.x = Math.PI / 2;
 
     // Orbiting crystal orbs
     this.orbGroup = new THREE.Group();

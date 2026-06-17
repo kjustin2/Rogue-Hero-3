@@ -109,6 +109,18 @@ export class Colossus extends Enemy {
     this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, 2.6, 2.6, 0.3).rotation.z = -0.25;
     this.fistL = this.addMesh(new THREE.BoxGeometry(1.5, 1.2, 1.5), plateMat, -3.1, 1.0, 0.5);
     this.fistR = this.addMesh(new THREE.BoxGeometry(1.5, 1.2, 1.5), plateMat, 3.1, 1.0, 0.5);
+    for (const sx of [-1, 1]) {
+      const vent = this.addMesh(new THREE.BoxGeometry(0.4, 0.25, 0.75), this.coreMat, sx * 1.45, 3.32, 1.15);
+      vent.rotation.z = sx * -0.22;
+      for (let i = 0; i < 3; i++) {
+        const knuckle = this.addMesh(new THREE.BoxGeometry(0.38, 0.18, 0.32), this.veinMat, sx * (2.68 + i * 0.28), 1.65, 1.08);
+        knuckle.rotation.y = sx * 0.12;
+      }
+      const shoulderSlab = this.addMesh(new THREE.BoxGeometry(0.74, 0.44, 0.72), plateMat, sx * 1.85, 3.02, 0.12);
+      shoulderSlab.rotation.z = sx * -0.35;
+    }
+    const crownBand = this.addMesh(new THREE.TorusGeometry(1.25, 0.055, 6, 36), this.veinMat, 0, 3.75);
+    crownBand.rotation.x = Math.PI / 2;
 
     this.patchGeo = new THREE.CircleGeometry(1.3, 24);
     this.patchGeo.rotateX(-Math.PI / 2);

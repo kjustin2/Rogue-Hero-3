@@ -231,6 +231,32 @@ export class Combat {
   }
 
   // ----------------------------------------------------------- deal damage
+  private enemyHitFx(e: Enemy, opts: DamageOpts, color: number, critical: boolean, killed: boolean): void {
+    const armored = e.kind === "bastion" || e.kind === "sentinel" || e.kind === "brute" || e.kind === "mirror";
+    const voidTouched = e.kind === "shade" || e.kind === "voidling" || e.kind === "warper" || e.kind === "boss";
+    const palette = armored
+      ? [0xffe0a0, 0xffffff, color]
+      : voidTouched
+        ? [0x9a5cff, 0xe8e0ff, color]
+        : [0xffeeaa, color, critical ? 0xffffff : color];
+    const count = killed ? 22 : opts.heavy ? 18 : critical ? 14 : 8;
+    this.ctx.fx.burst({
+      x: e.pos.x, y: armored ? 1.15 : voidTouched ? 1.08 : 1.0, z: e.pos.z,
+      count,
+      color: palette,
+      speed: [armored ? 3 : 2, opts.heavy ? 11 : critical ? 9 : 7],
+      up: armored ? 0.3 : voidTouched ? 0.85 : 0.5,
+      size: [0.28, opts.heavy || critical ? 0.9 : 0.68],
+      life: [0.15, voidTouched ? 0.52 : 0.38],
+      gravity: voidTouched ? -1.2 : -5,
+      drag: armored ? 4.4 : 3.4,
+      jitter: voidTouched ? 0.55 : 0.2,
+    });
+    if (opts.heavy) this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.8, color: 0xffffff, duration: 0.24 });
+    if (critical) this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.1, color, duration: 0.28 });
+    if (armored) this.ctx.fx.burst({ x: e.pos.x, y: 0.75, z: e.pos.z, count: 6, color: [0xffffff, 0xffcc66], speed: [4, 9], up: 0.1, size: [0.18, 0.42], life: [0.12, 0.28], gravity: -8, drag: 5 });
+  }
+
   /** Every player-sourced hit on an enemy flows through here. */
   dealDamage(e: Enemy, baseDmg: number, opts: DamageOpts & { countCombo?: boolean } = {}): void {
     const { tempo, stats, events } = this.ctx;
@@ -267,12 +293,7 @@ export class Combat {
         String(dmg),
         opts.heavy || critical ? "crit" : "dmg"
       );
-      this.ctx.fx.burst({
-        x: e.pos.x, y: 1.0, z: e.pos.z,
-        count: opts.heavy ? 16 : 8,
-        color: [0xffeeaa, zone.color],
-        speed: [2, opts.heavy ? 10 : 7], up: 0.5, size: [0.3, 0.75], life: [0.15, 0.4], gravity: -5, drag: 3.5,
-      });
+      this.enemyHitFx(e, opts, zone.color, critical, killed);
     }
     events.emit("ENEMY_HIT", { x: e.pos.x, y: 1, z: e.pos.z, dmg: bodyDmg, heavy: !!opts.heavy, killed });
     if (opts.countCombo) this.swingHits++;

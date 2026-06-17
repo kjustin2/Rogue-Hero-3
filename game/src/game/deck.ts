@@ -85,6 +85,7 @@ export class Deck {
     // Aegis re-press detonates even while "on cooldown" conceptually —
     // the detonation is part of the same cast.
     if (card.id === "aegis" && this.ctx.caster.aegisActive) {
+      this.ctx.events.emit("CARD_PRIME", { slot, id: card.id, color: card.color });
       this.ctx.caster.cast(card, this.upgraded[slot]);
       return;
     }
@@ -93,6 +94,7 @@ export class Deck {
       this.ctx.sfx.deny();
       return;
     }
+    this.ctx.events.emit("CARD_PRIME", { slot, id: card.id, color: card.color });
     if (this.ctx.caster.cast(card, this.upgraded[slot])) {
       this.castCount++;
       const honed = this.upgraded[slot] ? 0.7 : 1;

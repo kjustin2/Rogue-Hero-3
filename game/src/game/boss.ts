@@ -35,7 +35,8 @@ export class PitWarden extends Enemy {
   private leapTo = new THREE.Vector3();
   private leapT = 0;
   private slamCount = 0;
-  private attackCd = 1.5;
+  private attackCd = 0.75;
+  private guardWarned = false;
   private coreMat: THREE.MeshStandardMaterial;
   private eyeMat: THREE.MeshStandardMaterial;
   private patches: FirePatch[] = [];
@@ -56,6 +57,8 @@ export class PitWarden extends Enemy {
     const hide = this.stdMat(0x4a1d1d, 0x550808, 0.3);
     const plate = this.stdMat(0x2a1518);
     const horn = this.stdMat(0xc9b8a0);
+    const chain = this.stdMat(0x180d0b, 0xff7733, 0.55);
+    const emberPlate = this.stdMat(0x3a0d06, 0xffaa44, 1.2);
     this.coreMat = this.stdMat(0x331111, 0xff4422, 1.8);
     this.eyeMat = this.stdMat(0x000000, 0xffaa22, 3);
     this.hide = hide;
@@ -81,6 +84,22 @@ export class PitWarden extends Enemy {
     this.addMesh(new THREE.BoxGeometry(0.55, 1.6, 0.55), hide, 1.35, 1.3, 0.2);
     this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.85), plate, -1.35, 0.35, 0.2);
     this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.85), plate, 1.35, 0.35, 0.2);
+    for (const sx of [-1, 1]) {
+      const pauldron = this.addMesh(new THREE.BoxGeometry(0.72, 0.28, 0.9), emberPlate, sx * 1.15, 2.05, 0.08);
+      pauldron.rotation.z = sx * -0.2;
+      const brace = this.addMesh(new THREE.BoxGeometry(0.72, 0.18, 0.5), chain, sx * 1.35, 0.78, 0.52);
+      brace.rotation.z = sx * -0.12;
+      for (let i = 0; i < 3; i++) {
+        const claw = this.addMesh(new THREE.ConeGeometry(0.08, 0.42, 4), emberPlate, sx * (1.12 + i * 0.16), 0.2, 0.72);
+        claw.rotation.x = Math.PI / 2;
+        claw.rotation.z = sx * 0.18;
+      }
+    }
+    const chainA = this.addMesh(new THREE.BoxGeometry(1.55, 0.12, 0.12), chain, -0.05, 1.95, 0.93);
+    chainA.rotation.z = 0.32;
+    const chainB = this.addMesh(new THREE.BoxGeometry(1.35, 0.1, 0.1), chain, 0.08, 1.78, 0.95);
+    chainB.rotation.z = -0.35;
+    this.addMesh(new THREE.BoxGeometry(0.28, 0.28, 0.12), emberPlate, 0, 1.84, 1.02).rotation.z = Math.PI / 4;
     // Stubby legs
     this.addMesh(new THREE.BoxGeometry(0.6, 0.7, 0.7), hide, -0.55, 0.25, -0.15);
     this.addMesh(new THREE.BoxGeometry(0.6, 0.7, 0.7), hide, 0.55, 0.25, -0.15);
@@ -288,6 +307,15 @@ export class PitWarden extends Enemy {
       case "guard":
         // Planted, invulnerable brace — back off, the quake punishes hugging.
         this.facePlayer(dt);
+        if (!this.guardWarned && this.timer <= 0.18) {
+          this.guardWarned = true;
+          this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 4.8, color: 0xffffff, duration: 0.22, startRadius: 3.9 });
+          this.ctx.fx.burst({
+            x: this.pos.x, y: 0.25, z: this.pos.z,
+            count: 18, color: [0xff7a3a, 0xffffff],
+            speed: [1.5, 5], up: 0.35, size: [0.28, 0.65], life: [0.16, 0.34], gravity: -1.5, drag: 2.4,
+          });
+        }
         if (this.timer <= 0) {
           this.wardShock(4.8, 18, 0xff7a3a);
           this.ctx.sfx.bossSlam();
@@ -302,7 +330,7 @@ export class PitWarden extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.5, 1.7 - this.phase * 0.38);
+          this.attackCd = Math.max(0.42, 1.35 - this.phase * 0.28);
         }
         break;
     }
@@ -312,8 +340,10 @@ export class PitWarden extends Enemy {
   private beginGuard(): void {
     this.setInvuln(1.4);
     this.state = "guard";
-    this.timer = 0.7; // wind-up = telegraph duration
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.7, 0xff7a3a);
+    this.guardWarned = false;
+    this.timer = 0.74; // wind-up = telegraph duration
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.74, 0xff7a3a);
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 4.8, color: 0xffaa44, duration: 0.45, startRadius: 1.0 });
     this.ctx.sfx.bossRoar();
   }
 
@@ -329,9 +359,10 @@ export class PitWarden extends Enemy {
 
   private beginDashCombo(): void {
     this.dashesLeft = this.phase >= 3 ? 4 : 2;
-    this.aimDash(0.45);
+    const tell = this.phase >= 3 ? 0.34 : 0.38;
+    this.aimDash(tell);
     this.state = "dashTell";
-    this.timer = 0.45;
+    this.timer = tell;
   }
 
   /** Telegraph duration must match the tell timer so the sweep completing == dash launching. */

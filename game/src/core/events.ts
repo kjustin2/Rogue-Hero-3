@@ -12,6 +12,7 @@ export interface EventMap {
   DODGE: Record<string, never>;
   PERFECT_DODGE: { x: number; z: number };
   CARD_CAST: { id: string };
+  CARD_PRIME: { slot: number; id: string; color: string };
   CARD_FAIL: { slot: number };
   TEMPO_ZONE: { zone: TempoZone; prev: TempoZone };
   CRASH: { x: number; z: number };

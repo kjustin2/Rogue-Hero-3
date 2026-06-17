@@ -25,6 +25,7 @@ export class Wisp extends Enemy {
     this.hp = this.maxHp = 10;
     this.speed = 3.0;
     this.radius = 0.42;
+    this.addRoleSilhouette("flier", 0x3effd2);
 
     this.orbMat = this.stdMat(0x0a2a24, 0x3effd2, 2.4);
     const shellMat = this.stdMat(0x10312a, 0x1a8a70, 0.5);
@@ -110,6 +111,7 @@ export class Leaper extends Enemy {
     this.hp = this.maxHp = 26;
     this.speed = 4.0;
     this.radius = 0.55;
+    this.addRoleSilhouette("charger", 0xcc55ff);
 
     const bodyMat = this.stdMat(0x2a1535, 0x551177, 0.4);
     const clawMat = this.stdMat(0x1a0d22);
@@ -243,6 +245,7 @@ export class Tether extends Enemy {
     this.hp = this.maxHp = 24;
     this.speed = 2.4;
     this.radius = 0.5;
+    this.addRoleSilhouette("caster", 0x55bbff);
 
     const robeMat = this.stdMat(0x132e3a, 0x115566, 0.4);
     const trimMat = this.stdMat(0x1d4250, 0x33aacc, 0.7);
@@ -331,6 +334,7 @@ export class Mirror extends Enemy {
     this.speed = 2.0;
     this.radius = 0.7;
     this.shieldBarColor = 0x99ddff;
+    this.addRoleSilhouette("shield", 0x99ddff);
 
     const plateMat = this.stdMat(0x39414f, 0x4a6a8a, 0.5);
     const trimMat = this.stdMat(0x222831, 0x99ccff, 0.9);
@@ -471,6 +475,7 @@ export class Caster extends Enemy {
     this.hp = this.maxHp = 22;
     this.speed = 1.6;
     this.radius = 0.55;
+    this.addRoleSilhouette("caster", 0xff7733);
 
     const robeMat = this.stdMat(0x33150e, 0x882211, 0.5);
     const emberMat = this.stdMat(0x4a1d0a, 0xff5522, 0.9);
@@ -582,6 +587,7 @@ export class Shade extends Enemy {
     this.hp = this.maxHp = 20;
     this.speed = 3.6;
     this.radius = 0.45;
+    this.addRoleSilhouette("void", 0xff66aa);
 
     const mk = (color: number, emissive: number, ei: number) => {
       const m = this.stdMat(color, emissive, ei);
@@ -711,6 +717,7 @@ export class Bastion extends Enemy {
     this.radius = 0.7;
     this.shieldHp = this.shieldMaxHp = 36; // ≈ one full melee combo (9+9+18) at neutral tempo
     this.shieldBarColor = 0xffaa33;
+    this.addRoleSilhouette("shield", 0xffaa33);
 
     const hide = this.stdMat(0x2c2418, 0x553311, 0.3);
     const eyeMat = this.stdMat(0x000000, 0xffbb44, 2.4);
@@ -862,6 +869,7 @@ export class Brute extends Enemy {
     this.hp = this.maxHp = 85;
     this.speed = 1.5;
     this.radius = 0.8;
+    this.addRoleSilhouette("charger", 0xff5511);
 
     const armorMat = this.stdMat(0x2a2620, 0x442211, 0.25);
     const ironMat = this.stdMat(0x4a4438, 0x664422, 0.4);
@@ -986,6 +994,7 @@ export class Harrier extends Enemy {
     this.speed = 5.0;
     this.radius = 0.42;
     this.pos.y = 1.6;
+    this.addRoleSilhouette("flier", 0x33ccff);
 
     const wingMat = this.stdMat(0x20303a, 0x2a6688, 0.5);
     const bodyMat = this.stdMat(0x142028, 0x3388aa, 0.35);
@@ -1075,6 +1084,7 @@ export class Splitter extends Enemy {
     this.hp = this.maxHp = 28;
     this.speed = 1.9;
     this.radius = 0.6;
+    this.addRoleSilhouette("splitter", 0x66ff88);
 
     const gooMat = this.stdMat(0x163a1c, 0x33cc55, 0.6);
     const coreMat = this.stdMat(0x0a2410, 0x66ff88, 1.4);
@@ -1153,6 +1163,7 @@ export class Voidling extends Enemy {
     this.speed = 5.0;
     this.radius = 0.38;
     this.contactDmg = 7;
+    this.addRoleSilhouette("void", 0xc8a6ff);
 
     const shellMat = this.stdMat(0x140a26, 0x9a6aff, 1.0);
     this.coreMat = this.stdMat(0x1a1030, 0xf0e6ff, 2.8);
@@ -1234,6 +1245,7 @@ export class Warper extends Enemy {
     this.hp = this.maxHp = 26;
     this.speed = 2.2;
     this.radius = 0.5;
+    this.addRoleSilhouette("void", 0xc8a6ff);
 
     const mk = (color: number, emissive: number, ei: number): THREE.MeshStandardMaterial => {
       const m = this.stdMat(color, emissive, ei);

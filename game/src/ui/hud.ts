@@ -51,6 +51,8 @@ export class Hud {
   private comboEl!: HTMLElement;
   private comboNum!: HTMLElement;
   private hitArrow!: HTMLElement;
+  private threatEls: HTMLElement[] = [];
+  private threatVec = new THREE.Vector3();
   private combo = 0;
   private comboExpiry = 0;
   private lastComboMilestone = 0;
@@ -72,6 +74,7 @@ export class Hud {
       <div class="lowhp"></div>
       <div class="screenflash"></div>
       <div class="hitarrow"></div>
+      <div class="threatmarkers"></div>
       <div class="flashring"></div>
       <div class="letterbox letterbox--top"></div>
       <div class="letterbox letterbox--bottom"></div>
@@ -169,6 +172,15 @@ export class Hud {
         cdnum: el.querySelector(".slot__cdnum") as HTMLElement,
       });
     }
+
+    const threats = q(".threatmarkers");
+    for (let i = 0; i < 5; i++) {
+      const el = document.createElement("div");
+      el.className = "threat";
+      el.innerHTML = `<span></span>`;
+      threats.appendChild(el);
+      this.threatEls.push(el);
+    }
   }
 
   private subscribe(): void {
@@ -229,6 +241,12 @@ export class Hud {
     events.on("CARD_FAIL", ({ slot }) => {
       const s = this.slotEls[slot];
       if (s) this.replay(s.el, "slot--shake");
+    });
+    events.on("CARD_PRIME", ({ slot, color }) => {
+      const s = this.slotEls[slot];
+      if (!s) return;
+      s.el.style.setProperty("--accent", color);
+      this.replay(s.el, "slot--cast");
     });
   }
 
@@ -443,6 +461,50 @@ export class Hud {
         s.cdnum.textContent = "";
         s.el.classList.remove("slot--ready");
       }
+    }
+    this.updateThreatMarkers();
+  }
+
+  private updateThreatMarkers(): void {
+    const p = this.ctx.player;
+    if (!p.alive || this.root.style.display === "none") {
+      for (const el of this.threatEls) el.classList.remove("threat--on", "threat--boss");
+      return;
+    }
+    const w = window.innerWidth || 1;
+    const h = window.innerHeight || 1;
+    const cam = this.ctx.stage.camera;
+    const enemies = this.ctx.enemies.living()
+      .map((e) => ({ e, d: Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) }))
+      .filter(({ d }) => d > 5)
+      .sort((a, b) => (a.e.kind === "boss" ? -1 : b.e.kind === "boss" ? 1 : a.d - b.d));
+    let shown = 0;
+    for (const { e, d } of enemies) {
+      if (shown >= this.threatEls.length) break;
+      const v = this.threatVec.set(e.pos.x, e.pos.y + 1.0, e.pos.z).project(cam);
+      const behind = v.z > 1;
+      const off = behind || v.x < -0.88 || v.x > 0.88 || v.y < -0.8 || v.y > 0.8;
+      if (!off) continue;
+      let sx = (v.x * 0.5 + 0.5) * w;
+      let sy = (-v.y * 0.5 + 0.5) * h;
+      if (!Number.isFinite(sx) || !Number.isFinite(sy) || behind) {
+        const ang = Math.atan2(e.pos.x - p.pos.x, e.pos.z - p.pos.z) - this.ctx.player.facing;
+        sx = w * 0.5 + Math.sin(ang) * w * 0.45;
+        sy = h * 0.5 - Math.cos(ang) * h * 0.38;
+      }
+      sx = Math.min(w - 58, Math.max(58, sx));
+      sy = Math.min(h - 58, Math.max(58, sy));
+      const ang = Math.atan2(sy - h * 0.5, sx - w * 0.5);
+      const el = this.threatEls[shown++];
+      el.style.left = `${sx}px`;
+      el.style.top = `${sy}px`;
+      el.style.setProperty("--ang", `${ang}rad`);
+      el.style.setProperty("--scale", `${Math.max(0.72, 1.15 - Math.min(1, d / 20) * 0.32)}`);
+      el.classList.add("threat--on");
+      el.classList.toggle("threat--boss", e.kind === "boss");
+    }
+    for (let i = shown; i < this.threatEls.length; i++) {
+      this.threatEls[i].classList.remove("threat--on", "threat--boss");
     }
   }
 }

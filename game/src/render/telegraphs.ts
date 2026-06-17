@@ -4,12 +4,14 @@ interface Telegraph {
   group: THREE.Group;
   outline: THREE.Mesh;
   fill: THREE.Mesh;
+  impact: THREE.Mesh;
   zone: THREE.Mesh;
   sweep: THREE.Mesh;
   /** Annulus mesh, built per use (inner/outer ratio varies), disposed on release. */
   annulus: THREE.Mesh | null;
   outlineMat: THREE.MeshBasicMaterial;
   fillMat: THREE.MeshBasicMaterial;
+  impactMat: THREE.MeshBasicMaterial;
   zoneMat: THREE.MeshBasicMaterial;
   sweepMat: THREE.MeshBasicMaterial;
   t: number;
@@ -61,20 +63,23 @@ export class Telegraphs {
         });
       const outlineMat = mat();
       const fillMat = mat();
+      const impactMat = mat();
       const zoneMat = mat();
       const sweepMat = mat();
       const outline = new THREE.Mesh(outlineGeo, outlineMat);
       const fill = new THREE.Mesh(fillGeo, fillMat);
+      const impact = new THREE.Mesh(outlineGeo, impactMat);
       const zone = new THREE.Mesh(stripGeo, zoneMat);
       const sweep = new THREE.Mesh(stripGeo, sweepMat);
       fill.position.y = 0.01;
+      impact.position.y = 0.025;
       sweep.position.y = 0.01;
-      group.add(outline, fill, zone, sweep);
+      group.add(outline, fill, impact, zone, sweep);
       group.visible = false;
       this.scene.add(group);
       this.pool.push({
-        group, outline, fill, zone, sweep, annulus: null,
-        outlineMat, fillMat, zoneMat, sweepMat,
+        group, outline, fill, impact, zone, sweep, annulus: null,
+        outlineMat, fillMat, impactMat, zoneMat, sweepMat,
         t: 0, dur: 1, radius: 1, length: 1, shape: "circle", active: false,
       });
     }
@@ -91,14 +96,17 @@ export class Telegraphs {
     t.group.visible = true;
     t.group.position.set(x, 0.05, z);
     t.group.rotation.y = 0;
-    t.outline.visible = t.fill.visible = true;
+    t.outline.visible = t.fill.visible = t.impact.visible = true;
     t.zone.visible = t.sweep.visible = false;
     t.outline.scale.set(radius, 1, radius);
     t.fill.scale.setScalar(0.001);
+    t.impact.scale.set(radius * 0.9, 1, radius * 0.9);
     t.outlineMat.color.set(color);
     t.fillMat.color.set(color);
+    t.impactMat.color.set(0xffffff);
     t.outlineMat.opacity = 0.85;
     t.fillMat.opacity = 0.22;
+    t.impactMat.opacity = 0;
     return { cancel: () => this.release(t) };
   }
 
@@ -114,7 +122,7 @@ export class Telegraphs {
     t.group.visible = true;
     t.group.position.set(x, 0.05, z);
     t.group.rotation.y = angle;
-    t.outline.visible = t.fill.visible = false;
+    t.outline.visible = t.fill.visible = t.impact.visible = false;
     t.zone.visible = t.sweep.visible = true;
     t.zone.scale.set(width, 1, length);
     t.sweep.scale.set(width, 1, 0.001);
@@ -140,6 +148,7 @@ export class Telegraphs {
     t.group.position.set(x, 0.05, z);
     t.group.rotation.y = 0;
     t.outline.visible = true;
+    t.impact.visible = false;
     t.fill.visible = t.zone.visible = t.sweep.visible = false;
     t.outline.scale.set(outerR, 1, outerR);
     t.outlineMat.color.set(color);
@@ -157,6 +166,7 @@ export class Telegraphs {
   private release(t: Telegraph): void {
     t.active = false;
     t.group.visible = false;
+    t.impact.visible = false;
     if (t.annulus) {
       t.group.remove(t.annulus);
       t.annulus.geometry.dispose();
@@ -170,17 +180,22 @@ export class Telegraphs {
       t.t += dt;
       const k = Math.min(1, t.t / t.dur);
       const pulse = 0.75 + Math.sin(t.t * 18) * 0.25;
+      const late = Math.max(0, (k - 0.72) / 0.28);
       if (t.shape === "circle") {
         t.fill.scale.setScalar(Math.max(0.001, t.radius * k));
-        t.fillMat.opacity = 0.16 + k * 0.3;
-        t.outlineMat.opacity = 0.85 * pulse;
+        const impactScale = t.radius * (0.9 + late * 0.18);
+        t.impact.scale.set(impactScale, 1, impactScale);
+        t.fillMat.opacity = 0.14 + k * 0.24 + late * 0.18;
+        t.outlineMat.opacity = Math.min(1, 0.72 * pulse + late * 0.38);
+        t.impactMat.opacity = late > 0 ? Math.min(0.95, (0.24 + late * 0.7) * pulse) : 0;
       } else if (t.shape === "ring") {
         t.fillMat.opacity = 0.14 + k * 0.34;
-        t.outlineMat.opacity = 0.85 * pulse;
+        t.outlineMat.opacity = Math.min(1, 0.78 * pulse + late * 0.28);
       } else {
+        const endPulse = Math.max(0, (k - 0.78) / 0.22);
         t.sweep.scale.z = Math.max(0.001, t.length * k);
-        t.sweepMat.opacity = 0.3 + k * 0.3;
-        t.zoneMat.opacity = 0.18 * pulse + k * 0.08;
+        t.sweepMat.opacity = Math.min(0.95, 0.28 + k * 0.32 + endPulse * 0.35);
+        t.zoneMat.opacity = Math.min(0.42, 0.16 * pulse + k * 0.06 + endPulse * 0.12);
       }
       if (k >= 1) this.release(t);
     }

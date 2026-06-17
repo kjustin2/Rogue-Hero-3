@@ -59,6 +59,14 @@ export class RiftEcho extends Enemy {
       blade.rotation.set(Math.PI, a, 0);
     }
     this.addMesh(new THREE.CylinderGeometry(0.4, 1.1, 0.7, 6), this.ringMat, 0, 0.4);
+    for (const sx of [-1, 1]) {
+      const wing = this.addMesh(new THREE.BoxGeometry(0.12, 1.0, 0.34), this.ringMat, sx * 0.9, 1.55, -0.12);
+      wing.rotation.z = sx * -0.42;
+      wing.rotation.y = sx * 0.22;
+      const dagger = this.addMesh(new THREE.ConeGeometry(0.08, 0.9, 4), this.coreMat, sx * 0.62, 1.05, 0.62);
+      dagger.rotation.x = Math.PI / 2;
+      dagger.rotation.z = sx * 0.2;
+    }
 
     // Counter-spinning ring
     this.rings = new THREE.Group();
@@ -66,6 +74,8 @@ export class RiftEcho extends Enemy {
     this.root.add(this.rings);
     const r1 = this.addMesh(new THREE.TorusGeometry(1.8, 0.08, 6, 32), this.ringMat, 0, 0, 0, this.rings);
     r1.rotation.x = Math.PI / 2;
+    const r2 = this.addMesh(new THREE.TorusGeometry(1.18, 0.035, 6, 32), this.coreMat, 0, 0, 0, this.rings);
+    r2.rotation.set(1.0, 0.25, 0.6);
   }
 
   protected deathColor(): number { return ECHO_CORE; }

@@ -25,8 +25,9 @@ export class Floaters {
   spawn(x: number, y: number, z: number, text: string, kind: FloaterKind = "dmg", color?: string): void {
     this.v.set(x, y, z).project(this.camera);
     if (this.v.z > 1) return;
-    const sx = (this.v.x * 0.5 + 0.5) * window.innerWidth;
-    const sy = (-this.v.y * 0.5 + 0.5) * window.innerHeight;
+    const margin = kind === "shieldbreak" ? 190 : 42;
+    const sx = Math.min(window.innerWidth - margin, Math.max(margin, (this.v.x * 0.5 + 0.5) * window.innerWidth));
+    const sy = Math.min(window.innerHeight - margin, Math.max(margin, (-this.v.y * 0.5 + 0.5) * window.innerHeight));
 
     const el = this.pool.find((e) => e.style.display === "none");
     if (!el) return;

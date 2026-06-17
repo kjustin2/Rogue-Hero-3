@@ -141,7 +141,7 @@ export class Menus {
 
   // ---------------------------------------------------------------- main menu
   showMain(): void {
-    const s = this.screen("");
+    const s = this.screen("screen--main");
     const p = this.ctx.profile.data;
     const unlockedCount = p.unlocks.length;
     const draftableRelics = RELICS.filter((r) => !r.boon);
@@ -155,6 +155,12 @@ export class Menus {
       ? `Daily Challenge · best ${dbest.kills} kills${dbest.won ? " · sealed ✦" : ""}`
       : "Daily Challenge";
     s.innerHTML = `
+      <div class="menu-scene" aria-hidden="true">
+        <span class="menu-sigil menu-sigil--one"></span>
+        <span class="menu-sigil menu-sigil--two"></span>
+        <span class="menu-sigil menu-sigil--three"></span>
+        <span class="menu-sigil menu-sigil--four"></span>
+      </div>
       <div class="title">ROGUE<br>HERO</div>
       <div class="title-rule"><span class="subtitle">III &nbsp;·&nbsp; The Ember Rift</span></div>
       <div class="menu-strip">${strip}</div>

@@ -13,6 +13,7 @@
     "standalone": "npm run build && electron .",
     "verify": "tsc --noEmit && vite build",
     "smoke": "electron scripts/smoke-electron.cjs",
+    "smoke:polish": "node scripts/smoke-polish.mjs",
     "test:play": "npm run build && electron scripts/smoke-electron.cjs",
     "dist": "npm run build && electron-builder --win",
     "dist:dir": "npm run build && electron-builder --win --dir"

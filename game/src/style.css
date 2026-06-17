@@ -275,6 +275,17 @@ body {
   align-items: center;
   justify-content: center;
 }
+.slot::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    linear-gradient(120deg, transparent 20%, color-mix(in srgb, var(--accent, #fff) 45%, transparent) 48%, transparent 74%);
+  transform: translateX(-95%);
+  mix-blend-mode: screen;
+}
 .slot--empty {
   opacity: 0.35;
   border-style: dashed;
@@ -283,6 +294,9 @@ body {
   border-color: color-mix(in srgb, var(--accent, #fff) 55%, transparent);
   box-shadow: 0 0 14px color-mix(in srgb, var(--accent, #fff) 28%, transparent),
     inset 0 0 10px color-mix(in srgb, var(--accent, #fff) 10%, transparent);
+}
+.slot--ready::after {
+  animation: slot-ready-sheen 2.4s ease-in-out infinite;
 }
 .slot--ready .slot__icon {
   animation: icon-breathe 2.2s ease-in-out infinite;
@@ -341,9 +355,22 @@ body {
 .slot--ready-flash {
   animation: slot-ready 0.45s ease-out;
 }
+.slot--cast {
+  animation: slot-cast 0.34s cubic-bezier(0.18, 0.9, 0.22, 1.2);
+}
 @keyframes slot-ready {
   0% { box-shadow: 0 0 0 0 var(--accent); }
   100% { box-shadow: 0 0 22px 6px transparent; }
+}
+@keyframes slot-ready-sheen {
+  0%, 58% { opacity: 0; transform: translateX(-95%); }
+  70% { opacity: 0.85; }
+  100% { opacity: 0; transform: translateX(95%); }
+}
+@keyframes slot-cast {
+  0% { transform: translateY(0) scale(1); filter: brightness(1); }
+  38% { transform: translateY(-7px) scale(1.08); filter: brightness(1.45); }
+  100% { transform: translateY(0) scale(1); filter: brightness(1); }
 }
 .slot--shake {
   animation: slot-shake 0.3s ease;
@@ -691,6 +718,57 @@ body {
 .screen--dim {
   background: radial-gradient(ellipse at 50% 40%, rgba(7, 8, 16, 0.55) 0%, rgba(5, 6, 12, 0.92) 100%);
   backdrop-filter: blur(3px);
+}
+.screen--main {
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(255, 160, 70, 0.08), transparent 18%, transparent 82%, rgba(95, 224, 255, 0.1)),
+    radial-gradient(ellipse at 50% 55%, rgba(8, 10, 20, 0.1) 0%, rgba(4, 5, 10, 0.48) 70%);
+}
+.screen--main::before,
+.screen--main::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: min(920px, 78vw);
+  height: 1px;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, transparent, rgba(95, 224, 255, 0.5), rgba(255, 194, 102, 0.45), transparent);
+  box-shadow: 0 0 22px rgba(95, 224, 255, 0.28);
+}
+.screen--main::before { top: 12vh; }
+.screen--main::after { bottom: 14vh; }
+.menu-scene {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.menu-sigil {
+  position: absolute;
+  width: clamp(74px, 9vw, 132px);
+  aspect-ratio: 1;
+  border: 1px solid rgba(95, 224, 255, 0.28);
+  box-shadow: inset 0 0 22px rgba(95, 224, 255, 0.08), 0 0 28px rgba(255, 194, 102, 0.08);
+  transform: rotate(45deg);
+  animation: menu-sigil-drift 7s ease-in-out infinite;
+}
+.menu-sigil::before,
+.menu-sigil::after {
+  content: "";
+  position: absolute;
+  inset: 16%;
+  border: 1px solid rgba(255, 194, 102, 0.22);
+}
+.menu-sigil::after {
+  inset: 37%;
+  background: rgba(255, 194, 102, 0.18);
+}
+.menu-sigil--one { left: 12vw; top: 20vh; }
+.menu-sigil--two { right: 13vw; top: 26vh; animation-delay: -1.6s; }
+.menu-sigil--three { left: 17vw; bottom: 18vh; animation-delay: -3s; }
+.menu-sigil--four { right: 17vw; bottom: 20vh; animation-delay: -4.4s; }
+@keyframes menu-sigil-drift {
+  50% { transform: rotate(45deg) translateY(-9px); border-color: rgba(255, 194, 102, 0.36); }
 }
 @keyframes screen-fade {
   from { opacity: 0; }
@@ -1542,6 +1620,42 @@ body {
   pointer-events: none;
   transform: rotate(var(--ang, 0deg));
   background: radial-gradient(ellipse 38% 64% at 100% 50%, rgba(255, 64, 56, 0.6), rgba(255, 64, 56, 0) 70%);
+}
+.threatmarkers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.threat {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  opacity: 0;
+  transform: translate(-50%, -50%) rotate(var(--ang, 0rad)) scale(var(--scale, 1));
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  filter: drop-shadow(0 0 12px rgba(255, 86, 62, 0.55));
+}
+.threat::before,
+.threat span {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  clip-path: polygon(78% 50%, 24% 14%, 36% 50%, 24% 86%);
+  background: rgba(255, 88, 62, 0.88);
+}
+.threat span {
+  inset: 13px;
+  background: #fff0b8;
+  opacity: 0.92;
+}
+.threat--on {
+  opacity: 1;
+}
+.threat--boss {
+  filter: drop-shadow(0 0 16px rgba(203, 182, 255, 0.75));
+}
+.threat--boss::before {
+  background: rgba(190, 140, 255, 0.9);
 }
 .combo {
   position: absolute;

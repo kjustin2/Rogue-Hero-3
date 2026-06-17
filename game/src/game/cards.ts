@@ -319,11 +319,33 @@ export class CardCaster {
     // plus a 50% tempo bonus and the −30% cooldown applied in the deck.
     const ok = this.dispatch(def, upgraded);
     if (ok) {
+      this.castFlourish(def, upgraded);
       this.ctx.events.emit("CARD_CAST", { id: def.id });
       if (def.tempo > 0) this.ctx.tempo.gain(Math.round(def.tempo * (upgraded ? 1.5 : 1)));
       this.ctx.sfx.cast(def.id);
     }
     return ok;
+  }
+
+  private castFlourish(def: CardDef, upgraded: boolean): void {
+    const p = this.ctx.player;
+    const fx = Math.sin(p.facing);
+    const fz = Math.cos(p.facing);
+    const x = p.pos.x + fx * 0.65;
+    const z = p.pos.z + fz * 0.65;
+    this.ctx.fx.ring(p.pos.x, p.pos.z, { radius: upgraded ? 1.75 : 1.35, color: def.glow, duration: 0.22 });
+    this.ctx.fx.burst({
+      x, y: 1.15, z,
+      count: upgraded ? 18 : 12,
+      color: [def.glow, 0xffffff],
+      speed: [1.5, upgraded ? 8 : 6],
+      up: 0.45,
+      size: [0.22, upgraded ? 0.72 : 0.55],
+      life: [0.16, 0.36],
+      gravity: -2,
+      drag: 3.8,
+      jitter: 0.35,
+    });
   }
 
   private dispatch(def: CardDef, upgraded: boolean): boolean {

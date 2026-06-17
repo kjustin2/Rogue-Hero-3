@@ -24,6 +24,8 @@ interface FlashMat {
   baseIntensity: number;
 }
 
+type RoleSilhouette = "charger" | "caster" | "swarm" | "bomber" | "shield" | "flier" | "void" | "splitter";
+
 export interface DamageOpts {
   kbX?: number;
   kbZ?: number;
@@ -70,6 +72,7 @@ export abstract class Enemy {
   lastHitShielded = false;
   private shieldBg: THREE.Sprite | null = null;
   private shieldFill: THREE.Sprite | null = null;
+  private affixCrown: THREE.Group | null = null;
 
   readonly root = new THREE.Group();
   protected heading = 0;
@@ -136,6 +139,78 @@ export abstract class Enemy {
     m.castShadow = true;
     parent.add(m);
     return m;
+  }
+
+  protected addRoleSilhouette(kind: RoleSilhouette, color: number): void {
+    const g = new THREE.Group();
+    g.name = `role-${kind}`;
+    this.root.add(g);
+    const mat = this.stdMat(0x0b0d14, color, 0.75);
+    const bright = this.stdMat(0x11131f, color, 1.35);
+    const accent = this.stdMat(0x06080f, color, 1.8);
+
+    const core = this.addMesh(new THREE.OctahedronGeometry(Math.max(0.055, this.radius * 0.12)), accent, 0, 0.92, this.radius + 0.12, g);
+    core.scale.y = 0.48;
+    core.rotation.y = Math.PI / 4;
+    const brow = this.addMesh(new THREE.BoxGeometry(Math.max(0.22, this.radius * 0.65), 0.055, 0.09), bright, 0, 1.18, this.radius + 0.13, g);
+    brow.rotation.x = -0.08;
+    for (const sx of [-1, 1]) {
+      const rib = this.addMesh(new THREE.BoxGeometry(0.055, 0.34, 0.08), mat, sx * (this.radius + 0.08), 0.78, 0.18, g);
+      rib.rotation.z = sx * -0.22;
+      rib.rotation.y = sx * 0.35;
+    }
+
+    if (kind === "charger") {
+      for (const sx of [-1, 1]) {
+        const horn = this.addMesh(new THREE.ConeGeometry(0.08, 0.62, 4), bright, sx * (this.radius + 0.16), 1.18, 0.5, g);
+        horn.rotation.set(Math.PI / 2, 0, sx * 0.22);
+      }
+      this.addMesh(new THREE.BoxGeometry(this.radius * 1.1, 0.08, 0.5), mat, 0, 0.18, 0.46, g);
+    } else if (kind === "caster") {
+      const halo = this.addMesh(new THREE.TorusGeometry(this.radius + 0.18, 0.025, 6, 28), bright, 0, 1.72, 0, g);
+      halo.rotation.x = Math.PI / 2;
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * TAU;
+        const shard = this.addMesh(new THREE.OctahedronGeometry(0.065), bright, Math.cos(a) * (this.radius + 0.28), 1.72, Math.sin(a) * (this.radius + 0.28), g);
+        shard.rotation.set(a, a * 1.4, 0);
+      }
+    } else if (kind === "swarm") {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * TAU;
+        const barb = this.addMesh(new THREE.ConeGeometry(0.035, 0.25, 4), bright, Math.cos(a) * 0.24, 0.62, Math.sin(a) * 0.24, g);
+        barb.rotation.set(0.5, 0, -a);
+      }
+    } else if (kind === "bomber") {
+      const ring = this.addMesh(new THREE.TorusGeometry(this.radius + 0.2, 0.035, 6, 24), bright, 0, 1.42, 0, g);
+      ring.rotation.x = Math.PI / 2;
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * TAU + Math.PI / 4;
+        this.addMesh(new THREE.BoxGeometry(0.08, 0.08, 0.28), bright, Math.cos(a) * (this.radius + 0.2), 1.42, Math.sin(a) * (this.radius + 0.2), g).rotation.y = a;
+      }
+    } else if (kind === "shield") {
+      this.addMesh(new THREE.BoxGeometry(this.radius * 2.3, 0.12, 0.12), bright, 0, 1.92, 0.52, g);
+      for (const sx of [-1, 1]) {
+        const fin = this.addMesh(new THREE.BoxGeometry(0.1, 0.65, 0.32), mat, sx * (this.radius + 0.22), 1.12, 0.44, g);
+        fin.rotation.z = sx * 0.22;
+      }
+    } else if (kind === "flier") {
+      for (const sx of [-1, 1]) {
+        const wing = this.addMesh(new THREE.BoxGeometry(0.68, 0.04, 0.22), bright, sx * (this.radius + 0.3), 0.1, -0.12, g);
+        wing.rotation.z = sx * -0.32;
+      }
+      this.addMesh(new THREE.ConeGeometry(0.07, 0.45, 4), bright, 0, 0.1, -0.55, g).rotation.x = -Math.PI / 2;
+    } else if (kind === "void") {
+      for (let i = 0; i < 2; i++) {
+        const ring = this.addMesh(new THREE.TorusGeometry(this.radius + 0.16 + i * 0.13, 0.022, 6, 36), bright, 0, 0.85, 0, g);
+        ring.rotation.set(Math.PI / 2 + i * 0.7, i * 1.1, 0);
+      }
+    } else {
+      const split = this.addMesh(new THREE.BoxGeometry(0.08, 0.9, this.radius * 1.15), bright, 0, 0.7, 0.08, g);
+      split.rotation.z = 0.12;
+      for (const sx of [-1, 1]) {
+        this.addMesh(new THREE.TorusGeometry(0.26, 0.025, 5, 16), bright, sx * 0.33, 0.62, 0.28, g).rotation.x = Math.PI / 2;
+      }
+    }
   }
 
   /** Public entry. Subclasses override to insert a shield check, then call super (full body) or hitShield. */
@@ -296,9 +371,27 @@ export abstract class Enemy {
     }
   }
 
+  private ensureAffixCrown(color: number): void {
+    if (this.affixCrown) return;
+    const g = new THREE.Group();
+    g.name = "elite-affix-crown";
+    this.root.add(g);
+    this.affixCrown = g;
+    const mat = this.stdMat(0x090912, color, 1.35);
+    const r = Math.max(0.55, this.radius * 1.25);
+    const ring = this.addMesh(new THREE.TorusGeometry(r, 0.035, 6, 36), mat, 0, this.barHeight() - 0.52, 0, g);
+    ring.rotation.x = Math.PI / 2;
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * TAU + Math.PI / 4;
+      const gem = this.addMesh(new THREE.OctahedronGeometry(0.08), mat, Math.cos(a) * r, this.barHeight() - 0.52, Math.sin(a) * r, g);
+      gem.rotation.set(a, a * 1.3, 0);
+    }
+  }
+
   /** Apply an elite affix (a foe may stack several): static mods + a persistent tint. */
   applyAffix(id: string, color: number): void {
     if (!this.affixes.includes(id)) this.affixes.push(id);
+    this.ensureAffixCrown(color);
     // Persistent colored glow so the threat reads at a glance.
     for (const f of this.flashMats) {
       f.baseEmissive.lerp(new THREE.Color(color), 0.55);
@@ -402,6 +495,10 @@ export abstract class Enemy {
     if (this.deflectCd > 0) this.deflectCd -= dt;
     if (this.invulnTime > 0 || this.wardRing) this.updateWard(dt);
     if (this.affixes.length) this.updateAffix(dt);
+    if (this.affixCrown) {
+      this.affixCrown.rotation.y += dt * 1.7;
+      this.affixCrown.position.y = Math.sin(this.t * 3) * 0.045;
+    }
 
     this.stagger = Math.max(0, this.stagger - dt);
     if (this.frozen > 0) {
@@ -524,6 +621,7 @@ export class Husk extends Enemy {
     this.hp = this.maxHp = 30;
     this.speed = 3.4;
     this.radius = 0.55;
+    this.addRoleSilhouette("charger", 0xff5533);
 
     const bodyMat = this.stdMat(0x4a1f24, 0x771111, 0.25);
     const boneMat = this.stdMat(0x8a7766);
@@ -626,6 +724,7 @@ export class Spitter extends Enemy {
     this.hp = this.maxHp = 22;
     this.speed = 2.6;
     this.radius = 0.5;
+    this.addRoleSilhouette("caster", 0x55bbff);
 
     const robeMat = this.stdMat(0x1c2a4a, 0x223a88, 0.3);
     const trimMat = this.stdMat(0x2e447a, 0x3366cc, 0.7);
@@ -706,6 +805,7 @@ export class Swarmer extends Enemy {
     this.speed = 5.4;
     this.radius = 0.35;
     this.contactDmg = 6;
+    this.addRoleSilhouette("swarm", 0xff7733);
 
     const bodyMat = this.stdMat(0x3a1410, 0xff5511, 0.8);
     const coreMat = this.stdMat(0x1a0805, 0xff8822, 2.4);
@@ -762,6 +862,7 @@ export class Bomber extends Enemy {
     this.hp = this.maxHp = 18;
     this.speed = 4.3;
     this.radius = 0.5;
+    this.addRoleSilhouette("bomber", 0xff8a22);
 
     const shellMat = this.stdMat(0x33231a, 0x331100, 0.2);
     const ironMat = this.stdMat(0x4a3a2a, 0x442200, 0.3);
@@ -860,6 +961,7 @@ export class Sentinel extends Enemy {
     this.hp = this.maxHp = 60;
     this.speed = 1.7;
     this.radius = 0.7;
+    this.addRoleSilhouette("shield", 0xbb66ff);
 
     const armorMat = this.stdMat(0x2a2a3a, 0x222244, 0.3);
     const trimMat = this.stdMat(0x55456a, 0x8844ff, 0.7);

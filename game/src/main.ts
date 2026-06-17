@@ -539,11 +539,16 @@ function toMenu(): void {
   ctx.hostiles.clear();
   ctx.caster.clear();
   ctx.features.clear();
-  ctx.player.root.visible = false;
+  ctx.player.root.visible = true;
+  ctx.player.pos.set(0, 0, 5.2);
+  ctx.player.facing = Math.PI;
+  ctx.player.root.position.set(ctx.player.pos.x, ctx.player.pos.y, ctx.player.pos.z);
+  ctx.player.root.rotation.y = ctx.player.facing;
   ctx.cam.mode = "menu";
   ctx.arena.applyTheme(THEMES.rift);
+  ctx.cam.snapTo(0, 5.2);
   ctx.fx.ambientColor = THEMES.rift.ember;
-  ctx.fx.ambientRate = 6;
+  ctx.fx.ambientRate = 10;
   hud.setVisible(false);
   menus.showMain();
   musicLament = false;
@@ -598,9 +603,107 @@ ctx.events.on("TEMPO_ZONE", ({ zone, prev }) => {
   if (zone === "critical" && prev !== "critical") ctx.sfx.critical();
 });
 
+function playRoomClearFloorBeat(): void {
+  const node = ctx.run.currentNode;
+  const theme = node?.theme ? THEMES[node.theme] : THEMES.rift;
+  const bossClear = !!node?.bossKind;
+  const rings = bossClear ? [3.5, 7, 11, 15] : [2.8, 5.6, 8.8, 12.2];
+  ctx.stage.punch(bossClear ? 0.34 : 0.18);
+  hud.flash(bossClear ? "#ffe39a" : "#bfefff", bossClear ? 0.28 : 0.16);
+  rings.forEach((radius, i) => {
+    window.setTimeout(() => {
+      ctx.fx.ring(0, 0, {
+        radius,
+        startRadius: Math.max(0.2, radius - 3.2),
+        color: i % 2 === 0 ? theme.ember : theme.crystal,
+        duration: bossClear ? 0.8 : 0.55,
+      });
+      ctx.fx.burst({
+        x: ctx.player.pos.x, y: 0.18, z: ctx.player.pos.z,
+        count: bossClear ? 12 : 8,
+        color: [theme.ember, theme.crystal, 0xffffff],
+        speed: [0.6, bossClear ? 4.8 : 3.4],
+        up: bossClear ? 2.1 : 1.5,
+        size: [0.22, bossClear ? 0.75 : 0.55],
+        life: [0.35, 0.85],
+        gravity: 0.15,
+        drag: 1.4,
+        jitter: 0.7,
+      });
+    }, i * (bossClear ? 130 : 95));
+  });
+}
+
+function playBossDeathBeat(kind: string | undefined, x: number, z: number): void {
+  const cfg = BOSS_FX[kind ?? "warden"] ?? BOSS_FX.warden;
+  const dx = x - ctx.player.pos.x;
+  const dz = z - ctx.player.pos.z;
+  const len = Math.hypot(dx, dz) || 1;
+  ctx.sfx.bossDeath();
+  ctx.cam.kick(dx / len, dz / len, cfg.seismic ? 8 : 6);
+  ctx.cam.addTrauma(cfg.seismic ? 0.82 : 0.7);
+  ctx.cam.pulseFov(1);
+  ctx.stage.punch(cfg.seismic ? 0.85 : 0.7);
+  hud.flash(cfg.hex, cfg.quiet ? 0.3 : 0.45);
+  ctx.fx.beam(x, z, cfg.c2);
+
+  const beat = (delay: number, fn: () => void): void => { window.setTimeout(fn, delay); };
+  const boom = (delay: number, radius: number, count: number, color: number, up = 0.9): void => {
+    beat(delay, () => {
+      ctx.fx.ring(x, z, { radius, color, duration: 0.55, startRadius: Math.max(0.2, radius - 4) });
+      ctx.fx.ring(x, z, { radius: radius * 0.5, color: 0xffffff, duration: 0.35 });
+      ctx.fx.burst({ x, y: 1, z, count, color: [color, cfg.c2, 0xffffff], speed: [4, 17], up, size: [0.45, 1.25], life: [0.35, 0.95], gravity: up < 0 ? 0.6 : -3.5, drag: 2 });
+      ctx.cam.addTrauma(0.24);
+    });
+  };
+
+  if (kind === "spire") {
+    boom(120, 4.2, 38, cfg.c1, 1.4);
+    boom(320, 7.2, 52, cfg.c2, 1.2);
+    beat(540, () => {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        ctx.fx.beam(x + Math.sin(a) * 2.8, z + Math.cos(a) * 2.8, i % 2 ? cfg.c1 : cfg.c2);
+      }
+    });
+    boom(680, 10.5, 44, 0xffffff, 1.6);
+  } else if (kind === "colossus") {
+    for (const [delay, radius, count] of [[90, 4.5, 36], [260, 8, 52], [470, 12, 62]] as const) {
+      boom(delay, radius, count, delay === 470 ? 0xfff0c0 : cfg.c1, -0.15);
+      beat(delay + 20, () => ctx.stage.punch(0.35));
+    }
+  } else if (kind === "tyrant") {
+    boom(100, 4.5, 34, cfg.c1, 1.1);
+    beat(290, () => ctx.fx.ring(x, z, { radius: 8.5, startRadius: 1.5, color: cfg.c1, duration: 0.85 }));
+    beat(440, () => ctx.fx.burst({ x, y: 1.4, z, count: 52, color: [0x9a5cff, 0xffffff], speed: [2, 12], up: 1.7, size: [0.35, 1.1], life: [0.45, 1.05], gravity: -1.2, drag: 1.8, jitter: 1.2 }));
+    boom(700, 11, 42, cfg.c2, 1.3);
+  } else if (kind === "echo") {
+    for (let i = 0; i < 4; i++) {
+      beat(110 + i * 125, () => {
+        const a = (i / 4) * Math.PI * 2;
+        const ox = x + Math.sin(a) * 2.2;
+        const oz = z + Math.cos(a) * 2.2;
+        ctx.fx.ring(ox, oz, { radius: 3.4 + i * 1.5, color: i % 2 ? cfg.c2 : cfg.c1, duration: 0.5 });
+        ctx.fx.burst({ x: ox, y: 1, z: oz, count: 22, color: [cfg.c1, cfg.c2, 0xffffff], speed: [2, 10], up: 1.2, size: [0.3, 0.85], life: [0.25, 0.7], gravity: -2, drag: 2.2, jitter: 0.8 });
+      });
+    }
+    boom(720, 10, 36, cfg.c2, 1.0);
+  } else {
+    for (let i = 0; i < 3; i++) {
+      beat(90 + i * 110, () => {
+        const ox = x + (i - 1) * 0.8;
+        ctx.fx.burst({ x: ox, y: 0.85, z: z - 0.3 + i * 0.25, count: 24, color: [cfg.c1, cfg.c2, 0xffffff], speed: [4, 15], up: 0.45, size: [0.45, 1.1], life: [0.25, 0.75], gravity: -5, drag: 2.3 });
+      });
+    }
+    boom(360, 7, 56, cfg.c2, 0.9);
+    boom(620, 10, 44, 0xffffff, 1.1);
+  }
+}
+
 ctx.events.on("ROOM_CLEARED", ({ reward }) => {
   hud.fadeHints();
   awardShards(6);
+  playRoomClearFloorBeat();
   // After a boss, hold so the epitaph banner ("THE WARDEN FALLS") can be read —
   // long enough to read, short enough that it never feels like the game hung.
   const rewardDelay = ctx.run.currentNode?.bossKind ? 4600 : 1500;
@@ -645,29 +748,9 @@ ctx.events.on("BOSS_DEFEATED", ({ x, z }) => {
     return; // RUN_VICTORY (from RunManager) drives the ending
   }
 
-  // Victory detonation — the warden bursts apart in escalating stages.
-  const dx = x - ctx.player.pos.x;
-  const dz = z - ctx.player.pos.z;
-  const len = Math.hypot(dx, dz) || 1;
-  ctx.sfx.bossDeath();
-  ctx.cam.kick(dx / len, dz / len, 6);
-  ctx.cam.addTrauma(0.7);
-  ctx.cam.pulseFov(1);
-  ctx.stage.punch(0.7);
-  ctx.fx.ring(x, z, { radius: 5, color: 0xffd27a, duration: 0.5 });
-  const boom = (delay: number, r: number, n: number, col: number): void => {
-    cutsceneTimers.push(window.setTimeout(() => {
-      ctx.fx.ring(x, z, { radius: r, color: col, duration: 0.5 });
-      ctx.fx.ring(x, z, { radius: r * 0.5, color: 0xffffff, duration: 0.35 });
-      ctx.fx.burst({ x, y: 1, z, count: n, color: [col, 0xffffff], speed: [4, 16], up: 0.9, size: [0.5, 1.3], life: [0.3, 0.9], gravity: -4, drag: 2 });
-      ctx.cam.addTrauma(0.3);
-    }, delay));
-  };
-  boom(130, 4, 40, 0xff8a4d);
-  boom(330, 7, 55, 0xffd27a);
-  boom(580, 10, 50, 0xffffff);
-  // Mid-run wardens get an epitaph as the dust settles, and you carry away their boon.
+  // Mid-run wardens get a themed death beat, an epitaph, and a boon.
   const kind = node?.bossKind;
+  playBossDeathBeat(kind, x, z);
   if (kind) ctx.relics.grantBoon(kind);
   if (kind && BOSS_EPITAPHS[kind] && ctx.run.position < ctx.run.totalForks - 1) {
     const [title, sub] = BOSS_EPITAPHS[kind];
@@ -747,7 +830,7 @@ let bossStormInterval: number | null = null;
 /** Temporary meshes owned by the active boss cutscene. Cleared on skip/finish. */
 let cutsceneTemps: THREE.Object3D[] = [];
 
-type BossOmen = "claws" | "mirrors" | "fists" | "reactor" | "star" | "echoes";
+type BossOmen = "claws" | "mirrors" | "fists" | "reactor" | "star" | "echoes" | "gate" | "beam";
 type BossColorRef = "c1" | "c2" | "white" | "phase";
 type BossBurstPreset = "summon" | "pillar" | "reveal" | "shards" | "seismic" | "tear" | "starfall";
 type BossCutsceneBeat =
@@ -919,6 +1002,33 @@ function addBossOmen(kind: BossOmen, cfg: BossFxConfig, bx: number, bz: number, 
       ring.rotation.set(Math.PI / 2 + i * 0.35, i * 0.8, phase * 0.2);
       root.add(ring);
     }
+  } else if (kind === "gate") {
+    for (let i = 0; i < 2; i++) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(2.1 + i * 0.7, 0.035, 8, 80), i ? secondary : primary);
+      ring.position.y = 0.08 + i * 0.02;
+      ring.rotation.x = Math.PI / 2;
+      root.add(ring);
+    }
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      const rune = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.035, 0.55), i % 2 ? secondary : primary);
+      rune.position.set(Math.sin(a) * 2.72, 0.11, Math.cos(a) * 2.72);
+      rune.rotation.y = a;
+      root.add(rune);
+    }
+  } else if (kind === "beam") {
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.08, 3.4, 6), i % 2 ? secondary : primary);
+      beam.position.set(Math.sin(a) * 1.45, 1.7, Math.cos(a) * 1.45);
+      beam.rotation.z = Math.sin(a) * 0.12;
+      beam.rotation.x = Math.cos(a) * 0.12;
+      root.add(beam);
+    }
+    const halo = new THREE.Mesh(new THREE.TorusGeometry(1.48, 0.03, 8, 72), secondary);
+    halo.position.y = 3.45;
+    halo.rotation.x = Math.PI / 2;
+    root.add(halo);
   } else {
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + 0.4;
@@ -994,6 +1104,7 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
   const beats: BossCutsceneBeat[] = [
     { at: 0, type: "faceHero" },
     { at: 180, type: "camera", zoom: cfg.zoom * 0.68, zOff: -0.25 },
+    { at: 260, type: "prop", omen: "gate" },
     { at: 300, type: "sound", cue: "intro" },
     { at: 360, type: "prop", omen: cfg.omen },
     { at: 500, type: "ring", radius: 15, color: "c1", duration: 0.5, startRadius: 18 },
@@ -1004,22 +1115,28 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
     { at: 1200, type: "burst", preset: "summon" },
     { at: 1520, type: "ring", radius: 4.5, color: "c2", duration: 0.4, startRadius: 6.5 },
     { at: 1700, type: "burst", preset: cfg.quiet ? "starfall" : "pillar" },
+    { at: 1760, type: "prop", omen: "beam" },
     { at: 1900, type: "camera", zoom: cfg.zoom * 1.12 },
     { at: 1920, type: "ring", radius: 6.5, color: "c2", duration: 0.7 },
     { at: 1930, type: "burst", preset: kind === "spire" || kind === "echo" ? "shards" : cfg.seismic ? "seismic" : "summon" },
+    { at: 2180, type: "flash", color: cfg.hex, intensity: cfg.quiet ? 0.16 : 0.24 },
+    { at: 2240, type: "pulse", trauma: cfg.quiet ? 0.1 : 0.2, fov: cfg.quiet ? 0.18 : 0.32 },
     { at: 2550, type: "reveal", name, title },
   ];
 
   if (kind === "warden") {
     beats.push(
       { at: 2860, type: "prop", omen: "claws" },
+      { at: 2980, type: "pulse", trauma: 0.32, punch: 0.25 },
       { at: 3180, type: "ring", radius: 9, color: "c2", duration: 0.5 },
+      { at: 3340, type: "burst", preset: "seismic" },
       { at: 3600, type: "ring", radius: 12, color: "c1", duration: 0.5 },
     );
   } else if (kind === "spire") {
     beats.push(
       { at: 2850, type: "prop", omen: "mirrors" },
       { at: 3040, type: "burst", preset: "shards" },
+      { at: 3220, type: "prop", omen: "beam" },
       { at: 3440, type: "ring", radius: 12, color: "c2", duration: 0.55 },
     );
   } else if (cfg.seismic) {
@@ -1028,12 +1145,14 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
       { at: 3150, type: "ring", radius: 8.5, color: "c1", duration: 0.55 },
       { at: 3550, type: "pulse", trauma: 0.35 },
       { at: 3570, type: "ring", radius: 12, color: "c2", duration: 0.5 },
+      { at: 3680, type: "prop", omen: "fists" },
       { at: 3850, type: "burst", preset: "seismic" },
     );
   } else if (kind === "unmaker") {
     beats.push(
       { at: 2920, type: "prop", omen: "star" },
       { at: 3150, type: "flash", color: "#ffffff", intensity: 0.24 },
+      { at: 3260, type: "prop", omen: "beam" },
       { at: 3480, type: "ring", radius: 11, color: "white", duration: 0.75 },
       { at: 3820, type: "burst", preset: "starfall" },
     );
@@ -1041,6 +1160,7 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
     beats.push(
       { at: 3050, type: "flash", color: "#ffffff", intensity: 0.38 },
       { at: 3050, type: "ring", radius: 12, color: "phase", duration: 0.6 },
+      { at: 3250, type: "prop", omen: "beam" },
       { at: 3450, type: "ring", radius: 14, color: "white", duration: 0.5 },
       { at: 3800, type: "burst", preset: "tear" },
     );

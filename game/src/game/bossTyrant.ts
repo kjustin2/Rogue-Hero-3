@@ -135,6 +135,13 @@ export class RiftTyrant extends Enemy {
       const shard = this.addMesh(new THREE.OctahedronGeometry(0.26), this.haloMat, Math.sin(a) * 2.1, 0, Math.cos(a) * 2.1, this.halo);
       shard.rotation.y = a;
     }
+    const tiltedHalo = this.addMesh(new THREE.TorusGeometry(1.62, 0.045, 8, 36), this.coreMat, 0, 0, 0, this.halo);
+    tiltedHalo.rotation.set(1.0, 0.35, 0.45);
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const fang = this.addMesh(new THREE.ConeGeometry(0.12, 0.8, 4), this.trimMat, Math.sin(a) * 1.65, 0.05, Math.cos(a) * 1.65, this.halo);
+      fang.rotation.set(Math.PI / 2, a, 0);
+    }
 
     // A second, tighter shard ring unveiled across phases; parented to root so dispose() frees it.
     this.shardRing = new THREE.Group();

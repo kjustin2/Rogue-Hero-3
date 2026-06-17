@@ -143,6 +143,13 @@ export class Unmaker extends Enemy {
     r2.rotation.set(Math.PI / 2, 0, 0);
     r2.rotation.z = 0.7;
     r2.rotation.x = 1.1;
+    const r3 = this.addMesh(new THREE.TorusGeometry(1.75, 0.055, 6, 40, Math.PI * 1.75), this.coreMat, 0, 0, 0, this.rings);
+    r3.rotation.set(0.85, 0.35, 1.2);
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + 0.2;
+      const spike = this.addMesh(new THREE.ConeGeometry(0.1, 0.82, 4), this.ringMat, Math.sin(a) * 2.15, Math.cos(a * 2) * 0.25, Math.cos(a) * 2.15, this.rings);
+      spike.rotation.set(Math.PI / 2 + Math.cos(a) * 0.2, a, 0);
+    }
 
     // Orbiting void debris cloud
     this.debris = new THREE.Group();
