@@ -221,7 +221,7 @@ export class HostileProjectiles {
       const dz = p.pos.z - s.z;
       const rr = p.radius + s.radius;
       if (dx * dx + dz * dz < rr * rr && p.alive) {
-        const absorbed = this.ctx.combat.damagePlayer(s.dmg, s.x, s.z);
+        const absorbed = this.ctx.combat.damagePlayer(s.dmg, s.x, s.z, { parryable: true });
         // Perfect-dodged shots pass through; anything else pops
         if (absorbed !== "dodged") {
           s.active = false;

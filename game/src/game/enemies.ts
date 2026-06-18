@@ -31,6 +31,7 @@ export interface DamageOpts {
   kbZ?: number;
   kb?: number;
   heavy?: boolean;
+  allowShieldStagger?: boolean;
   /** Guards detonator relics (Shatterglass) from recursing on their own AoE. */
   noDetonate?: boolean;
 }
@@ -67,6 +68,7 @@ export abstract class Enemy {
   protected shieldBarColor = 0xffffff;
   /** Brief post-break exposure that interrupts any in-progress attack (not freeze — no blue tint). */
   protected stagger = 0;
+  private spawnGrace = 0;
   /** Read by combat.dealDamage for honest floaters/stats: how much of the last hit reached the body, and whether a shield ate it. */
   lastBodyDamage = 0;
   lastHitShielded = false;
@@ -159,6 +161,24 @@ export abstract class Enemy {
       rib.rotation.z = sx * -0.22;
       rib.rotation.y = sx * 0.35;
     }
+
+    // Shared detail pass: a readable layered front, shoulder accents, and a
+    // small base ring keep procedural enemies from reading as single primitives.
+    const trim = this.stdMat(0x141722, color, 1.05);
+    const dim = this.stdMat(0x05070d, color, 0.45);
+    const faceplate = this.addMesh(new THREE.BoxGeometry(Math.max(0.22, this.radius * 0.7), 0.055, 0.08), trim, 0, 1.02, this.radius + 0.18, g);
+    faceplate.rotation.x = -0.12;
+    const chestPlate = this.addMesh(new THREE.BoxGeometry(Math.max(0.28, this.radius * 0.92), 0.07, 0.1), dim, 0, 0.58, this.radius + 0.08, g);
+    chestPlate.rotation.x = 0.08;
+    for (const sx of [-1, 1]) {
+      const pauldron = this.addMesh(new THREE.BoxGeometry(0.16, 0.12, 0.28), trim, sx * (this.radius + 0.2), 1.02, 0.25, g);
+      pauldron.rotation.z = sx * -0.22;
+      pauldron.rotation.y = sx * 0.28;
+      const boot = this.addMesh(new THREE.BoxGeometry(Math.max(0.1, this.radius * 0.28), 0.08, 0.2), dim, sx * this.radius * 0.42, 0.08, this.radius * 0.2, g);
+      boot.rotation.y = sx * 0.12;
+    }
+    const base = this.addMesh(new THREE.TorusGeometry(Math.max(0.28, this.radius * 0.72), 0.018, 5, 24), trim, 0, 0.08, 0, g);
+    base.rotation.x = Math.PI / 2;
 
     if (kind === "charger") {
       for (const sx of [-1, 1]) {
@@ -271,14 +291,14 @@ export abstract class Enemy {
     }
     // Broke this frame.
     this.shatterFx(color, breakWord);
-    this.onShieldBreak();
+    this.onShieldBreak(opts);
     const overkill = amount - before;
     if (overkill > 0) return this.applyBodyDamage(Math.round(overkill), opts); // breaking blow jolts
     return this.applyBodyDamage(Math.max(1, Math.round(amount * chipFrac)), { heavy: opts.heavy });
   }
 
   /** Hook for break behavior (stagger, attack interrupt, regen). FX are handled by shatterFx. */
-  protected onShieldBreak(): void {}
+  protected onShieldBreak(_opts?: DamageOpts): void {}
 
   private shatterFx(color: number, word: string): void {
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 2.5, color, duration: 0.55 });
@@ -316,6 +336,11 @@ export abstract class Enemy {
   }
   get warded(): boolean {
     return this.invulnTime > 0;
+  }
+
+  /** Hold an enemy's brain still after materialization without showing freeze/stagger FX. */
+  setSpawnGrace(seconds: number): void {
+    this.spawnGrace = Math.max(this.spawnGrace, seconds);
   }
 
   /** Feedback when a hit lands on a warded boss: a clink spark + throttled "WARDED" tag. */
@@ -508,8 +533,9 @@ export abstract class Enemy {
         f.mat.emissiveIntensity = 0.9 + Math.sin(this.t * 6) * 0.2;
       }
     } else {
-      // Stagger interrupts the brain (no blue tint) but the body still flashes/settles.
-      if (this.stagger <= 0) this.tick(dt);
+      this.spawnGrace = Math.max(0, this.spawnGrace - dt);
+      // Spawn grace/stagger interrupt the brain (no blue tint) but the body still flashes/settles.
+      if (this.stagger <= 0 && this.spawnGrace <= 0) this.tick(dt);
       // Hit flash: spike emissive to white, settle back
       this.hitFlash = Math.max(0, this.hitFlash - dt * 7);
       for (const f of this.flashMats) {
@@ -1138,7 +1164,7 @@ export class EnemyManager {
     });
     // Reactive AI: foes sidestep a lunge aimed down their lane...
     ctx.events.on("CARD_CAST", ({ id }) => {
-      if (id === "dash-strike" || id === "phase-step" || id === "shield-bash") this.reactToLunge();
+      if (id === "phase-step" || id === "shield-bash") this.reactToLunge();
     });
     // ...and recoil in fear the moment you hit the Critical zone.
     ctx.events.on("TEMPO_ZONE", ({ zone, prev }) => {
@@ -1228,6 +1254,14 @@ export class EnemyManager {
     this.enemies = [];
     this.pending = [];
     this.streakCount = 0;
+  }
+
+  /** Remove all lesser enemies and cancel lesser pending spawns, preserving the boss. */
+  clearNonBosses(): void {
+    for (const e of this.enemies) {
+      if (e.alive && e.kind !== "boss") e.takeDamage(99999);
+    }
+    this.pending = this.pending.filter((p) => p.kind === "boss");
   }
 
   update(dt: number): void {

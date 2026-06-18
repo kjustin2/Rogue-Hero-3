@@ -62,7 +62,7 @@ for (const [kind, act, cls] of bosses) {
   }, cls);
   check(`${kind} themed title card`, banner.shown && banner.themed, banner.text);
 
-  await page.waitForTimeout(kind === "unmaker" ? 2300 : 2000);
+  await page.waitForTimeout(kind === "unmaker" ? 3700 : 3300);
   await page.screenshot({ path: join(OUT, `boss-cutscene-${kind}-fight.png`) });
   const returned = await page.evaluate(() => !document.querySelector(".letterbox--top")?.classList.contains("letterbox--on"));
   check(`${kind} returns control`, returned === true);
@@ -73,7 +73,7 @@ await page.evaluate(() => {
   window.__rh3menus.clear();
   window.__rh3.run.debugLoadBoss("spire", 2, 909, 0);
 });
-await page.waitForTimeout(850);
+await page.waitForTimeout(1100);
 await page.mouse.click(800, 450);
 await page.waitForTimeout(500);
 const skipped = await page.evaluate(() => {

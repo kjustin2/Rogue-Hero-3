@@ -12,7 +12,7 @@ const PHASE_LINES = [
 const RIFT_CYAN = 0x33e8ff;
 const RIFT_VIOLET = 0x9a4dff;
 
-type TyrantState = "idle" | "novaTell" | "lanceTrack" | "lanceTell" | "slamTell" | "recover" | "phaseShift" | "guard";
+type TyrantState = "idle" | "novaTell" | "lanceTrack" | "lanceTell" | "crossfireTell" | "slamTell" | "recover" | "phaseShift" | "guard";
 
 /** A queued radial nova: telegraphed first, then fires a hostile-projectile ring on expiry. */
 interface PendingNova {
@@ -48,7 +48,7 @@ interface Beam {
 
 const LANCE_LEN = 20;
 const LANCE_WIDTH = 2.2;
-const LANCE_TELL = 0.5;
+const LANCE_TELL = 0.42;
 /** Shared rift-lance geometry — reused for every lance (no per-shot allocation). */
 const TYRANT_LANCE_GEO = new THREE.BoxGeometry(LANCE_WIDTH, 0.5, LANCE_LEN);
 
@@ -66,8 +66,8 @@ export class RiftTyrant extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: TyrantState = "idle";
-  private timer = 1.5;
-  private attackCd = 1.7;
+  private timer = 1.05;
+  private attackCd = 1.25;
   private attackPick = 0;
   private novas: PendingNova[] = [];
   private lances: PendingLance[] = [];
@@ -294,12 +294,12 @@ export class RiftTyrant extends Enemy {
   // ---------------------------------------------------------------- nova
   private beginNova(): void {
     this.state = "novaTell";
-    this.timer = 0.7;
-    const count = this.phase >= 3 ? 16 : this.phase === 2 ? 12 : 10;
+    this.timer = 0.6;
+    const count = this.phase >= 3 ? 18 : this.phase === 2 ? 13 : 10;
     const spin = this.phase >= 3 ? (Math.random() < 0.5 ? -1 : 1) * 0.4 : 0;
     // The whole ring is the threat — mark it with a circle the player must escape.
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.7, RIFT_CYAN);
-    this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.7 });
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.6, RIFT_CYAN);
+    this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.6 });
     this.ctx.sfx.beamCharge();
   }
 
@@ -321,7 +321,7 @@ export class RiftTyrant extends Enemy {
   // ---------------------------------------------------------------- lance
   private beginLanceTrack(): void {
     this.state = "lanceTrack";
-    this.timer = 0.5;
+    this.timer = 0.36;
     const p = this.ctx.player;
     this.lockAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
   }
@@ -339,6 +339,25 @@ export class RiftTyrant extends Enemy {
       const oz = -Math.sin(this.lockAngle) * off;
       this.ctx.tele.line(this.pos.x + ox, this.pos.z + oz, this.lockAngle, LANCE_LEN, LANCE_WIDTH, LANCE_TELL, RIFT_VIOLET);
       this.lances.push({ x: this.pos.x + ox, z: this.pos.z + oz, angle: this.lockAngle, timer: LANCE_TELL });
+    }
+    this.ctx.sfx.beamCharge();
+  }
+
+  private beginCrossfire(): void {
+    this.state = "crossfireTell";
+    this.timer = LANCE_TELL;
+    const p = this.ctx.player;
+    const base = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+    const angles = this.phase >= 3
+      ? [base, base + Math.PI * 0.5, base - Math.PI * 0.5, base + Math.PI * 0.25]
+      : [base, base + Math.PI * 0.5, base - Math.PI * 0.5];
+    for (const angle of angles) {
+      const sx = Math.sin(angle);
+      const cz = Math.cos(angle);
+      const x = p.pos.x - sx * LANCE_LEN * 0.46;
+      const z = p.pos.z - cz * LANCE_LEN * 0.46;
+      this.ctx.tele.line(x, z, angle, LANCE_LEN, LANCE_WIDTH * 0.82, LANCE_TELL, RIFT_CYAN);
+      this.lances.push({ x, z, angle, timer: LANCE_TELL });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -373,16 +392,16 @@ export class RiftTyrant extends Enemy {
   // ---------------------------------------------------------------- slam
   private beginSlam(): void {
     this.state = "slamTell";
-    this.timer = 0.85;
+    this.timer = 0.68;
     const R = this.phase >= 3 ? 5.6 : 5.0;
-    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.85, RIFT_VIOLET);
-    this.slams.push({ x: this.pos.x, z: this.pos.z, radius: R, timer: 0.85 });
+    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.68, RIFT_VIOLET);
+    this.slams.push({ x: this.pos.x, z: this.pos.z, radius: R, timer: 0.68 });
     // P3: pair the slam with a spinning nova so the safe space squeezes
     if (this.phase >= 3) {
       const count = 14;
       const spin = (Math.random() < 0.5 ? -1 : 1) * 0.5;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.85, RIFT_CYAN);
-      this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.85 });
+      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.68, RIFT_CYAN);
+      this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.68 });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -419,7 +438,7 @@ export class RiftTyrant extends Enemy {
     this.shardRing.rotation.y += dt * (1.3 + this.phase * 0.5);
     this.pos.y = 0.35 + Math.sin(this.t * 1.6) * 0.14;
     // Vents flare while charging an attack
-    const flare = this.state === "novaTell" || this.state === "lanceTell" || this.state === "slamTell" ? 0.45 : 0.25;
+    const flare = this.state === "novaTell" || this.state === "lanceTell" || this.state === "crossfireTell" || this.state === "slamTell" ? 0.45 : 0.25;
     this.shellL.rotation.z = flare;
     this.shellR.rotation.z = -flare;
 
@@ -475,7 +494,7 @@ export class RiftTyrant extends Enemy {
         this.facePlayer(dt * 0.6);
         if (this.timer <= 0 && this.novas.length === 0) {
           this.state = "recover";
-          this.timer = 0.5;
+          this.timer = 0.35;
         }
         break;
       case "lanceTrack":
@@ -486,13 +505,19 @@ export class RiftTyrant extends Enemy {
       case "lanceTell":
         if (this.timer <= 0 && this.lances.length === 0) {
           this.state = "recover";
-          this.timer = 0.5;
+          this.timer = 0.35;
+        }
+        break;
+      case "crossfireTell":
+        if (this.timer <= 0 && this.lances.length === 0) {
+          this.state = "recover";
+          this.timer = 0.42;
         }
         break;
       case "slamTell":
         if (this.timer <= 0 && this.slams.length === 0) {
           this.state = "recover";
-          this.timer = 0.65;
+          this.timer = 0.45;
         }
         break;
       case "guard":
@@ -500,7 +525,7 @@ export class RiftTyrant extends Enemy {
         if (this.timer <= 0) {
           this.wardShock(4.6, 18, RIFT_VIOLET);
           this.state = "recover";
-          this.timer = 0.6;
+          this.timer = 0.45;
         }
         break;
       case "recover":
@@ -508,7 +533,7 @@ export class RiftTyrant extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.5, 1.7 - this.phase * 0.32);
+          this.attackCd = Math.max(0.38, 1.25 - this.phase * 0.22);
           this.timer = this.attackCd;
         }
         break;
@@ -517,6 +542,11 @@ export class RiftTyrant extends Enemy {
 
   private pickAttack(d: number): void {
     this.attackPick++;
+    // P2+: crossfire lances pin the player's current location from multiple lanes.
+    if (this.phase >= 2 && (this.attackPick % 5 === 0 || (this.phase >= 3 && this.attackPick % 6 === 1))) {
+      this.beginCrossfire();
+      return;
+    }
     // A rift bulwark every 4th attack — invulnerable behind a barrier, then a close nova.
     if (this.attackPick % 4 === 3) { this.beginGuard(); return; }
     // Slams enter the pool at phase 2, and only when the player is in range.

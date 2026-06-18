@@ -1,5 +1,5 @@
 // Gamepad combat smoke: the new default pad mapping (attack + 3 cards on the
-// shoulder buttons; dodge=A, crash=B, target=Y, overdrive=X, pause=Start),
+// shoulder buttons; dodge=A, crash=B, target=Y, mercy=X, pause=Start),
 // auto-aim facing the nearest enemy, and the [Y] switch-target lock-on. Runs in
 // active combat so menuNav doesn't intercept the buttons. Needs dev server :5174.
 import { chromium } from "playwright-core";

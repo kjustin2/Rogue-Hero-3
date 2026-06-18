@@ -1,5 +1,5 @@
-// Tempo active-system smoke: Overdrive activation + per-hero effect, Crescendo
-// stacking at Critical, and the perfect-crash bonus. Needs the dev server on 5174.
+// Tempo active-system smoke: removed Overdrive stays neutral, Crescendo stacks
+// at Critical, and the perfect-crash refund still works. Needs dev server :5174.
 import { chromium } from "playwright-core";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ await page.waitForTimeout(1500);
 let fail = 0;
 const check = (name, ok, extra = "") => { console.log(`${ok ? "OK  " : "FAIL"} ${name}${extra ? "  — " + extra : ""}`); if (!ok) fail++; };
 
-// Jump into a combat node as the Reaver (lifesteal overdrive) at a known seed/depth.
+// Jump into a combat node at a known seed/depth.
 await page.evaluate(() => { localStorage.removeItem("rh3v2-runsave"); });
 await page.evaluate(() => {
   const c = window.__rh3;
@@ -28,7 +28,7 @@ await page.waitForTimeout(700);
 if (await page.locator(".story-skip").count()) { await page.locator(".story-skip").click(); }
 await page.waitForTimeout(2400);
 
-// --- Overdrive: not ready cold, ready hot, activates and buffs damage
+// --- Removed Overdrive: the compatibility shim must stay neutral.
 const od = await page.evaluate(() => {
   const c = window.__rh3;
   c.tempo.reset();
@@ -38,11 +38,10 @@ const od = await page.evaluate(() => {
   c.overdrive.tryActivate();
   return { readyCold, readyHot, active: c.overdrive.active, dmgMult: c.overdrive.damageMult, spent: c.tempo.value };
 });
-check("Overdrive NOT ready when cold", od.readyCold === false);
-check("Overdrive ready at Critical", od.readyHot === true);
-check("Overdrive activates", od.active === true);
-check("Overdrive buffs damage (>1x)", od.dmgMult > 1, `${od.dmgMult.toFixed(2)}x`);
-check("Overdrive spends the meter", od.spent < 90, `tempo→${Math.round(od.spent)}`);
+check("Overdrive is never ready", od.readyCold === false && od.readyHot === false);
+check("Overdrive does not activate", od.active === false);
+check("Overdrive damage multiplier is neutral", od.dmgMult === 1, `${od.dmgMult.toFixed(2)}x`);
+check("Overdrive does not spend tempo", od.spent >= 99, `tempo→${Math.round(od.spent)}`);
 
 // --- Crescendo: holding Critical builds stacks (the live loop ticks it)
 // Crescendo builds while held at Critical. Drive tempo.update directly with a big

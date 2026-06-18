@@ -37,7 +37,7 @@ const letterboxOn = await page.evaluate(
 console.log("LETTERBOX:", letterboxOn ? "OK" : "MISSING");
 await page.waitForTimeout(1500); // ~2.8s in: boss materialized + roar
 await page.screenshot({ path: "shots/c-boss-reveal.png" });
-await page.waitForTimeout(1800); // cutscene over, control returned
+await page.waitForTimeout(3400); // cutscene over, control returned
 const backToPlay = await page.evaluate(() => !document.querySelector(".letterbox--top").classList.contains("letterbox--on"));
 console.log("CUTSCENE ENDED:", backToPlay ? "OK" : "STUCK");
 await page.screenshot({ path: "shots/c-boss-fight.png" });
@@ -48,7 +48,7 @@ await page.evaluate(() => {
   c.player.hp = c.player.maxHp;
   c.run.debugLoadNode("boss", 2);
 });
-await page.waitForTimeout(850); // past the skip-grace window
+await page.waitForTimeout(1100); // past the skip-grace window
 await page.mouse.click(800, 450);
 await page.waitForTimeout(400);
 const skipped = await page.evaluate(() => !document.querySelector(".letterbox--top").classList.contains("letterbox--on"));

@@ -57,18 +57,20 @@ const drift = await page.evaluate(() => {
 check("drifting orbs spawn", drift.count >= 2, `${drift.count}`);
 check("touching a drifter hurts", drift.dropped);
 
-// Sweeper — a rotating diameter; a fixed point gets crossed.
+// Sweeper: a compact rotating bar; standing on its center gets clipped.
 const sweep = await page.evaluate(() => {
   const c = window.__rh3, f = c.features;
   f.setup({ feature: "sweeper" });
   const count = f.sweepers.length;
+  const s0 = f.sweepers[0];
   c.player.alive = true; c.player.hp = c.player.maxHp;
-  c.player.pos.x = 7; c.player.pos.z = 0;
+  c.player.pos.x = s0.x; c.player.pos.z = s0.z;
   const before = c.player.hp;
-  for (let i = 0; i < 260; i++) f.update(0.05); // a couple full rotations
-  return { count, dropped: c.player.hp < before };
+  for (let i = 0; i < 20; i++) f.update(0.05);
+  return { count, dropped: c.player.hp < before, len: s0.len };
 });
 check("sweeper beam spawns", sweep.count === 1);
+check("sweeper is compact", sweep.len < 8, `len=${sweep.len}`);
 check("the sweep clips a standing target", sweep.dropped);
 
 // Dispose: clear() empties everything (no leaks).

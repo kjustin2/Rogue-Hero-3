@@ -15,9 +15,9 @@ interface SwingStage {
 
 /** Light, light, 360° finisher. Clicking mid-swing buffers the next stage. */
 const CHAIN: SwingStage[] = [
-  { dur: 0.26, dmg: 7, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.24, dmg: 7, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.36, dmg: 15, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
+  { dur: 0.26, dmg: 10, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
+  { dur: 0.24, dmg: 10, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
+  { dur: 0.36, dmg: 22, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
 ];
 
 const STRIKE_POINT = 0.3; // fraction of swing where the hit lands
@@ -31,6 +31,11 @@ interface SlashArc {
 }
 
 export type PlayerDamageResult = "hit" | "dodged" | "shielded" | "invulnerable";
+
+interface PlayerDamageOpts {
+  /** Only hostile projectile bodies can be parried; melee/contact hits cannot. */
+  parryable?: boolean;
+}
 
 // Scratch vectors for charge-glow blade points (avoid per-frame allocation).
 const _chTip = new THREE.Vector3();
@@ -108,13 +113,13 @@ export class Combat {
    * Single entry point for damage to the player. Returns how it resolved so
    * sources can react (projectiles pass through perfect dodges, etc.).
    */
-  damagePlayer(dmg: number, srcX: number, srcZ: number): PlayerDamageResult {
+  damagePlayer(dmg: number, srcX: number, srcZ: number, opts: PlayerDamageOpts = {}): PlayerDamageResult {
     const { player, controller, tempo, events, stats } = this.ctx;
     if (!player.alive) return "invulnerable";
     if (this.crashIframes > 0) return "invulnerable";
 
-    // Parry: meeting a frontal blow in the opening beat of a swing deflects it.
-    if (this.parryActive) {
+    // Parry: only enemy projectile bodies can be deflected in the opening beat.
+    if (opts.parryable && this.parryActive) {
       const dx = srcX - player.pos.x;
       const dz = srcZ - player.pos.z;
       if (Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) < 1.1) {
@@ -302,7 +307,7 @@ export class Combat {
   /** Parry: negate the blow, surge tempo, and counter the attacker. */
   private parryRiposte(srcX: number, srcZ: number): void {
     const p = this.ctx.player;
-    this.ctx.tempo.gain(14);
+    this.ctx.tempo.gain(8);
     this.ctx.cam.addTrauma(0.2);
     this.ctx.stage.punch(0.3);
     this.ctx.fx.ring(p.pos.x, p.pos.z, { radius: 2.4, color: 0xffe066, duration: 0.35 });
@@ -319,7 +324,7 @@ export class Combat {
       const d = Math.hypot(e.pos.x - srcX, e.pos.z - srcZ);
       if (d < bestD) { bestD = d; best = e; }
     }
-    if (best) this.dealDamage(best, 24, { kbX: best.pos.x - p.pos.x, kbZ: best.pos.z - p.pos.z, kb: 8, heavy: true });
+    if (best) this.dealDamage(best, 10, { kbX: best.pos.x - p.pos.x, kbZ: best.pos.z - p.pos.z, kb: 3 });
   }
 
   /** Shatterglass detonation: clear the freeze and blast nearby foes with frost. */
@@ -380,17 +385,17 @@ export class Combat {
     // Crash mastery: cashing out near the very top (≥95) is a "perfect crash" —
     // a wider, harder nova that refunds a little heat back.
     const perfect = tempo.value >= 95;
-    const mult = tempo.zone.damageMult * (perfect ? 1.5 : 1);
+    const mult = tempo.zone.damageMult * (perfect ? 1.2 : 1);
     tempo.crash(this.ctx.relics.crashResetValue() ?? undefined);
     this.crashIframes = 0.45;
     this.ctx.stats.crashes++;
-    const R = perfect ? 8 : 6;
+    const R = perfect ? 6.6 : 5.2;
     this.ctx.events.emit("CRASH", { x: player.pos.x, z: player.pos.z });
     for (const e of this.ctx.enemies.living()) {
       const dx = e.pos.x - player.pos.x;
       const dz = e.pos.z - player.pos.z;
       if (Math.hypot(dx, dz) < R + e.radius) {
-        this.dealDamage(e, 15 * mult, { kbX: dx, kbZ: dz, kb: 12, heavy: true });
+        this.dealDamage(e, 8 * mult, { kbX: dx, kbZ: dz, kb: 8, heavy: true });
       }
     }
     if (perfect) {
@@ -469,11 +474,6 @@ export class Combat {
     // Crash input
     if (input.actionPressed("crash") && this.ctx.tempo.crashReady) {
       this.crashNova();
-    }
-
-    // Overdrive input — spend Critical heat for the hero super
-    if (input.actionPressed("overdrive")) {
-      this.ctx.overdrive.tryActivate();
     }
 
     // Melee chain

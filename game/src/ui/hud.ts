@@ -30,7 +30,6 @@ export class Hud {
   private tempoValue!: HTMLElement;
   private tempoZoneName!: HTMLElement;
   private tempoCrash!: HTMLElement;
-  private tempoOverdrive!: HTMLElement;
   private bossBar!: HTMLElement;
   private bossName!: HTMLElement;
   private bossFill!: HTMLElement;
@@ -102,7 +101,6 @@ export class Hud {
           <div class="tempo__value"><span class="num">50</span><span class="tempo__zonename">FLOWING</span></div>
         </div>
         <div class="tempo__crash">CRASH&nbsp;&nbsp;[F]</div>
-        <div class="tempo__overdrive">OVERDRIVE&nbsp;&nbsp;[Q]</div>
       </div>
       <div class="bossbar">
         <div class="bossbar__name"></div>
@@ -129,7 +127,6 @@ export class Hud {
     this.tempoValue = q(".tempo__value .num");
     this.tempoZoneName = q(".tempo__zonename");
     this.tempoCrash = q(".tempo__crash");
-    this.tempoOverdrive = q(".tempo__overdrive");
     this.bossBar = q(".bossbar");
     this.bossName = q(".bossbar__name");
     this.bossFill = q(".bossbar__fill");
@@ -412,10 +409,6 @@ export class Hud {
     this.tempoValue.parentElement!.style.setProperty("--zone", zone.css);
     this.tempoZoneName.textContent = zone.zone.toUpperCase();
     this.tempoCrash.classList.toggle("tempo__crash--ready", tempo.value >= CRASH_THRESHOLD);
-    const od = this.ctx.overdrive;
-    this.tempoOverdrive.classList.toggle("tempo__overdrive--ready", od.ready);
-    this.tempoOverdrive.classList.toggle("tempo__overdrive--active", od.active);
-
     // Shard counter (pulse on gain)
     const shards = this.ctx.stats.shards;
     if (shards !== this.lastShards) {

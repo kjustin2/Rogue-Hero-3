@@ -24,7 +24,7 @@ export const ACTIONS: Action[] = [
 export const ACTION_LABELS: Record<Action, string> = {
   up: "Move Up", down: "Move Down", left: "Move Left", right: "Move Right",
   attack: "Attack", dodge: "Dodge", card1: "Card 1", card2: "Card 2", card3: "Card 3",
-  crash: "Crash", overdrive: "Overdrive", target: "Switch Target", pause: "Pause",
+  crash: "Crash", overdrive: "Mercy", target: "Switch Target", pause: "Pause",
 };
 
 export type Bindings = Record<Action, string[]>;
@@ -49,7 +49,7 @@ const DEFAULT_BINDINGS: Bindings = {
  * Standard-mapping gamepad buttons per action (not rebindable in v1).
  * Attack + all three cards live on the four shoulder buttons (LT/RT/LB/RB) so
  * combat fingers never leave the triggers; the face buttons handle dodge (A),
- * crash (B), switch-target (Y), and overdrive (X).
+ * crash (B), switch-target (Y), and final-boss mercy hold (X).
  */
 const PAD_ACTION: Partial<Record<Action, number[]>> = {
   attack: [7],     // RT
@@ -59,7 +59,7 @@ const PAD_ACTION: Partial<Record<Action, number[]>> = {
   dodge: [0],      // A
   crash: [1],      // B
   target: [3],     // Y
-  overdrive: [2],  // X
+  overdrive: [2],  // X, final-boss mercy hold
   pause: [9],      // Start
 };
 

@@ -28,6 +28,7 @@ interface Drifter {
 /** A slow rotating beam sweeping the whole floor — dodge it or get clipped. */
 interface Sweeper {
   bar: THREE.Mesh; mat: THREE.MeshBasicMaterial;
+  x: number; z: number; len: number;
   angle: number; speed: number; half: number; cd: number;
 }
 
@@ -152,13 +153,14 @@ export class MapFeatures {
   }
 
   private makeSweeper(): void {
-    const len = (ARENA_RADIUS - 1.5) * 2;
+    const { x, z } = this.spot(4);
+    const len = 5.8;
     const mat = new THREE.MeshBasicMaterial({ color: 0x49d0ff, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false });
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, len), mat);
-    bar.position.set(0, 0.5, 0);
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.45, len), mat);
+    bar.position.set(x, 0.5, z);
     this.ctx.stage.scene.add(bar);
     const dir = this.ctx.rng.chance(0.5) ? 1 : -1;
-    this.sweepers.push({ bar, mat, angle: this.ctx.rng.range(0, Math.PI), speed: dir * (0.62 + this.ctx.rng.range(0, 0.18)), half: 0.95, cd: 0 });
+    this.sweepers.push({ bar, mat, x, z, len, angle: this.ctx.rng.range(0, Math.PI), speed: dir * (0.75 + this.ctx.rng.range(0, 0.22)), half: 0.55, cd: 0 });
   }
 
   update(dt: number): void {
@@ -249,9 +251,12 @@ export class MapFeatures {
       s.angle += s.speed * dt;
       s.bar.rotation.y = s.angle;
       s.mat.opacity = 0.26 + Math.abs(Math.sin(this.t * 4)) * 0.12;
-      const perp = Math.abs(p.x * Math.cos(s.angle) - p.z * Math.sin(s.angle));
-      if (perp < s.half + this.ctx.player.radius && s.cd <= 0 && this.ctx.player.alive) {
-        this.ctx.combat.damagePlayer(12, p.x, p.z);
+      const rx = p.x - s.x;
+      const rz = p.z - s.z;
+      const along = rx * Math.sin(s.angle) + rz * Math.cos(s.angle);
+      const perp = Math.abs(rx * Math.cos(s.angle) - rz * Math.sin(s.angle));
+      if (Math.abs(along) < s.len * 0.5 + this.ctx.player.radius && perp < s.half + this.ctx.player.radius && s.cd <= 0 && this.ctx.player.alive) {
+        this.ctx.combat.damagePlayer(10, s.x, s.z);
         this.ctx.fx.burst({ x: p.x, y: 0.5, z: p.z, count: 8, color: [0x49d0ff, 0xffffff], speed: [1, 5], up: 0.8, size: [0.3, 0.6], life: [0.2, 0.5], gravity: -1, drag: 3 });
         s.cd = 0.7;
       }

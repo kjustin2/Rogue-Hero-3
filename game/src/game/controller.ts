@@ -70,6 +70,8 @@ export class Controller {
     const { input, player, tempo } = this.ctx;
     if (!player.alive) {
       player.animMoveAmount = 0;
+      player.animMoveX = 0;
+      player.animMoveZ = 0;
       return;
     }
 
@@ -176,7 +178,14 @@ export class Controller {
     }
     this.ctx.arena.resolveObstacles(player.pos, player.radius);
 
-    player.animMoveAmount = clamp01(this.vel.length() / player.hero.speed);
+    const speedBase = Math.max(0.001, player.hero.speed);
+    const rightX = Math.cos(player.facing);
+    const rightZ = -Math.sin(player.facing);
+    const fwdX = Math.sin(player.facing);
+    const fwdZ = Math.cos(player.facing);
+    player.animMoveAmount = clamp01(this.vel.length() / speedBase);
+    player.animMoveX = Math.max(-1, Math.min(1, (this.vel.x * rightX + this.vel.y * rightZ) / speedBase));
+    player.animMoveZ = Math.max(-1, Math.min(1, (this.vel.x * fwdX + this.vel.y * fwdZ) / speedBase));
     this.ctx.cam.target.set(player.pos.x, 0, player.pos.z);
   }
 

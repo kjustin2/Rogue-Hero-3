@@ -17,8 +17,6 @@ export interface EventMap {
   TEMPO_ZONE: { zone: TempoZone; prev: TempoZone };
   CRASH: { x: number; z: number };
   COLD_CRASH: { x: number; z: number };
-  OVERDRIVE_START: { hero: string; name: string };
-  OVERDRIVE_END: Record<string, never>;
   CRESCENDO: { stacks: number };
   SHIELD_GAINED: { amount: number };
   SHIELD_BROKEN: Record<string, never>;

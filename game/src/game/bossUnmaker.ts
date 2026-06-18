@@ -20,6 +20,7 @@ type UnmakerState =
   | "beamTrack" | "beamTell"
   | "novaTell"
   | "pullTell"
+  | "starRainTell"
   | "guard"
   | "recover" | "phaseShift"
   | "fading"; // final, defenceless phase — the star gives up
@@ -51,6 +52,13 @@ interface PendingPull {
 }
 
 /** A spawned visual beam from a fired star-lance — fades out on its own clock. */
+interface PendingStar {
+  x: number;
+  z: number;
+  radius: number;
+  timer: number;
+}
+
 interface Beam {
   mesh: THREE.Mesh;
   mat: THREE.MeshBasicMaterial;
@@ -61,7 +69,8 @@ const BEAM_LEN = 26;
 const BEAM_WIDTH = 2.4;
 /** Shared star-beam geometry — reused for every beam (no per-shot allocation). */
 const BEAM_GEO = new THREE.BoxGeometry(BEAM_WIDTH, 0.6, BEAM_LEN);
-const BEAM_TELL = 0.55;
+const BEAM_TELL = 0.46;
+const STAR_TELL = 0.68;
 
 /**
  * The Unmaker, the Hollow Star — the final boss (Act V). A collapsing star: a
@@ -78,12 +87,13 @@ export class Unmaker extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: UnmakerState = "idle";
-  private timer = 1.7;
-  private attackCd = 1.8;
+  private timer = 1.2;
+  private attackCd = 1.35;
   private attackPick = 0;
   private beams: PendingBeam[] = [];
   private novas: PendingNova[] = [];
   private pulls: PendingPull[] = [];
+  private stars: PendingStar[] = [];
   private fxBeams: Beam[] = [];
   private lockAngle = 0;
 
@@ -101,8 +111,8 @@ export class Unmaker extends Enemy {
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 2400;
-    this.speed = 2.7;
+    this.hp = this.maxHp = 3000;
+    this.speed = 3.0;
     this.radius = 1.7;
     this.wardColor = VOID_VIOLET;
 
@@ -297,6 +307,7 @@ export class Unmaker extends Enemy {
     this.beams = [];
     this.novas = [];
     this.pulls = [];
+    this.stars = [];
   }
 
   // ---------------------------------------------------------------- fading (the end)
@@ -308,9 +319,11 @@ export class Unmaker extends Enemy {
     this.beams = [];
     this.novas = [];
     this.pulls = [];
+    this.stars = [];
     this.applyPhaseLook(4);
     // Its minions wink out with it — the end is meant to be just you and the dying star.
-    for (const e of this.ctx.enemies.living()) if (e.kind !== "boss") e.takeDamage(99999);
+    this.ctx.enemies.clearNonBosses();
+    this.ctx.hostiles.clear();
     this.ctx.events.emit("BOSS_PHASE", { phase: 4, line: PHASE_LINES[3] });
     // A soft inward sigh, not a roar.
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 8, color: VOID_VIOLET, duration: 1.2 });
@@ -323,6 +336,7 @@ export class Unmaker extends Enemy {
 
   // ---------------------------------------------------------------- adds
   private summonAdds(n: number): void {
+    if (this.phase >= 4) return;
     if (this.ctx.enemies.living().length >= 7) return;
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -336,17 +350,17 @@ export class Unmaker extends Enemy {
 
   /** Unmaking ward: the star seals itself (invulnerable), then a close annihilation pulse. */
   private beginGuard(): void {
-    this.setInvuln(1.7);
+    this.setInvuln(1.45);
     this.state = "guard";
-    this.timer = 0.7; // wind-up = telegraph duration
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.7, VOID_WHITE);
+    this.timer = 0.58; // wind-up = telegraph duration
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.58, VOID_WHITE);
     this.ctx.sfx.beamCharge();
   }
 
   // ---------------------------------------------------------------- star-beam
   private beginBeamTrack(): void {
     this.state = "beamTrack";
-    this.timer = 0.55;
+    this.timer = 0.4;
     const p = this.ctx.player;
     this.lockAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
   }
@@ -397,11 +411,11 @@ export class Unmaker extends Enemy {
   // ---------------------------------------------------------------- collapse nova
   private beginNova(): void {
     this.state = "novaTell";
-    this.timer = 0.75;
-    const count = this.phase >= 3 ? 20 : this.phase === 2 ? 15 : 11;
+    this.timer = 0.62;
+    const count = this.phase >= 3 ? 23 : this.phase === 2 ? 17 : 12;
     const spin = this.phase >= 2 ? (Math.random() < 0.5 ? -1 : 1) * (0.25 + this.phase * 0.12) : 0;
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.75, VOID_VIOLET);
-    this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.75 });
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.62, VOID_VIOLET);
+    this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.62 });
     this.ctx.sfx.beamCharge();
   }
 
@@ -423,15 +437,15 @@ export class Unmaker extends Enemy {
   // ---------------------------------------------------------------- implosion pull + slam
   private beginPull(): void {
     this.state = "pullTell";
-    this.timer = 1.0;
+    this.timer = 0.8;
     const R = this.phase >= 3 ? 6.2 : 5.4;
     // The deadly core slam at the center — escape its radius before it lands.
-    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 1.0, VOID_WHITE);
-    this.pulls.push({ x: this.pos.x, z: this.pos.z, radius: R, timer: 1.0, pulled: false });
+    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.8, VOID_WHITE);
+    this.pulls.push({ x: this.pos.x, z: this.pos.z, radius: R, timer: 0.8, pulled: false });
     // P3 pairs the implosion with a spinning nova so the safe ground squeezes.
     if (this.phase >= 3) {
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 1.0, VOID_VIOLET);
-      this.novas.push({ x: this.pos.x, z: this.pos.z, count: 16, spin: (Math.random() < 0.5 ? -1 : 1) * 0.5, timer: 1.0 });
+      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.8, VOID_VIOLET);
+      this.novas.push({ x: this.pos.x, z: this.pos.z, count: 18, spin: (Math.random() < 0.5 ? -1 : 1) * 0.5, timer: 0.8 });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -465,6 +479,47 @@ export class Unmaker extends Enemy {
       this.ctx.combat.damagePlayer(24, pl.x, pl.z);
       const len = Math.max(0.001, d);
       this.ctx.controller.push(((p.pos.x - pl.x) / len) * 9, ((p.pos.z - pl.z) / len) * 9);
+    }
+  }
+
+  // ---------------------------------------------------------------- star rain
+  private beginStarRain(): void {
+    this.state = "starRainTell";
+    this.timer = STAR_TELL + 0.28;
+    const p = this.ctx.player.pos;
+    const count = this.phase >= 3 ? 7 : 5;
+    for (let i = 0; i < count; i++) {
+      const a = (i / Math.max(1, count - 1)) * Math.PI * 2 + this.t * 0.7;
+      const dist = i === 0 ? 0 : 2.0 + (i % 3) * 1.15;
+      let x = p.x + Math.sin(a) * dist;
+      let z = p.z + Math.cos(a) * dist;
+      const rr = Math.hypot(x, z);
+      const maxR = ARENA_RADIUS - 2.2;
+      if (rr > maxR) {
+        x = (x / rr) * maxR;
+        z = (z / rr) * maxR;
+      }
+      const timer = STAR_TELL + i * 0.06;
+      const radius = this.phase >= 3 ? 1.55 : 1.4;
+      this.ctx.tele.circle(x, z, radius, timer, i === 0 ? VOID_WHITE : VOID_VIOLET);
+      this.stars.push({ x, z, radius, timer });
+    }
+    this.ctx.sfx.beamCharge();
+  }
+
+  private landStar(st: PendingStar): void {
+    const p = this.ctx.player;
+    this.ctx.fx.ring(st.x, st.z, { radius: st.radius * 1.8, color: VOID_WHITE, duration: 0.38 });
+    this.ctx.fx.burst({
+      x: st.x, y: 2.4, z: st.z,
+      count: 18, color: [VOID_WHITE, VOID_VIOLET, 0xffffff],
+      speed: [3, 11], up: -0.8, size: [0.32, 0.9], life: [0.25, 0.65], gravity: -1.5, drag: 2.2, jitter: 0.5,
+    });
+    const d = Math.hypot(p.pos.x - st.x, p.pos.z - st.z);
+    if (d < st.radius + p.radius) {
+      this.ctx.combat.damagePlayer(this.phase >= 3 ? 20 : 16, st.x, st.z);
+      const len = Math.max(0.001, d);
+      this.ctx.controller.push(((p.pos.x - st.x) / len) * 5, ((p.pos.z - st.z) / len) * 5);
     }
   }
 
@@ -511,6 +566,13 @@ export class Unmaker extends Enemy {
         this.pulls.splice(i, 1);
       }
     }
+    for (let i = this.stars.length - 1; i >= 0; i--) {
+      this.stars[i].timer -= dt;
+      if (this.stars[i].timer <= 0) {
+        this.landStar(this.stars[i]);
+        this.stars.splice(i, 1);
+      }
+    }
     // Beam visuals fade.
     for (let i = this.fxBeams.length - 1; i >= 0; i--) {
       const b = this.fxBeams[i];
@@ -544,20 +606,26 @@ export class Unmaker extends Enemy {
       case "beamTell":
         if (this.timer <= 0 && this.beams.length === 0) {
           this.state = "recover";
-          this.timer = 0.5;
+          this.timer = 0.35;
         }
         break;
       case "novaTell":
         this.facePlayer(dt * 0.6);
         if (this.timer <= 0 && this.novas.length === 0) {
           this.state = "recover";
-          this.timer = 0.5;
+          this.timer = 0.35;
         }
         break;
       case "pullTell":
         if (this.timer <= 0 && this.pulls.length === 0) {
           this.state = "recover";
-          this.timer = 0.65;
+          this.timer = 0.45;
+        }
+        break;
+      case "starRainTell":
+        if (this.timer <= 0 && this.stars.length === 0) {
+          this.state = "recover";
+          this.timer = 0.42;
         }
         break;
       case "guard":
@@ -565,7 +633,7 @@ export class Unmaker extends Enemy {
         if (this.timer <= 0) {
           this.wardShock(4.8, 20, VOID_WHITE);
           this.state = "recover";
-          this.timer = 0.6;
+          this.timer = 0.45;
         }
         break;
       case "recover":
@@ -573,7 +641,7 @@ export class Unmaker extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.5, 1.8 - this.phase * 0.35);
+          this.attackCd = Math.max(0.42, 1.35 - this.phase * 0.28);
           this.timer = this.attackCd;
         }
         break;
@@ -586,6 +654,10 @@ export class Unmaker extends Enemy {
 
   private pickAttack(): void {
     this.attackPick++;
+    if (this.phase >= 2 && (this.attackPick % 5 === 0 || (this.phase >= 3 && this.attackPick % 6 === 1))) {
+      this.beginStarRain();
+      return;
+    }
     // An unmaking ward every 4th attack (phases 1–3 only — never in the fading end).
     if (this.phase < 4 && this.attackPick % 4 === 3) { this.beginGuard(); return; }
     // The implosion pull joins the pool at phase 3.

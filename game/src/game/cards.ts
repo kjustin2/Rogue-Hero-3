@@ -358,7 +358,7 @@ export class CardCaster {
         const dz = aim.z - player.pos.z;
         const len = Math.hypot(dx, dz) || 1;
         const dist = Math.min(upgraded ? 9 : 6, Math.max(3, len));
-        const dmg = upgraded ? 24 : 18;
+        const dmg = upgraded ? 36 : 26;
         const nx = dx / len;
         const nz = dz / len;
         // Damage everything along the path
@@ -369,7 +369,7 @@ export class CardCaster {
           if (along < -0.5 || along > dist + 1) continue;
           const perp = Math.abs(ex * nz - ez * nx);
           if (perp < 1.3 + e.radius) {
-            combat.dealDamage(e, dmg, { kbX: ex - along * nx, kbZ: ez - along * nz, kb: 5, heavy: false, countCombo: true });
+            combat.dealDamage(e, dmg, { kbX: ex - along * nx, kbZ: ez - along * nz, kb: 2.2, heavy: false, countCombo: true, allowShieldStagger: false });
           }
         }
         this.ctx.controller.push(nx * dist * 9, nz * dist * 9);
@@ -393,7 +393,7 @@ export class CardCaster {
             const ex = e.pos.x - landX;
             const ez = e.pos.z - landZ;
             if (Math.hypot(ex, ez) < R + e.radius) {
-              combat.dealDamage(e, 14, { kbX: ex, kbZ: ez, kb: 7, heavy: true, countCombo: true });
+              combat.dealDamage(e, 24, { kbX: ex, kbZ: ez, kb: 6, heavy: true, countCombo: true });
             }
           }
           window.setTimeout(() => {
@@ -413,12 +413,12 @@ export class CardCaster {
           const spread = (16 * Math.PI) / 180;
           for (let i = -1; i <= 1; i++) {
             this.ctx.projectiles.fire(player.pos.x, player.pos.z, player.facing + i * spread, {
-              speed: 30, dmg: 16, color: 0x7fa8ff, radius: 0.36, range: 24, pierce: true,
+              speed: 30, dmg: 20, color: 0x7fa8ff, radius: 0.36, range: 24, pierce: true,
             });
           }
         } else {
           this.ctx.projectiles.fire(player.pos.x, player.pos.z, player.facing, {
-            speed: 30, dmg: 16, color: 0x7fa8ff, radius: 0.36, range: 24, pierce: true,
+            speed: 30, dmg: 20, color: 0x7fa8ff, radius: 0.36, range: 24, pierce: true,
           });
         }
         // Muzzle flash + recoil sell the shot
@@ -435,7 +435,7 @@ export class CardCaster {
 
       case "cleave": {
         const arc = upgraded ? Math.PI * 2 : (170 * Math.PI) / 180;
-        const hits = combat.meleeSweep(player.facing, arc, 3.6, upgraded ? 32 : 26, 7, true);
+        const hits = combat.meleeSweep(player.facing, arc, 3.6, upgraded ? 56 : 42, 7, true);
         combat.slashVisual(arc, 3.6, true);
         this.fakeSwing = 0;
         if (hits > 0) {
@@ -449,7 +449,7 @@ export class CardCaster {
         // Blade's signature: a flurry whose strike count scales with current Tempo.
         const heat = this.ctx.tempo.value;
         const swings = (upgraded ? 3 : 2) + Math.floor(heat / 25); // 2–6 (3–7 honed)
-        const perHit = upgraded ? 11 : 9;
+        const perHit = upgraded ? 16 : 13;
         const arc = (150 * Math.PI) / 180;
         for (let i = 0; i < swings; i++) {
           const last = i === swings - 1;
@@ -468,7 +468,7 @@ export class CardCaster {
           window.setTimeout(() => {
             if (!player.alive) return;
             const R = 3.2;
-            const dmg = 10 + Math.round(heat * 0.2);
+            const dmg = 18 + Math.round(heat * 0.28);
             for (const e of enemies.living()) {
               const ex = e.pos.x - player.pos.x;
               const ez = e.pos.z - player.pos.z;
@@ -483,7 +483,7 @@ export class CardCaster {
 
       case "frost-nova": {
         const R = upgraded ? 7 : 5.5;
-        const dmg = upgraded ? 18 : 12;
+        const dmg = upgraded ? 24 : 16;
         const freeze = upgraded ? 3 : 1.8;
         for (const e of enemies.living()) {
           const dx = e.pos.x - player.pos.x;
@@ -569,7 +569,7 @@ export class CardCaster {
         const hit = new Set<number>();
         let cur = { x: player.pos.x, z: player.pos.z };
         const maxChain = upgraded ? 6 : this.ctx.relics.has("chain-amulet") ? 5 : 3;
-        const boltDmg = upgraded ? 18 : 14;
+        const boltDmg = upgraded ? 24 : 18;
         for (let n = 0; n < maxChain; n++) {
           let best: (typeof pool)[number] | null = null;
           let bestD = n === 0 ? 12 : 7;
@@ -611,7 +611,7 @@ export class CardCaster {
 
       case "charged-lance": {
         this.ctx.projectiles.fire(player.pos.x, player.pos.z, player.facing, {
-          speed: 34, dmg: upgraded ? 46 : 34, color: 0x9fd0ff, radius: upgraded ? 0.78 : 0.55, range: 26, pierce: true,
+          speed: 34, dmg: upgraded ? 60 : 44, color: 0x9fd0ff, radius: upgraded ? 0.78 : 0.55, range: 26, pierce: true,
         });
         const mx = player.pos.x + Math.sin(player.facing) * 1.3;
         const mz = player.pos.z + Math.cos(player.facing) * 1.3;
@@ -639,14 +639,14 @@ export class CardCaster {
         const tz = player.pos.z + nz * dist;
         // Friendly mark — fx ring, not the enemy-threat telegraph language
         fx.ring(tx, tz, { radius: 3.2, color: 0xff8a4d, duration: 0.9 });
-        this.meteors.push({ x: tx, z: tz, timer: 0.9, pulseAcc: 0, r: 3.2, dmg: 30 });
+        this.meteors.push({ x: tx, z: tz, timer: 0.9, pulseAcc: 0, r: 3.2, dmg: 38 });
         // Honed: a second meteor lands beside the first
         if (upgraded) {
           const a = this.ctx.rng.range(0, Math.PI * 2);
           const ox = tx + Math.sin(a) * 3.2;
           const oz = tz + Math.cos(a) * 3.2;
           fx.ring(ox, oz, { radius: 3.2, color: 0xff8a4d, duration: 1.1 });
-          this.meteors.push({ x: ox, z: oz, timer: 1.1, pulseAcc: 0, r: 3.2, dmg: 30 });
+          this.meteors.push({ x: ox, z: oz, timer: 1.1, pulseAcc: 0, r: 3.2, dmg: 38 });
         }
         return true;
       }
@@ -661,8 +661,8 @@ export class CardCaster {
           const d = Math.hypot(dx, dz);
           if (d > range + e.radius) continue;
           if (Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) > arc / 2) continue;
-          combat.dealDamage(e, upgraded ? 18 : 14, { kbX: dx, kbZ: dz, kb: 4, countCombo: true });
-          this.addBleed(e, upgraded ? 8 : 5, upgraded ? 4 : 2);
+          combat.dealDamage(e, upgraded ? 31 : 24, { kbX: dx, kbZ: dz, kb: 4, countCombo: true });
+          this.addBleed(e, upgraded ? 8 : 5, upgraded ? 5 : 3);
           hits++;
         }
         combat.slashVisual(arc, range, false);
@@ -673,7 +673,7 @@ export class CardCaster {
 
       case "storm-conduit": {
         this.conduitTimer = upgraded ? 8 : 5;
-        this.conduitDmg = upgraded ? 7 : 4;
+        this.conduitDmg = upgraded ? 10 : 6;
         fx.ring(player.pos.x, player.pos.z, { radius: 2.2, color: 0xfff09f, duration: 0.5 });
         fx.burst({
           x: player.pos.x, y: 1.4, z: player.pos.z,
@@ -735,8 +735,8 @@ export class CardCaster {
           const d = Math.hypot(dx, dz);
           if (d > range + e.radius) continue;
           if (Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) > arc / 2) continue;
-          combat.dealDamage(e, 18, { kbX: dx, kbZ: dz, kb: 3, heavy: true, countCombo: true });
-          this.addBleed(e, upgraded ? 7 : 4, upgraded ? 4 : 2, 0xffb35f);
+          combat.dealDamage(e, upgraded ? 34 : 28, { kbX: dx, kbZ: dz, kb: 3, heavy: true, countCombo: true });
+          this.addBleed(e, upgraded ? 7 : 4, upgraded ? 5 : 3, 0xffb35f);
         }
         // Fire cone read: bursts marching out along the arc
         for (let ring = 1; ring <= 3; ring++) {
@@ -789,7 +789,7 @@ export class CardCaster {
           }
           if (!best) break;
           taken.add(best.id);
-          combat.dealDamage(best, 12, { kbX: best.pos.x - player.pos.x, kbZ: best.pos.z - player.pos.z, kb: 3 });
+          combat.dealDamage(best, 18, { kbX: best.pos.x - player.pos.x, kbZ: best.pos.z - player.pos.z, kb: 3 });
           this.lightningVisual([{ x: best.pos.x, z: best.pos.z }, { x: player.pos.x, z: player.pos.z }]);
           ripped++;
         }
@@ -817,7 +817,7 @@ export class CardCaster {
           const r = this.ctx.rng.range(0, 3.2);
           this.meteors.push({
             x: cx + Math.sin(a) * r, z: cz + Math.cos(a) * r,
-            timer: 0.45 + i * 0.16, pulseAcc: 99, r: 1.6, dmg: 10, quiet: true,
+            timer: 0.45 + i * 0.16, pulseAcc: 99, r: 1.6, dmg: 14, quiet: true,
           });
         }
         return true;
@@ -829,7 +829,7 @@ export class CardCaster {
         for (let i = -half; i <= half; i++) {
           const a = player.facing + (i / half) * spread;
           this.ctx.projectiles.fire(player.pos.x, player.pos.z, a, {
-            speed: 28, dmg: 12, color: 0xbfa8ff, radius: 0.32, range: 22, pierce: true,
+            speed: 28, dmg: 16, color: 0xbfa8ff, radius: 0.32, range: 22, pierce: true,
           });
         }
         const mx = player.pos.x + Math.sin(player.facing) * 1.2;
@@ -849,7 +849,7 @@ export class CardCaster {
           const dx = e.pos.x - player.pos.x;
           const dz = e.pos.z - player.pos.z;
           if (Math.hypot(dx, dz) < R + e.radius) {
-            combat.dealDamage(e, upgraded ? 30 : 22, { kbX: dx, kbZ: dz, kb: 13, heavy: true, countCombo: true });
+            combat.dealDamage(e, upgraded ? 46 : 34, { kbX: dx, kbZ: dz, kb: 13, heavy: true, countCombo: true });
             if (upgraded) e.freeze(0.6);
           }
         }
@@ -878,7 +878,7 @@ export class CardCaster {
           if (along < -0.5 || along > range) continue;
           const perp = Math.abs(ex * nz - ez * nx);
           if (perp < width + e.radius) {
-            combat.dealDamage(e, upgraded ? 20 : 14, { kbX: nx, kbZ: nz, kb: 2, countCombo: true });
+            combat.dealDamage(e, upgraded ? 28 : 20, { kbX: nx, kbZ: nz, kb: 2, countCombo: true });
             e.freeze(upgraded ? 3.2 : 2.2);
           }
         }
@@ -901,7 +901,7 @@ export class CardCaster {
           const dx = e.pos.x - player.pos.x;
           const dz = e.pos.z - player.pos.z;
           if (Math.hypot(dx, dz) < R + e.radius) {
-            combat.dealDamage(e, upgraded ? 22 : 16, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
+            combat.dealDamage(e, upgraded ? 34 : 24, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
             reaped++;
           }
         }
@@ -948,7 +948,7 @@ export class CardCaster {
 
       case "seeker-swarm": {
         const count = upgraded ? 8 : 5;
-        const dmg = upgraded ? 13 : 9;
+        const dmg = upgraded ? 18 : 12;
         for (let i = 0; i < count; i++) {
           const a = player.facing + this.ctx.rng.range(-Math.PI, Math.PI);
           const sp = this.ctx.rng.range(7, 11);
@@ -989,7 +989,7 @@ export class CardCaster {
         this.ctx.stage.scene.add(mesh);
         this.holes.push({
           x: hx, z: hz, timer: upgraded ? 1.8 : 1.3,
-          pull: upgraded ? 11 : 8, crushDmg: upgraded ? 40 : 26, crushR: upgraded ? 4.2 : 3.2, mesh, mat,
+          pull: upgraded ? 11 : 8, crushDmg: upgraded ? 54 : 36, crushR: upgraded ? 4.2 : 3.2, mesh, mat,
         });
         fx.ring(hx, hz, { radius: upgraded ? 9 : 7, color: 0x9a6bff, duration: 0.7 });
         this.ctx.cam.addTrauma(0.15);
@@ -1007,7 +1007,7 @@ export class CardCaster {
         const sz = player.pos.z + nz * dist;
         this.storms.push({
           x: sx, z: sz, timer: upgraded ? 5 : 3, strikeAcc: 0.2,
-          r: upgraded ? 7 : 5.5, dmg: upgraded ? 16 : 11,
+          r: upgraded ? 7 : 5.5, dmg: upgraded ? 22 : 15,
         });
         fx.ring(sx, sz, { radius: upgraded ? 7 : 5.5, color: 0xbfe0ff, duration: 0.6 });
         return true;
@@ -1037,7 +1037,7 @@ export class CardCaster {
         this.ctx.stage.scene.add(group);
         this.totems.push({
           x: tx, z: tz, timer: upgraded ? 3 : 2.4,
-          blastR: upgraded ? 5 : 3.6, blastDmg: upgraded ? 30 : 20, freeze: upgraded, group,
+          blastR: upgraded ? 5 : 3.6, blastDmg: upgraded ? 42 : 28, freeze: upgraded, group,
         });
         fx.ring(tx, tz, { radius: 2, color: 0xffd24d, duration: 0.5 });
         return true;
@@ -1054,7 +1054,7 @@ export class CardCaster {
         this.leeches.push({
           x: player.pos.x, z: player.pos.z,
           vx: Math.sin(a) * 5.5, vz: Math.cos(a) * 5.5,
-          life: 2.4, dmg: upgraded ? 7 : 5, heal: upgraded ? 4 : 2, hitAcc: 0, trailAcc: 0, mesh, mat,
+          life: 2.4, dmg: upgraded ? 11 : 8, heal: upgraded ? 4 : 2, hitAcc: 0, trailAcc: 0, mesh, mat,
         });
         fx.ring(player.pos.x, player.pos.z, { radius: 1.6, color: 0xff5fa0, duration: 0.4 });
         return true;
@@ -1064,8 +1064,8 @@ export class CardCaster {
         const nx = Math.sin(player.facing);
         const nz = Math.cos(player.facing);
         const dist = upgraded ? 7 : 5;
-        const dmg = upgraded ? 26 : 18;
-        const stun = upgraded ? 2.6 : 1.8;
+        const dmg = upgraded ? 44 : 32;
+        const stun = upgraded ? 1.2 : 0.7;
         for (const e of enemies.living()) {
           const ex = e.pos.x - player.pos.x;
           const ez = e.pos.z - player.pos.z;
@@ -1109,7 +1109,7 @@ export class CardCaster {
         this.boomerangs.push({
           ox: player.pos.x, oz: player.pos.z, nx, nz,
           t: 0, dur: upgraded ? 1.0 : 0.85, reach: upgraded ? 11 : 8.5,
-          dmg: upgraded ? 20 : 14, bleedTicks: upgraded ? 6 : 4, hit: new Set(), clearedReturn: false, mesh, mat,
+          dmg: upgraded ? 34 : 24, bleedTicks: upgraded ? 6 : 4, hit: new Set(), clearedReturn: false, mesh, mat,
         });
         this.fakeSwing = 0;
         this.ctx.cam.kick(nx, nz, 2.4);
@@ -1147,7 +1147,7 @@ export class CardCaster {
     player.shield = 0;
     this.aegisTimer = 0;
     const R = this.aegisUpgraded ? 4.4 : 3;
-    const dmg = this.aegisUpgraded ? 24 : 15;
+    const dmg = this.aegisUpgraded ? 34 : 22;
     for (const e of this.ctx.enemies.living()) {
       const dx = e.pos.x - player.pos.x;
       const dz = e.pos.z - player.pos.z;
@@ -1299,7 +1299,7 @@ export class CardCaster {
         const dx = e.pos.x - pu.x;
         const dz = e.pos.z - pu.z;
         if (Math.hypot(dx, dz) < 1.5 + e.radius) {
-          this.ctx.combat.dealDamage(e, 10, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
+          this.ctx.combat.dealDamage(e, 15, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
         }
       }
     }
@@ -1351,7 +1351,7 @@ export class CardCaster {
         const dx = e.pos.x - p.pos.x;
         const dz = e.pos.z - p.pos.z;
         if (Math.hypot(dx, dz) < cr + e.radius) {
-          this.ctx.combat.dealDamage(e, 8, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
+          this.ctx.combat.dealDamage(e, 20, { kbX: dx, kbZ: dz, kb: 3, countCombo: true });
         }
       }
     }
@@ -1398,7 +1398,7 @@ export class CardCaster {
         const dx = e.pos.x - w.x;
         const dz = e.pos.z - w.z;
         if (Math.hypot(dx, dz) < popR + e.radius) {
-          this.ctx.combat.dealDamage(e, w.upgraded ? 18 : 10, { kbX: dx, kbZ: dz, kb: 2, countCombo: true });
+          this.ctx.combat.dealDamage(e, w.upgraded ? 28 : 16, { kbX: dx, kbZ: dz, kb: 2, countCombo: true });
           e.applyVulnerable(w.upgraded ? 5 : 3.5, 1.3); // the crush leaves them exposed
         }
       }
@@ -1553,7 +1553,7 @@ export class CardCaster {
           const d = Math.hypot(dx, dz);
           if (d > j.range + e.radius) continue;
           if (Math.abs(angleDelta(p.facing, Math.atan2(dx, dz))) > j.arc / 2) continue;
-          this.ctx.combat.dealDamage(e, 5, { kbX: dx, kbZ: dz, kb: 0.5, countCombo: true });
+          this.ctx.combat.dealDamage(e, 8, { kbX: dx, kbZ: dz, kb: 0.5, countCombo: true });
           if (j.burn) this.addBleed(e, 3, 2, 0xff7a33);
         }
       }
@@ -1718,7 +1718,7 @@ export class CardCaster {
             const dx = e.pos.x - m.x;
             const dz = e.pos.z - m.z;
             if (Math.hypot(dx, dz) < R + e.radius) {
-              this.ctx.combat.dealDamage(e, 14, { kbX: dx, kbZ: dz, kb: 5, heavy: true, countCombo: true });
+              this.ctx.combat.dealDamage(e, 22, { kbX: dx, kbZ: dz, kb: 5, heavy: true, countCombo: true });
             }
           }
           this.ctx.fx.ring(m.x, m.z, { radius: R, color: 0xff9a5f, duration: 0.4 });
@@ -1746,7 +1746,7 @@ export class CardCaster {
           const dx = e.pos.x - p.x;
           const dz = e.pos.z - p.z;
           if (Math.hypot(dx, dz) < R + e.radius) {
-            this.ctx.combat.dealDamage(e, 16, { kbX: dx, kbZ: dz, kb: 6, heavy: true, countCombo: true });
+            this.ctx.combat.dealDamage(e, 26, { kbX: dx, kbZ: dz, kb: 6, heavy: true, countCombo: true });
           }
         }
         this.ctx.fx.ring(p.x, p.z, { radius: R, color: 0xc98fff, duration: 0.45 });

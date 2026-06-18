@@ -398,11 +398,13 @@ export class Mirror extends Enemy {
     return killed;
   }
 
-  protected onShieldBreak(): void {
+  protected onShieldBreak(opts?: DamageOpts): void {
     this.shieldTimer = 0;
-    this.stagger = 0.8; // bigger achievement than the Bastion's wall → longer punish window
-    this.state = "recover";
-    this.timer = 0;
+    if (opts?.allowShieldStagger !== false) {
+      this.stagger = 0.8; // bigger achievement than the Bastion's wall → longer punish window
+      this.state = "recover";
+      this.timer = 0;
+    }
     this.bubbleMat.opacity = 0;
     this.bubble.visible = false;
   }
@@ -788,10 +790,12 @@ export class Bastion extends Enemy {
     return super.takeDamage(amount, opts);
   }
 
-  protected onShieldBreak(): void {
-    this.stagger = 0.6;
-    this.slamWindup = -1;
-    this.slamTimer = Math.max(this.slamTimer, 0.9);
+  protected onShieldBreak(opts?: DamageOpts): void {
+    if (opts?.allowShieldStagger !== false) {
+      this.stagger = 0.6;
+      this.slamWindup = -1;
+      this.slamTimer = Math.max(this.slamTimer, 0.9);
+    }
     this.regenAfterBreak = true; // becomes a wall again once the window closes
   }
 

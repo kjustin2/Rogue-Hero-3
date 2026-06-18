@@ -188,7 +188,11 @@ export class RunManager {
       const bx = 0;
       const bz = -ARENA_RADIUS * 0.4;
       ctx.events.emit("BOSS_INTRO", { name: boss.name, title: boss.title, x: bx, z: bz });
-      ctx.enemies.spawnCustom(boss.make, bx, bz, 2.4);
+      ctx.enemies.spawnCustom((c, x, z) => {
+        const e = boss.make(c, x, z);
+        e.setSpawnGrace(5.0);
+        return e;
+      }, bx, bz, 2.4);
       // Ascension boss variant: from Rift Depth 5, the boss arrives with an honor guard.
       if (ctx.difficulty.depth >= 5) {
         const guard: Record<number, FieldKind> = { 1: "spitter", 2: "wisp", 3: "caster", 4: "harrier", 5: "warper" };

@@ -95,6 +95,7 @@ export class Menus {
   /** Depth chosen on the hero-select screen, carried into the run. */
   private heroDepth = 0;
   private heroBlessing = "";
+  private heroDailySeed: number | null = null;
 
   constructor(private ctx: Ctx, private cb: MenuCallbacks) {
     this.root = document.getElementById("overlay")!;
@@ -195,7 +196,8 @@ export class Menus {
   }
 
   // ---------------------------------------------------------------- hero select
-  showHeroSelect(): void {
+  showHeroSelect(opts: { dailySeed?: number } = {}): void {
+    this.heroDailySeed = opts.dailySeed ?? null;
     const maxD = this.ctx.profile.data.maxDepth;
     this.heroDepth = Math.max(0, Math.min(this.heroDepth || maxD, maxD));
     const render = () => this.renderHeroSelect();
@@ -207,14 +209,21 @@ export class Menus {
     // A previously-chosen blessing that isn't unlocked (or got reset) falls back to None.
     if (this.heroBlessing && !this.ctx.profile.isUnlocked(`blessing:${this.heroBlessing}`)) this.heroBlessing = "";
     const maxD = this.ctx.profile.data.maxDepth;
-    const diff = difficultyFor(this.heroDepth);
-    const mods = this.heroDepth === 0
-      ? "No modifiers — the standard descent"
-      : diff.labels.map((l) => l.replace(/^D\d+\s+/, "")).slice(-3).join(" &nbsp;·&nbsp; ");
+    const modsForDepth = () => {
+      const diff = difficultyFor(this.heroDepth);
+      return this.heroDepth === 0
+        ? "No modifiers — the standard descent"
+        : diff.labels.map((l) => l.replace(/^D\d+\s+/, "")).slice(-3).join(" &nbsp;·&nbsp; ");
+    };
+    const mods = modsForDepth();
     const atCeiling = this.heroDepth === maxD && maxD < MAX_DEPTH;
+    const dailyBest = this.heroDailySeed !== null ? getDailyBest(this.heroDailySeed) : null;
+    const dailyLine = this.heroDailySeed !== null
+      ? `DAILY CHALLENGE &nbsp;·&nbsp; ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }).toUpperCase()} &nbsp;·&nbsp; SEED ${this.heroDailySeed}${dailyBest ? ` &nbsp;·&nbsp; BEST ${dailyBest.kills} KILLS${dailyBest.won ? " · SEALED" : ""}` : ""}`
+      : "EACH FIGHTS THE RIFT THEIR OWN WAY";
     s.innerHTML = `
-      <div class="draft-title">CHOOSE YOUR HERO</div>
-      <div class="draft-sub">EACH FIGHTS THE RIFT THEIR OWN WAY</div>
+      <div class="draft-title">${this.heroDailySeed !== null ? "DAILY CHALLENGE" : "CHOOSE YOUR HERO"}</div>
+      <div class="draft-sub">${dailyLine}</div>
       <div class="depth-pick">
         <button class="depth-btn" data-d="dn"${this.heroDepth <= 0 ? " disabled" : ""}>◂</button>
         <div class="depth-pick__mid">
@@ -278,8 +287,23 @@ export class Menus {
       row.appendChild(el);
     }
     this.wireButtons(s);
-    s.querySelector('[data-d="dn"]')?.addEventListener("click", () => { if (this.heroDepth > 0) { this.heroDepth--; this.renderHeroSelect(); } });
-    s.querySelector('[data-d="up"]')?.addEventListener("click", () => { if (this.heroDepth < maxD) { this.heroDepth++; this.renderHeroSelect(); } });
+    const refreshDepth = () => {
+      const nextDiff = difficultyFor(this.heroDepth);
+      const nextMods = this.heroDepth === 0
+        ? "No modifiers — the standard descent"
+        : nextDiff.labels.map((l) => l.replace(/^D\d+\s+/, "")).slice(-3).join(" &nbsp;·&nbsp; ");
+      const nextCeiling = this.heroDepth === maxD && maxD < MAX_DEPTH;
+      const label = s.querySelector(".depth-pick__label") as HTMLElement | null;
+      const modsEl = s.querySelector(".depth-pick__mods") as HTMLElement | null;
+      const down = s.querySelector('[data-d="dn"]') as HTMLButtonElement | null;
+      const up = s.querySelector('[data-d="up"]') as HTMLButtonElement | null;
+      if (label) label.textContent = `RIFT DEPTH ${this.heroDepth}${nextCeiling ? " · your ceiling" : maxD >= MAX_DEPTH && this.heroDepth === maxD ? " · MAX" : ""}`;
+      if (modsEl) modsEl.innerHTML = nextMods;
+      if (down) down.disabled = this.heroDepth <= 0;
+      if (up) up.disabled = this.heroDepth >= maxD;
+    };
+    s.querySelector('[data-d="dn"]')?.addEventListener("click", () => { if (this.heroDepth > 0) { this.heroDepth--; refreshDepth(); } });
+    s.querySelector('[data-d="up"]')?.addEventListener("click", () => { if (this.heroDepth < maxD) { this.heroDepth++; refreshDepth(); } });
     s.querySelectorAll<HTMLElement>(".blessing-chip").forEach((chip) => {
       chip.addEventListener("click", () => {
         const lockedId = chip.dataset.blLocked;
@@ -431,7 +455,6 @@ export class Menus {
               <b>SPACE</b><span>Dodge — dodge <i>through</i> a hit for a <span style="color:#66ffee">PERFECT DODGE</span>; strike as a blow lands to <span style="color:#ffe066">PARRY</span></span>
               <b>1 · 2 · 3</b><span>Cast cards</span>
               <b>F</b><span>CRASH — at 85+ tempo, detonate your heat</span>
-              <b>Q</b><span>OVERDRIVE — at Critical tempo, unleash your hero's super</span>
             </div>
           </div>
           <div>
@@ -444,7 +467,6 @@ export class Menus {
               <b>A</b><span>Dodge</span>
               <b>B</b><span>Crash</span>
               <b>Y</b><span>Switch target</span>
-              <b>X</b><span>Overdrive</span>
               <b>START</b><span>Pause</span>
             </div>
             <div style="margin-top:8px;font-size:12px;color:#8fffc8;letter-spacing:1px"><b>Auto-aim</b> is on by default — you face the nearest foe automatically. Tap <b>Y</b> to switch targets; nudge the right stick to aim by hand. Toggle it in Settings.</div>
@@ -503,8 +525,7 @@ export class Menus {
           <div class="credits__group"><b>Design &amp; Code</b><span>Justin Kramer</span></div>
           <div class="credits__group"><b>Engine</b><span>Three.js · Vite · TypeScript · Electron</span></div>
           <div class="credits__group"><b>Sound Effects</b><span>Procedural Web Audio synthesis</span></div>
-          <div class="credits__group"><b>Soundtrack</b><span>Licensed music library</span></div>
-          <div class="credits__group"><b>Built with</b><span>Claude Code</span></div>
+          <div class="credits__group"><b>Soundtrack</b><span>Justin Kramer</span></div>
           <div class="credits__thanks">Thank you for braving the Rift.</div>
         </div>
         <button class="btn">Back</button>

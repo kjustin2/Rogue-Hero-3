@@ -346,13 +346,6 @@ export class Sfx {
     f.forEach((hz, i) => this.tone({ f: hz, dur: 0.16, type: "triangle", gain: 0.06, delay: i * 0.05 }));
   }
 
-  /** A deep, resonant sting under the Overdrive ignition. */
-  overdrive(): void {
-    this.tone({ f: 130, f2: 65, dur: 0.5, type: "sawtooth", gain: 0.16 });
-    this.tone({ f: 523, f2: 1047, dur: 0.35, type: "triangle", gain: 0.1, delay: 0.04 });
-    this.noise({ dur: 0.3, freq: 600, freq2: 4000, q: 1.2, gain: 0.1 });
-  }
-
   // ---------------------------------------------------------------- enemies
   enemyLunge(): void {
     this.noise({ dur: 0.14, freq: 400, freq2: 1400, q: 1.6, gain: 0.1 });

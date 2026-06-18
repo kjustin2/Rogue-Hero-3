@@ -1,4 +1,4 @@
-// Adversarial edge-case hunt: room-boundary carry-over, per-hero Overdrive, damage
+// Adversarial edge-case hunt: removed Overdrive neutrality, damage
 // stacking sanity, save round-trip, bosses-have-no-affix. Needs the dev server on 5174.
 import { chromium } from "playwright-core";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ if (await page.locator(".story-skip").count()) await page.locator(".story-skip")
 await page.waitForTimeout(2400);
 for (let i = 0; i < 24; i++) { if (await page.evaluate(() => window.__rh3.playing)) break; await page.waitForTimeout(300); }
 
-// 1) Overdrive must NOT carry across a room boundary.
+// 1) Removed Overdrive must stay inactive across a room boundary.
 const carry = await page.evaluate(() => {
   const c = window.__rh3;
   c.tempo.gain(100); c.overdrive.tryActivate();
@@ -33,10 +33,10 @@ const carry = await page.evaluate(() => {
   c.events.emit("ROOM_START", { index: 1, name: "x", isBoss: false, act: 1, elite: false });
   return { activeBefore, activeAfter: c.overdrive.active };
 });
-check("Overdrive activates", carry.activeBefore);
-check("Overdrive cleared on room start (no carry-over)", carry.activeBefore && !carry.activeAfter);
+check("Overdrive does not activate", carry.activeBefore === false);
+check("Overdrive remains inactive on room start", carry.activeBefore === false && carry.activeAfter === false);
 
-// 2) Every hero can ignite Overdrive without error.
+// 2) Every hero keeps the neutral compatibility shim.
 const perHero = await page.evaluate(() => {
   const c = window.__rh3;
   const out = [];
@@ -45,14 +45,14 @@ const perHero = await page.evaluate(() => {
     c.overdrive.reset();
     c.tempo.reset(); c.tempo.gain(100);
     c.overdrive.tryActivate();
-    out.push({ id: h.id, active: c.overdrive.active, mult: c.overdrive.damageMult });
+    out.push({ id: h.id, active: c.overdrive.active, mult: c.overdrive.damageMult, ready: c.overdrive.ready });
   }
   c.overdrive.reset();
   return out;
 });
-check("All 6 heroes ignite Overdrive", perHero.length === 6 && perHero.every((h) => h.active && h.mult > 1), perHero.map((h) => h.id).join(","));
+check("All 6 heroes keep Overdrive neutral", perHero.length === 6 && perHero.every((h) => !h.active && !h.ready && h.mult === 1), perHero.map((h) => h.id).join(","));
 
-// 3) Damage stacking (vulnerable × overdrive × crescendo × rank) stays finite + positive.
+// 3) Damage stacking (vulnerable, tempo, crescendo, rank) stays finite + positive.
 const dmg = await page.evaluate(() => {
   const c = window.__rh3;
   c.enemies.clear();

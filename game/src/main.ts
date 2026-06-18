@@ -175,7 +175,7 @@ let currentDepth = 0;
 const menus = new Menus(ctx, {
   onStartRun: (hero, depth, blessing) => { nextRunDepth = depth; nextBlessing = blessing || null; startRun(hero); },
   onNewRun: () => { nextRunSeed = null; nextRunDaily = false; menus.showHeroSelect(); },
-  onDaily: () => { nextRunSeed = dailySeed(); nextRunDaily = true; menus.showHeroSelect(); },
+  onDaily: () => { const seed = dailySeed(); nextRunSeed = seed; nextRunDaily = true; menus.showHeroSelect({ dailySeed: seed }); },
   onTutorial: startTutorial,
   onContinueRun: continueRun,
   onResume: resume,
@@ -532,6 +532,7 @@ function quitToDesktop(): void {
 
 function toMenu(): void {
   state = "menu";
+  pendingRoomReward = null;
   inTutorial = false;
   tutorial.stop();
   ctx.enemies.clear();
@@ -569,6 +570,11 @@ function resume(): void {
   ctx.input.enabled = true;
   ctx.music.duckTo(1);
   state = "playing";
+  if (pendingRoomReward) {
+    const reward = pendingRoomReward;
+    pendingRoomReward = null;
+    window.setTimeout(() => resolveRoomReward(reward), 0);
+  }
 }
 
 // In-run passive growth: the hero's passive sharpens at kill milestones (Ascendant ranks).
@@ -590,12 +596,6 @@ ctx.events.on("KILL", () => {
     if (state === "playing") hud.banner(ctx.player.hero.passiveName.toUpperCase(), `ASCENDANT ${ROMAN[ascendantRank - 1] ?? ascendantRank}`, "banner--clear");
     ctx.sfx.cardReady();
   }
-});
-
-ctx.events.on("OVERDRIVE_START", ({ name }) => {
-  hud.banner(name, "OVERDRIVE", "banner--boss");
-  hud.flash("#ffe066", 0.4);
-  ctx.sfx.overdrive();
 });
 
 // Tempo stinger: a bright rising triad the moment you reach the Critical zone.
@@ -700,6 +700,34 @@ function playBossDeathBeat(kind: string | undefined, x: number, z: number): void
   }
 }
 
+let pendingRoomReward: "card" | "relic" | null = null;
+
+function resolveRoomReward(reward: "card" | "relic"): void {
+  if (state === "paused") {
+    pendingRoomReward = reward;
+    return;
+  }
+  if (state !== "playing") return;
+  const done = () => { menus.clear(); advanceAfterNode(); };
+  if (reward === "relic") {
+    const choices = ctx.relics.draftChoices();
+    if (choices.length === 0) {
+      // Maxed out — quiet consolation heal, straight on to the next fork
+      ctx.player.hp = Math.min(ctx.player.maxHp, ctx.player.hp + 10);
+      ctx.events.emit("HEAL", { amount: 10 });
+      advanceAfterNode();
+      return;
+    }
+    state = "draft";
+    ctx.music.map();
+    menus.showRelicDraft(choices, done);
+  } else {
+    state = "draft";
+    ctx.music.map();
+    menus.showDraft(ctx.deck.draftChoices(), done);
+  }
+}
+
 ctx.events.on("ROOM_CLEARED", ({ reward }) => {
   hud.fadeHints();
   awardShards(6);
@@ -708,25 +736,7 @@ ctx.events.on("ROOM_CLEARED", ({ reward }) => {
   // long enough to read, short enough that it never feels like the game hung.
   const rewardDelay = ctx.run.currentNode?.bossKind ? 4600 : 1500;
   window.setTimeout(() => {
-    if (state !== "playing") return;
-    const done = () => { menus.clear(); advanceAfterNode(); };
-    if (reward === "relic") {
-      const choices = ctx.relics.draftChoices();
-      if (choices.length === 0) {
-        // Maxed out — quiet consolation heal, straight on to the next fork
-        ctx.player.hp = Math.min(ctx.player.maxHp, ctx.player.hp + 10);
-        ctx.events.emit("HEAL", { amount: 10 });
-        advanceAfterNode();
-        return;
-      }
-      state = "draft";
-      ctx.music.map();
-      menus.showRelicDraft(choices, done);
-    } else {
-      state = "draft";
-      ctx.music.map();
-      menus.showDraft(ctx.deck.draftChoices(), done);
-    }
+    resolveRoomReward(reward);
   }, rewardDelay);
 });
 
@@ -1131,6 +1141,8 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
       { at: 3180, type: "ring", radius: 9, color: "c2", duration: 0.5 },
       { at: 3340, type: "burst", preset: "seismic" },
       { at: 3600, type: "ring", radius: 12, color: "c1", duration: 0.5 },
+      { at: 4220, type: "prop", omen: "claws" },
+      { at: 4460, type: "pulse", trauma: 0.36, punch: 0.24, fov: 0.34 },
     );
   } else if (kind === "spire") {
     beats.push(
@@ -1138,6 +1150,8 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
       { at: 3040, type: "burst", preset: "shards" },
       { at: 3220, type: "prop", omen: "beam" },
       { at: 3440, type: "ring", radius: 12, color: "c2", duration: 0.55 },
+      { at: 4180, type: "burst", preset: "shards" },
+      { at: 4520, type: "ring", radius: 15, color: "white", duration: 0.55 },
     );
   } else if (cfg.seismic) {
     beats.push(
@@ -1147,6 +1161,8 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
       { at: 3570, type: "ring", radius: 12, color: "c2", duration: 0.5 },
       { at: 3680, type: "prop", omen: "fists" },
       { at: 3850, type: "burst", preset: "seismic" },
+      { at: 4300, type: "pulse", trauma: 0.5, punch: 0.34, fov: 0.28 },
+      { at: 4640, type: "ring", radius: 16, color: "c1", duration: 0.6 },
     );
   } else if (kind === "unmaker") {
     beats.push(
@@ -1155,6 +1171,9 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
       { at: 3260, type: "prop", omen: "beam" },
       { at: 3480, type: "ring", radius: 11, color: "white", duration: 0.75 },
       { at: 3820, type: "burst", preset: "starfall" },
+      { at: 4380, type: "ring", radius: 17, color: "phase", duration: 0.9 },
+      { at: 4760, type: "burst", preset: "starfall" },
+      { at: 5100, type: "flash", color: "#ffffff", intensity: 0.2 },
     );
   } else if (cfg.tear) {
     beats.push(
@@ -1163,8 +1182,16 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
       { at: 3250, type: "prop", omen: "beam" },
       { at: 3450, type: "ring", radius: 14, color: "white", duration: 0.5 },
       { at: 3800, type: "burst", preset: "tear" },
+      { at: 4320, type: "ring", radius: 16, color: "phase", duration: 0.65 },
+      { at: 4640, type: "pulse", trauma: 0.38, punch: 0.25, fov: 0.32 },
     );
   }
+
+  beats.push(
+    { at: 4920, type: "camera", zoom: cfg.zoom * 0.82, zOff: -0.1 },
+    { at: 5200, type: "ring", radius: cfg.quiet ? 13 : 16, color: "c2", duration: 0.75, startRadius: 2 },
+    { at: 5380, type: "pulse", trauma: cfg.quiet ? 0.08 : 0.2, fov: cfg.quiet ? 0.16 : 0.28 },
+  );
 
   return beats.sort((a, b) => a.at - b.at);
 }
@@ -1203,7 +1230,7 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
   for (const beat of buildBossIntroBeats(kind, cfg, name, title)) {
     queueBeat(beat.at, () => runBossBeat(beat, cfg, bx, bz));
   }
-  queueBeat(cfg.quiet ? 4800 : 4500, () => finishCutscene());
+  queueBeat(cfg.quiet ? 6200 : 5800, () => finishCutscene());
   window.addEventListener("pointerdown", skipCutscene);
   window.addEventListener("keydown", skipCutscene);
 }
@@ -1221,7 +1248,7 @@ function playBossPhaseCutscene(phase: number, line: string): void {
   const cfg = BOSS_FX[kind] ?? BOSS_FX.warden;
   bossCutscene = true;
   cutsceneFreezeWorld = true; // hold the fight — the player can't act, so neither can the boss
-  cutsceneSkipReadyTs = performance.now() + (phase >= 4 ? 1100 : 500);
+  cutsceneSkipReadyTs = performance.now() + (phase >= 4 ? 1500 : 900);
   state = "cutscene";
   ctx.input.enabled = false;
   hud.setLetterbox(true);
@@ -1240,7 +1267,7 @@ function playBossPhaseCutscene(phase: number, line: string): void {
     addBossOmen(cfg.quiet ? "star" : cfg.omen, cfg, boss.pos.x, boss.pos.z, phase);
     ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 6, color: cfg.quiet ? cfg.c2 : 0x8a9ad0, duration: 1.4 });
     bossBurst(cfg.quiet ? "starfall" : "tear", cfg, boss.pos.x, boss.pos.z);
-    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 3800));
+    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 5400));
   } else {
     ctx.music.duckTo(0.5);
     ctx.cam.cinematic(boss.pos.x, boss.pos.z, cfg.seismic ? 0.58 : 0.7);
@@ -1254,7 +1281,7 @@ function playBossPhaseCutscene(phase: number, line: string): void {
     ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 5, color: cfg.phaseColor, duration: 0.7 });
     ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 3.1, color: 0xffffff, duration: 0.45 });
     bossBurst(cfg.seismic ? "seismic" : cfg.tear ? "tear" : kind === "spire" ? "shards" : "summon", cfg, boss.pos.x, boss.pos.z);
-    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 2900));
+    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 4300));
   }
   window.addEventListener("pointerdown", skipCutscene);
   window.addEventListener("keydown", skipCutscene);
@@ -1390,7 +1417,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.trail.setColor(ctx.player.bladeColor);
     ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging || ctx.caster.swinging);
     if (inTutorial) tutorial.update(dt);
-    // Mercy: while the Hollow Star fades, holding Overdrive [Q] spares it instead of killing it.
+    // Mercy: while the Hollow Star fades, holding the mercy input spares it instead of killing it.
     if (unmakerFading && !chosenMercy) {
       if (ctx.input.actionDown("overdrive")) {
         spareHold += dt;

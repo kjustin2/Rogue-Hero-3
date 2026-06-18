@@ -445,29 +445,6 @@ body {
   50% { text-shadow: 0 0 16px var(--ui-red); transform: scale(1.08); }
 }
 
-/* --- overdrive readiness (Tempo super) --- */
-.tempo__overdrive {
-  margin-top: 3px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  color: #ffe066;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.tempo__overdrive--ready {
-  opacity: 1;
-  animation: od-pulse 0.65s ease-in-out infinite;
-}
-.tempo__overdrive--active {
-  opacity: 1;
-  color: #fff;
-  text-shadow: 0 0 18px #ffe066, 0 0 34px #ff8822;
-}
-@keyframes od-pulse {
-  50% { text-shadow: 0 0 18px #ffe066, 0 0 30px #ff8822; transform: scale(1.1); }
-}
-
 /* --- boss bar --- */
 .bossbar {
   position: absolute;
@@ -548,7 +525,7 @@ body {
 .banner--show { animation: banner-in 2.2s ease forwards; }
 /* Boss / act / epitaph text lingers longer so it can actually be read. */
 .banner--long.banner--show { animation-duration: 5.6s; }
-.banner--cutscene.banner--show { animation-duration: 2.25s; }
+.banner--cutscene.banner--show { animation-duration: 4.35s; }
 .banner__title {
   font-family: var(--font-display);
   font-size: 44px;

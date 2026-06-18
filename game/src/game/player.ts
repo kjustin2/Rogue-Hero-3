@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { clamp01, damp, ease, TAU } from "../core/math";
+import { clamp, clamp01, damp, dampAngle, ease, TAU } from "../core/math";
 import { heroById, type HeroDef } from "./heroes";
 import { DEFAULT_COSMETICS, cosmeticById } from "./cosmetics";
 import type { Ctx } from "./ctx";
@@ -50,10 +50,16 @@ export class Player {
 
   // Animation inputs (set by controller/combat each frame)
   animMoveAmount = 0;
+  animMoveX = 0;
+  animMoveZ = 0;
   animSwing: { phase: number; heavy: boolean } | null = null;
   animDodge: { phase: number; dirX: number; dirZ: number } | null = null;
 
   private locoClock = 0;
+  private moveBlend = 0;
+  private moveSide = 0;
+  private moveForward = 0;
+  private visualFacing = 0;
   private t = 0;
   private hitFlash = 0;
 
@@ -205,14 +211,35 @@ export class Player {
     sashA.rotation.z = 0.58;
     const sashB = box(P.torsoW * 0.72, 0.045, 0.052, plateDark, P.torsoW * 0.08, -0.02, chestZ + 0.012, this.torso);
     sashB.rotation.z = -0.5;
+    for (const x of [-0.3, -0.1, 0.1, 0.3]) {
+      box(P.torsoW * 0.045, 0.04, 0.05, gold, x * P.torsoW, -0.255, chestZ + 0.022, this.torso);
+    }
+    for (const sx of [-1, 1]) {
+      box(P.torsoW * 0.08, 0.05, 0.055, heroGlow, sx * P.torsoW * 0.43, 0.38, chestZ + 0.02, this.torso);
+    }
     for (const sx of [-1, 1]) {
       const rib = box(0.045, P.torsoH * 0.58, 0.055, gold, sx * P.torsoW * 0.34, 0.08, chestZ + 0.006, this.torso);
       rib.rotation.z = sx * -0.12;
     }
-    const backHalo = new THREE.Mesh(new THREE.TorusGeometry(P.torsoW * 0.66, 0.018, 6, 44), heroGlow);
-    backHalo.position.set(0, 0.3, -P.torsoD * 0.62);
-    backHalo.rotation.x = Math.PI / 2;
-    this.torso.add(backHalo);
+    for (let i = 0; i < 3; i++) {
+      const y = 0.02 - i * 0.115;
+      const plateW = P.torsoW * (0.48 - i * 0.055);
+      box(plateW, 0.045, 0.052, i === 1 ? gold : plateDark, 0, y, chestZ + 0.018, this.torso);
+    }
+    for (const sx of [-1, 1]) {
+      box(0.055, 0.055, 0.055, heroGlow, sx * P.torsoW * 0.22, 0.31, chestZ + 0.026, this.torso);
+      const sidePlate = box(P.torsoW * 0.18, 0.28, 0.055, plateDark, sx * P.torsoW * 0.48, 0.0, chestZ - 0.004, this.torso);
+      sidePlate.rotation.z = sx * -0.16;
+      box(P.torsoW * 0.12, 0.045, 0.05, gold, sx * P.torsoW * 0.45, -0.16, chestZ + 0.016, this.torso);
+    }
+    const backZ = -P.torsoD * 0.55;
+    box(P.torsoW * 0.58, 0.075, 0.055, plateDark, 0, 0.28, backZ, this.torso);
+    box(P.torsoW * 0.42, 0.055, 0.052, gold, 0, 0.1, backZ - 0.01, this.torso);
+    box(P.torsoW * 0.08, 0.46, 0.045, heroGlow, 0, 0.06, backZ - 0.018, this.torso);
+    for (const sx of [-1, 1]) {
+      const backRib = box(0.04, P.torsoH * 0.45, 0.045, plateDark, sx * P.torsoW * 0.3, 0.04, backZ, this.torso);
+      backRib.rotation.z = sx * 0.15;
+    }
 
     // Bulwark: a heavy chest plate + central rivet for mass.
     if (id === "bulwark") {
@@ -245,6 +272,13 @@ export class Player {
     const visor = new THREE.Mesh(new THREE.BoxGeometry(P.headW * 0.75, 0.07, 0.05), this.visorMat);
     visor.position.set(0, 0.1, P.headD * 0.52);
     head.add(visor);
+    box(P.headW * 0.9, 0.045, 0.07, gold, 0, 0.22, P.headD * 0.5, head); // brow trim
+    for (const sx of [-1, 1]) {
+      const cheek = box(P.headW * 0.18, P.headH * 0.5, 0.055, plate, sx * P.headW * 0.34, -0.02, P.headD * 0.5, head);
+      cheek.rotation.z = sx * -0.08;
+      const jaw = box(P.headW * 0.28, 0.06, 0.065, gold, sx * P.headW * 0.18, -0.16, P.headD * 0.49, head);
+      jaw.rotation.z = sx * -0.15;
+    }
     // Per-hero headgear shape.
     if (id === "bulwark") {
       // Blocky great-helm with a wide horizontal brow and short stubby crest.
@@ -287,6 +321,9 @@ export class Player {
     for (const sx of [-1, 1]) {
       const lip = box(P.shoulderW * 1.15, 0.055, P.shoulderD * 1.18, plateDark, sx * P.shoulderX, 0.49, 0.02, this.torso);
       lip.rotation.z = sx * -0.08;
+      const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 5), heroGlow);
+      rivet.position.set(sx * P.shoulderX, 0.53, P.shoulderD * 0.42);
+      this.torso.add(rivet);
       if (id !== "sparkmage" && id !== "tempest") {
         const crest = spike(0.045, 0.18, 4, heroGlow, sx * P.shoulderX, 0.62, -0.02, this.torso);
         crest.rotation.z = sx * -0.2;
@@ -314,6 +351,9 @@ export class Player {
     box(P.armW, P.armH, P.armW, plate, 0, -P.armH * 0.58, 0, this.armR);
     box(P.armW * 1.28, 0.12, P.armW * 1.28, gold, 0, -P.armH * 0.98, 0, this.armR);
     box(P.armW * 1.05, 0.055, P.armW * 1.35, heroGlow, 0, -P.armH * 0.78, P.armW * 0.2, this.armR);
+    box(P.armW * 1.22, 0.16, P.armW * 1.32, plateDark, 0, -P.armH * 0.42, P.armW * 0.04, this.armR);
+    box(P.armW * 1.36, 0.08, P.armW * 1.42, plateDark, 0, -P.armH * 1.11, P.armW * 0.06, this.armR);
+    for (const sx of [-0.32, 0.32]) box(P.armW * 0.28, 0.035, P.armW * 0.3, gold, sx * P.armW, -P.armH * 1.17, P.armW * 0.52, this.armR);
 
     this.armL = new THREE.Group();
     this.armL.position.set(-P.armX, 0.26, 0);
@@ -321,6 +361,9 @@ export class Player {
     box(P.armW, P.armH, P.armW, plate, 0, -P.armH * 0.58, 0, this.armL);
     box(P.armW * 1.28, 0.12, P.armW * 1.28, gold, 0, -P.armH * 0.98, 0, this.armL);
     box(P.armW * 1.05, 0.055, P.armW * 1.35, heroGlow, 0, -P.armH * 0.78, P.armW * 0.2, this.armL);
+    box(P.armW * 1.22, 0.16, P.armW * 1.32, plateDark, 0, -P.armH * 0.42, P.armW * 0.04, this.armL);
+    box(P.armW * 1.36, 0.08, P.armW * 1.42, plateDark, 0, -P.armH * 1.11, P.armW * 0.06, this.armL);
+    for (const sx of [-0.32, 0.32]) box(P.armW * 0.28, 0.035, P.armW * 0.3, gold, sx * P.armW, -P.armH * 1.17, P.armW * 0.52, this.armL);
 
     // Sword: emissive blade reads as a light source under bloom.
     // Per-hero weapon profile, but the sword GROUP + tip/base markers are
@@ -412,18 +455,34 @@ export class Player {
 
     // Hips + legs
     box(P.torsoW * 0.78, 0.24, P.torsoD * 0.86, plateDark, 0, 0.62, 0);
+    for (const sx of [-1, 1]) {
+      const hipGuard = box(P.torsoW * 0.22, 0.24, P.torsoD * 0.38, gold, sx * P.torsoW * 0.36, 0.52, 0.02);
+      hipGuard.rotation.z = sx * -0.18;
+    }
+    for (const sx of [-1, 1]) {
+      const skirt = box(P.torsoW * 0.18, 0.28, P.torsoD * 0.12, plateDark, sx * P.torsoW * 0.18, 0.43, P.torsoD * 0.36);
+      skirt.rotation.x = sx * 0.03;
+      const trim = box(P.torsoW * 0.16, 0.04, P.torsoD * 0.14, gold, sx * P.torsoW * 0.18, 0.29, P.torsoD * 0.38);
+      trim.rotation.x = sx * 0.03;
+    }
     this.legR = new THREE.Group();
     this.legR.position.set(P.legX, 0.55, 0);
     this.body.add(this.legR);
     box(P.legW, P.legH, P.legW * 1.16, cloth, 0, -P.legH * 0.54, 0, this.legR);
     box(P.legW * 1.22, 0.12, P.legW * 1.34, gold, 0, -P.legH * 0.48, P.legW * 0.16, this.legR);
+    box(P.legW * 1.32, 0.14, P.legW * 1.5, plateDark, 0, -P.legH * 0.66, P.legW * 0.28, this.legR);
     box(P.legW * 1.12, 0.11, P.legW * 1.25, plateDark, 0, -P.legH * 0.96, 0, this.legR);
+    box(P.legW * 0.9, 0.055, P.legW * 1.36, gold, 0, -P.legH * 1.04, P.legW * 0.28, this.legR);
+    box(P.legW * 1.45, 0.12, P.legW * 1.65, plateDark, 0, -P.legH * 1.16, P.legW * 0.16, this.legR);
     this.legL = new THREE.Group();
     this.legL.position.set(-P.legX, 0.55, 0);
     this.body.add(this.legL);
     box(P.legW, P.legH, P.legW * 1.16, cloth, 0, -P.legH * 0.54, 0, this.legL);
     box(P.legW * 1.22, 0.12, P.legW * 1.34, gold, 0, -P.legH * 0.48, P.legW * 0.16, this.legL);
+    box(P.legW * 1.32, 0.14, P.legW * 1.5, plateDark, 0, -P.legH * 0.66, P.legW * 0.28, this.legL);
     box(P.legW * 1.12, 0.11, P.legW * 1.25, plateDark, 0, -P.legH * 0.96, 0, this.legL);
+    box(P.legW * 0.9, 0.055, P.legW * 1.36, gold, 0, -P.legH * 1.04, P.legW * 0.28, this.legL);
+    box(P.legW * 1.45, 0.12, P.legW * 1.65, plateDark, 0, -P.legH * 1.16, P.legW * 0.16, this.legL);
 
     // Cape (cosmetic color) — robe-like for the mage, streamer-thin for tempest.
     let capeW = 0.66, capeH = 0.95;
@@ -438,9 +497,14 @@ export class Player {
     this.cape.position.set(0, 0.42, -P.torsoD * 0.57);
     this.cape.castShadow = true;
     this.torso.add(this.cape);
+    box(capeW * 0.3, 0.07, 0.04, capeTrim, 0, 0.35, -P.torsoD * 0.58, this.torso);
+    box(0.07, 0.11, 0.05, heroGlow, 0, 0.35, -P.torsoD * 0.61, this.torso);
     box(0.035, capeH * 0.82, 0.025, capeTrim, -capeW * 0.43, 0.02 - capeH * 0.45, -P.torsoD * 0.6, this.torso);
     box(0.035, capeH * 0.82, 0.025, capeTrim, capeW * 0.43, 0.02 - capeH * 0.45, -P.torsoD * 0.6, this.torso);
     box(capeW * 0.62, 0.035, 0.025, capeTrim, 0, 0.36 - capeH * 0.86, -P.torsoD * 0.6, this.torso);
+    box(0.026, capeH * 0.68, 0.018, capeTrim, -capeW * 0.18, 0.0 - capeH * 0.43, -P.torsoD * 0.61, this.torso);
+    box(0.026, capeH * 0.68, 0.018, capeTrim, capeW * 0.18, 0.0 - capeH * 0.43, -P.torsoD * 0.61, this.torso);
+    box(0.02, capeH * 0.58, 0.016, capeTrim, 0, -0.02 - capeH * 0.46, -P.torsoD * 0.615, this.torso);
 
     // Tempo aura ring at the feet
     this.auraMat = new THREE.MeshBasicMaterial({
@@ -570,6 +634,7 @@ export class Player {
     if (this.animDodge) {
       const d = this.animDodge;
       const rollYaw = Math.atan2(d.dirX, d.dirZ);
+      this.visualFacing = rollYaw;
       this.root.rotation.y = rollYaw;
       this.rollGroup.rotation.x = ease.outCubic(d.phase) * TAU;
       this.body.rotation.set(0, 0, 0);
@@ -578,21 +643,45 @@ export class Player {
       return;
     }
     this.rollGroup.rotation.x = damp(this.rollGroup.rotation.x % TAU, 0, 18, dt);
-    this.root.rotation.y = this.facing;
+    this.visualFacing = dampAngle(this.visualFacing, this.facing, 18, dt);
+    this.root.rotation.y = this.visualFacing;
 
     // Locomotion
-    const moving = clamp01(this.animMoveAmount);
-    this.locoClock += dt * (6 + moving * 7) * (moving > 0.05 ? 1 : 0);
-    const swing = Math.sin(this.locoClock);
-    this.legR.rotation.x = swing * 0.7 * moving;
-    this.legL.rotation.x = -swing * 0.7 * moving;
-    const bob = Math.abs(Math.cos(this.locoClock)) * 0.05 * moving;
-    this.body.position.y = -0.55 + bob + Math.sin(this.t * 1.8) * 0.012;
-    this.armL.rotation.x = swing * 0.5 * moving;
+    this.moveBlend = damp(this.moveBlend, clamp01(this.animMoveAmount), 12, dt);
+    this.moveSide = damp(this.moveSide, clamp(this.animMoveX, -1, 1), 10, dt);
+    this.moveForward = damp(this.moveForward, clamp(this.animMoveZ, -1, 1), 10, dt);
+    const moving = this.moveBlend;
+    const side = this.moveSide;
+    const forward = this.moveForward;
+    if (moving > 0.035) this.locoClock += dt * (7.0 + moving * 8.0);
+    const reversing = forward < -0.2 && Math.abs(forward) > Math.abs(side) * 0.75;
+    const strideDir = reversing ? -1 : 1;
+    const swing = Math.sin(this.locoClock) * strideDir;
+    const liftR = Math.max(0, -swing) * moving;
+    const liftL = Math.max(0, swing) * moving;
+    const stepSnap = Math.abs(Math.cos(this.locoClock));
+    const bob = stepSnap * 0.045 * moving;
+    const idleBreath = Math.sin(this.t * 1.8) * 0.012 * (1 - moving * 0.55);
+    this.body.position.y = damp(this.body.position.y, -0.55 + bob + idleBreath, 18, dt);
+    this.body.rotation.x = damp(this.body.rotation.x, -Math.max(0, forward) * 0.045 * moving + Math.max(0, -forward) * 0.025 * moving, 11, dt);
+    this.body.rotation.z = damp(this.body.rotation.z, 0, 16, dt);
+    this.legR.rotation.x = damp(this.legR.rotation.x, swing * 0.82 * moving, 18, dt);
+    this.legL.rotation.x = damp(this.legL.rotation.x, -swing * 0.82 * moving, 18, dt);
+    this.legR.rotation.z = damp(this.legR.rotation.z, -liftR * 0.035, 14, dt);
+    this.legL.rotation.z = damp(this.legL.rotation.z, liftL * 0.035, 14, dt);
+    this.legR.position.y = damp(this.legR.position.y, 0.55 + liftR * 0.045, 18, dt);
+    this.legL.position.y = damp(this.legL.position.y, 0.55 + liftL * 0.045, 18, dt);
+    this.legR.position.z = damp(this.legR.position.z, swing * 0.055 * moving, 16, dt);
+    this.legL.position.z = damp(this.legL.position.z, -swing * 0.055 * moving, 16, dt);
+    this.armL.rotation.x = damp(this.armL.rotation.x, -swing * 0.48 * moving - 0.05, 14, dt);
+    this.armL.rotation.z = damp(this.armL.rotation.z, -0.08, 12, dt);
+    this.armL.rotation.y = damp(this.armL.rotation.y, side * 0.012 * moving, 12, dt);
 
-    // Cape: lean back with speed, gentle flap
-    this.cape.rotation.x = 0.12 + moving * 0.42 + Math.sin(this.t * 3.1) * 0.05 + Math.sin(this.locoClock * 0.5) * 0.06 * moving;
-    this.cape.rotation.z = Math.sin(this.t * 2.3) * 0.05;
+    // Cape: restrained lift with speed, no lateral sway.
+    const flap = Math.sin(this.t * 3.1) * 0.012 + Math.sin(this.locoClock * 0.5) * 0.018 * moving;
+    this.cape.rotation.x = damp(this.cape.rotation.x, 0.12 + moving * 0.22 + Math.max(0, -forward) * 0.08 + flap, 9, dt);
+    this.cape.rotation.z = damp(this.cape.rotation.z, 0, 10, dt);
+    this.cape.rotation.y = damp(this.cape.rotation.y, 0, 10, dt);
 
     // Sword arm: swing animation overrides idle/run pose
     if (this.animSwing) {
@@ -613,13 +702,16 @@ export class Player {
         this.torso.rotation.y = (heavy ? 0.55 : 0.35) - k * (heavy ? 1.0 : 0.7);
         this.torso.rotation.x = k * 0.14;
       }
+      this.torso.rotation.z = damp(this.torso.rotation.z, 0, 12, dt);
       this.sword.rotation.x = -0.4;
     } else {
       // Idle/run arm pose, sword low at the side
-      this.armR.rotation.x = damp(this.armR.rotation.x, swing * 0.4 * moving - 0.12, 14, dt);
-      this.armR.rotation.z = damp(this.armR.rotation.z, 0.06, 14, dt);
-      this.torso.rotation.y = damp(this.torso.rotation.y, 0, 12, dt);
-      this.torso.rotation.x = damp(this.torso.rotation.x, moving * 0.1, 10, dt);
+      this.armR.rotation.x = damp(this.armR.rotation.x, swing * 0.36 * moving - 0.14, 14, dt);
+      this.armR.rotation.z = damp(this.armR.rotation.z, 0.08, 14, dt);
+      this.armR.rotation.y = damp(this.armR.rotation.y, -side * 0.012 * moving, 12, dt);
+      this.torso.rotation.y = damp(this.torso.rotation.y, 0, 14, dt);
+      this.torso.rotation.x = damp(this.torso.rotation.x, 0.035 + Math.max(0, forward) * 0.045 * moving, 10, dt);
+      this.torso.rotation.z = damp(this.torso.rotation.z, 0, 14, dt);
       this.sword.rotation.x = damp(this.sword.rotation.x, -0.15, 10, dt);
     }
   }
