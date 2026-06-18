@@ -39,6 +39,10 @@ export class PitWarden extends Enemy {
   private guardWarned = false;
   private coreMat: THREE.MeshStandardMaterial;
   private eyeMat: THREE.MeshStandardMaterial;
+  private core: THREE.Mesh;
+  private chainLinks: THREE.Mesh[] = [];
+  private backFlares: THREE.Object3D[] = [];
+  private emberVents: THREE.Object3D[] = [];
   private patches: FirePatch[] = [];
   private patchGeo: THREE.CircleGeometry;
   // Per-phase appearance escalation (built once, revealed on transition).
@@ -67,8 +71,19 @@ export class PitWarden extends Enemy {
     // Massive torso, hunched forward
     const torso = this.addMesh(new THREE.BoxGeometry(2.2, 1.7, 1.5), hide, 0, 1.7);
     torso.rotation.x = 0.25;
-    this.addMesh(new THREE.BoxGeometry(1.0, 0.7, 0.5), this.coreMat, 0, 1.65, 0.78); // molten chest core
+    this.core = this.addMesh(new THREE.BoxGeometry(1.0, 0.7, 0.5), this.coreMat, 0, 1.65, 0.78); // molten chest core
+    // Layered frame around the core so the torso reads as armor over heat, not one block.
+    this.addMesh(new THREE.BoxGeometry(1.18, 0.1, 0.16), emberPlate, 0, 2.03, 0.86);
+    this.addMesh(new THREE.BoxGeometry(1.12, 0.1, 0.16), emberPlate, 0, 1.26, 0.86);
+    for (const sx of [-1, 1]) {
+      const rib = this.addMesh(new THREE.BoxGeometry(0.14, 0.78, 0.16), emberPlate, sx * 0.62, 1.64, 0.88);
+      rib.rotation.z = sx * 0.12;
+      this.emberVents.push(rib);
+    }
     this.addMesh(new THREE.BoxGeometry(1.6, 0.9, 1.1), plate, 0, 0.6, 0); // hips
+    this.addMesh(new THREE.BoxGeometry(1.85, 0.22, 1.18), chain, 0, 1.02, 0.08);
+    this.addMesh(new THREE.BoxGeometry(0.55, 0.18, 1.2), emberPlate, -0.56, 0.78, 0.12);
+    this.addMesh(new THREE.BoxGeometry(0.55, 0.18, 1.2), emberPlate, 0.56, 0.78, 0.12);
     // Head low between shoulders
     const head = this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.8), plate, 0, 2.45, 0.55);
     head.rotation.x = 0.15;
@@ -89,6 +104,10 @@ export class PitWarden extends Enemy {
       pauldron.rotation.z = sx * -0.2;
       const brace = this.addMesh(new THREE.BoxGeometry(0.72, 0.18, 0.5), chain, sx * 1.35, 0.78, 0.52);
       brace.rotation.z = sx * -0.12;
+      this.chainLinks.push(brace);
+      const elbowBand = this.addMesh(new THREE.BoxGeometry(0.66, 0.14, 0.64), emberPlate, sx * 1.35, 1.08, 0.2);
+      elbowBand.rotation.z = sx * -0.16;
+      this.emberVents.push(elbowBand);
       for (let i = 0; i < 3; i++) {
         const claw = this.addMesh(new THREE.ConeGeometry(0.08, 0.42, 4), emberPlate, sx * (1.12 + i * 0.16), 0.2, 0.72);
         claw.rotation.x = Math.PI / 2;
@@ -99,10 +118,28 @@ export class PitWarden extends Enemy {
     chainA.rotation.z = 0.32;
     const chainB = this.addMesh(new THREE.BoxGeometry(1.35, 0.1, 0.1), chain, 0.08, 1.78, 0.95);
     chainB.rotation.z = -0.35;
+    this.chainLinks.push(chainA, chainB);
+    for (let i = 0; i < 5; i++) {
+      const link = this.addMesh(new THREE.BoxGeometry(0.32, 0.08, 0.12), chain, -0.58 + i * 0.29, 1.86 + Math.sin(i) * 0.06, 1.07);
+      link.rotation.z = i % 2 === 0 ? 0.55 : -0.42;
+      this.chainLinks.push(link);
+    }
     this.addMesh(new THREE.BoxGeometry(0.28, 0.28, 0.12), emberPlate, 0, 1.84, 1.02).rotation.z = Math.PI / 4;
     // Stubby legs
     this.addMesh(new THREE.BoxGeometry(0.6, 0.7, 0.7), hide, -0.55, 0.25, -0.15);
     this.addMesh(new THREE.BoxGeometry(0.6, 0.7, 0.7), hide, 0.55, 0.25, -0.15);
+    for (const sx of [-1, 1]) {
+      const boot = this.addMesh(new THREE.BoxGeometry(0.76, 0.18, 0.85), plate, sx * 0.55, 0.03, 0.08);
+      boot.rotation.z = sx * 0.04;
+    }
+    // Back furnace flares give the silhouette a professional layered read from every angle.
+    for (let i = 0; i < 5; i++) {
+      const x = (i - 2) * 0.38;
+      const flare = this.addMesh(new THREE.ConeGeometry(0.12, 0.72 - Math.abs(i - 2) * 0.06, 4), emberPlate, x, 2.05 - Math.abs(i - 2) * 0.08, -0.74);
+      flare.rotation.x = -0.9;
+      flare.rotation.z = (i - 2) * 0.08;
+      this.backFlares.push(flare);
+    }
 
     this.patchGeo = new THREE.CircleGeometry(1.2, 24);
     this.patchGeo.rotateX(-Math.PI / 2);
@@ -237,6 +274,22 @@ export class PitWarden extends Enemy {
 
     // Core breathes faster as phases climb
     this.coreMat.emissiveIntensity = 1.8 + this.phase * 0.5 + Math.sin(this.t * (2 + this.phase * 2)) * 0.7;
+    const corePulse = 1 + Math.sin(this.t * (2.6 + this.phase * 0.65)) * 0.055;
+    this.core.scale.set(1 + (corePulse - 1) * 1.2, 1 + (corePulse - 1) * 0.75, 1 + (corePulse - 1) * 1.45);
+    for (let i = 0; i < this.chainLinks.length; i++) {
+      const link = this.chainLinks[i];
+      link.rotation.y = Math.sin(this.t * 1.45 + i * 0.7) * 0.045;
+    }
+    for (let i = 0; i < this.backFlares.length; i++) {
+      const flare = this.backFlares[i];
+      const heat = 1 + Math.sin(this.t * 3.2 + i) * 0.09;
+      flare.scale.set(1, heat, 1);
+    }
+    for (let i = 0; i < this.emberVents.length; i++) {
+      const vent = this.emberVents[i];
+      const heat = 1 + Math.sin(this.t * 4.1 + i * 0.8) * 0.05;
+      vent.scale.set(1, heat, 1);
+    }
 
     switch (this.state) {
       case "idle": {

@@ -78,9 +78,14 @@ export class RiftTyrant extends Enemy {
   private haloMat: THREE.MeshStandardMaterial;
   private plateMat: THREE.MeshStandardMaterial;
   private trimMat: THREE.MeshStandardMaterial;
+  private hull: THREE.Mesh;
+  private core: THREE.Mesh;
   private halo: THREE.Group;
   private shellL: THREE.Mesh;
   private shellR: THREE.Mesh;
+  private cageStruts: THREE.Object3D[] = [];
+  private ventPanels: THREE.Object3D[] = [];
+  private stabilizers: THREE.Object3D[] = [];
   // Per-phase appearance escalation (built once, revealed on transition).
   private shardRing: THREE.Group;
   private p2Shards: THREE.Object3D[] = [];
@@ -101,29 +106,45 @@ export class RiftTyrant extends Enemy {
     this.trimMat = trimMat;
 
     // Hovering octahedral hull — a faceted "engine block", point-down menace
-    const hull = this.addMesh(new THREE.OctahedronGeometry(1.7, 0), plateMat, 0, 2.0);
-    hull.scale.set(1.0, 1.4, 1.0);
-    hull.castShadow = true;
+    this.hull = this.addMesh(new THREE.OctahedronGeometry(1.7, 0), plateMat, 0, 2.0);
+    this.hull.scale.set(1.0, 1.4, 1.0);
+    this.hull.castShadow = true;
     // Exposed rift core inside the cage
-    this.addMesh(new THREE.IcosahedronGeometry(0.7, 0), this.coreMat, 0, 2.0);
+    this.core = this.addMesh(new THREE.IcosahedronGeometry(0.7, 0), this.coreMat, 0, 2.0);
+    this.addMesh(new THREE.TorusGeometry(0.86, 0.035, 6, 28), this.coreMat, 0, 2.0).rotation.x = Math.PI / 2;
     // Caging struts around the core
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2;
       const strut = this.addMesh(new THREE.BoxGeometry(0.14, 1.9, 0.14), trimMat, Math.sin(a) * 0.85, 2.0, Math.cos(a) * 0.85);
       strut.rotation.x = Math.sin(a) * 0.18;
       strut.rotation.z = Math.cos(a) * 0.18;
+      this.cageStruts.push(strut);
     }
     // Heavy split shoulder vents that flare during attacks
     this.shellL = this.addMesh(new THREE.BoxGeometry(0.9, 1.4, 1.6), plateMat, -1.55, 2.0, 0);
     this.shellR = this.addMesh(new THREE.BoxGeometry(0.9, 1.4, 1.6), plateMat, 1.55, 2.0, 0);
     this.shellL.rotation.z = 0.25;
     this.shellR.rotation.z = -0.25;
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.9, 0.2), this.coreMat, -1.55, 2.0, 0.85);
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.9, 0.2), this.coreMat, 1.55, 2.0, 0.85);
+    this.ventPanels.push(this.addMesh(new THREE.BoxGeometry(0.5, 0.9, 0.2), this.coreMat, -1.55, 2.0, 0.85));
+    this.ventPanels.push(this.addMesh(new THREE.BoxGeometry(0.5, 0.9, 0.2), this.coreMat, 1.55, 2.0, 0.85));
+    for (const sx of [-1, 1]) {
+      for (let i = 0; i < 3; i++) {
+        const vent = this.addMesh(new THREE.BoxGeometry(0.12, 0.54, 0.12), this.haloMat, sx * 1.18, 1.55 + i * 0.3, 1.03);
+        vent.rotation.z = sx * 0.12;
+        this.ventPanels.push(vent);
+      }
+    }
     // A jagged crown spike
     this.addMesh(new THREE.ConeGeometry(0.35, 1.6, 5), trimMat, 0, 3.9);
     // Skirt that anchors the silhouette to the floor
     this.addMesh(new THREE.CylinderGeometry(0.5, 1.3, 1.0, 6), plateMat, 0, 0.5);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const fin = this.addMesh(new THREE.BoxGeometry(0.12, 0.64, 0.32), trimMat, Math.sin(a) * 0.92, 0.9, Math.cos(a) * 0.92);
+      fin.rotation.y = a;
+      fin.rotation.z = Math.sin(a) * 0.22;
+      this.stabilizers.push(fin);
+    }
 
     // Counter-spinning halo of rift shards
     this.halo = new THREE.Group();
@@ -437,10 +458,27 @@ export class RiftTyrant extends Enemy {
     this.halo.rotation.y -= dt * (1.0 + this.phase * 0.55);
     this.shardRing.rotation.y += dt * (1.3 + this.phase * 0.5);
     this.pos.y = 0.35 + Math.sin(this.t * 1.6) * 0.14;
+    this.hull.rotation.y += dt * 0.12;
+    const corePulse = 1 + Math.sin(this.t * (2.4 + this.phase * 0.4)) * 0.06;
+    this.core.scale.setScalar(corePulse);
+    for (let i = 0; i < this.cageStruts.length; i++) {
+      const strut = this.cageStruts[i];
+      strut.rotation.y = Math.sin(this.t * 1.25 + i) * 0.06;
+    }
     // Vents flare while charging an attack
     const flare = this.state === "novaTell" || this.state === "lanceTell" || this.state === "crossfireTell" || this.state === "slamTell" ? 0.45 : 0.25;
     this.shellL.rotation.z = flare;
     this.shellR.rotation.z = -flare;
+    this.shellL.position.x = -1.55 - (flare - 0.25) * 0.45;
+    this.shellR.position.x = 1.55 + (flare - 0.25) * 0.45;
+    for (let i = 0; i < this.ventPanels.length; i++) {
+      const panel = this.ventPanels[i];
+      panel.scale.y = 1 + (flare - 0.25) * 0.55 + Math.sin(this.t * 4 + i) * 0.04;
+    }
+    for (let i = 0; i < this.stabilizers.length; i++) {
+      const fin = this.stabilizers[i];
+      fin.scale.y = 1 + Math.sin(this.t * 2.1 + i) * 0.055;
+    }
 
     // Queued attacks always advance — even mid-freeze or phase shift.
     for (let i = this.novas.length - 1; i >= 0; i--) {

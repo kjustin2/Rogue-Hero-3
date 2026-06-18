@@ -64,6 +64,10 @@ export class SpireCaster extends Enemy {
   private coreMat: THREE.MeshStandardMaterial;
   private trimMat: THREE.MeshStandardMaterial;
   private robeMat: THREE.MeshStandardMaterial;
+  private crownOrb: THREE.Mesh;
+  private haloRings: THREE.Object3D[] = [];
+  private finPanels: THREE.Object3D[] = [];
+  private robeStrips: THREE.Object3D[] = [];
   private playerVel = new THREE.Vector2();
   private lastPlayer = new THREE.Vector2();
   private channelsSinceShift = 0;
@@ -88,20 +92,32 @@ export class SpireCaster extends Enemy {
     const robe = this.addMesh(new THREE.CylinderGeometry(0.35, 1.05, 2.6, 6), robeMat, 0, 1.3);
     robe.castShadow = true;
     this.addMesh(new THREE.TorusGeometry(1.05, 0.1, 8, 24), trimMat, 0, 0.18).rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.SphereGeometry(0.38, 10, 8), trimMat, 0, 3.0);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const strip = this.addMesh(new THREE.BoxGeometry(0.09, 1.58, 0.08), trimMat, Math.sin(a) * 0.74, 1.22, Math.cos(a) * 0.74);
+      strip.rotation.y = a;
+      strip.rotation.z = Math.sin(a) * 0.08;
+      this.robeStrips.push(strip);
+    }
+    this.crownOrb = this.addMesh(new THREE.SphereGeometry(0.38, 10, 8), trimMat, 0, 3.0);
     this.addMesh(new THREE.BoxGeometry(0.5, 0.3, 0.3), this.coreMat, 0, 1.7, 0.5);
     for (const sx of [-1, 1]) {
       const fin = this.addMesh(new THREE.BoxGeometry(0.12, 1.45, 0.46), trimMat, sx * 0.72, 1.55, 0.05);
       fin.rotation.z = sx * -0.26;
       fin.rotation.y = sx * 0.18;
+      this.finPanels.push(fin);
       const prism = this.addMesh(new THREE.OctahedronGeometry(0.18), this.coreMat, sx * 0.62, 2.35, 0.36);
       prism.scale.y = 1.55;
       prism.rotation.z = sx * 0.25;
+      this.finPanels.push(prism);
     }
     const lowerHalo = this.addMesh(new THREE.TorusGeometry(0.72, 0.035, 6, 36), trimMat, 0, 2.62);
     lowerHalo.rotation.x = Math.PI / 2;
     const crownHalo = this.addMesh(new THREE.TorusGeometry(0.58, 0.025, 6, 36), this.coreMat, 0, 3.14);
     crownHalo.rotation.x = Math.PI / 2;
+    const tiltedHalo = this.addMesh(new THREE.TorusGeometry(0.92, 0.026, 6, 36), this.coreMat, 0, 2.88);
+    tiltedHalo.rotation.set(0.95, 0.24, 0.55);
+    this.haloRings.push(lowerHalo, crownHalo, tiltedHalo);
 
     // Orbiting crystal orbs
     this.orbGroup = new THREE.Group();
@@ -110,6 +126,11 @@ export class SpireCaster extends Enemy {
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2;
       this.addMesh(new THREE.OctahedronGeometry(0.22), this.coreMat, Math.sin(a) * 1.1, 0, Math.cos(a) * 1.1, this.orbGroup);
+    }
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+      const chip = this.addMesh(new THREE.TetrahedronGeometry(0.08), trimMat, Math.sin(a) * 1.36, Math.cos(a * 2) * 0.16, Math.cos(a) * 1.36, this.orbGroup);
+      chip.rotation.set(a, a * 1.7, 0);
     }
 
     this.lastPlayer.set(ctx.player.pos.x, ctx.player.pos.z);
@@ -412,6 +433,20 @@ export class SpireCaster extends Enemy {
     this.shardRing.rotation.y -= dt * (0.8 + this.phase * 0.4);
     this.coreMat.emissiveIntensity = 2.4 + Math.sin(this.t * (2 + this.phase)) * 0.8;
     this.pos.y = Math.sin(this.t * 1.8) * 0.12;
+    this.crownOrb.scale.setScalar(1 + Math.sin(this.t * 2.4) * 0.045);
+    for (let i = 0; i < this.haloRings.length; i++) {
+      const ring = this.haloRings[i];
+      ring.rotation.z += dt * (0.22 + i * 0.09) * (i % 2 === 0 ? 1 : -1);
+    }
+    for (let i = 0; i < this.finPanels.length; i++) {
+      const panel = this.finPanels[i];
+      panel.rotation.x = Math.sin(this.t * 1.7 + i) * 0.045;
+      panel.scale.y = 1 + Math.sin(this.t * 2.2 + i * 0.8) * 0.035;
+    }
+    for (let i = 0; i < this.robeStrips.length; i++) {
+      const strip = this.robeStrips[i];
+      strip.scale.y = 1 + Math.sin(this.t * 1.35 + i) * 0.025;
+    }
 
     // Player velocity estimate (for convergence leads)
     const vx = (p.pos.x - this.lastPlayer.x) / Math.max(dt, 0.001);

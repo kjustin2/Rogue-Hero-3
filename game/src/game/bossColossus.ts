@@ -67,8 +67,12 @@ export class Colossus extends Enemy {
   private coreMat: THREE.MeshStandardMaterial;
   private veinMat: THREE.MeshStandardMaterial;
   private slagMat: THREE.MeshStandardMaterial;
+  private core: THREE.Mesh;
   private fistL: THREE.Mesh;
   private fistR: THREE.Mesh;
+  private crownBand: THREE.Mesh;
+  private heatVents: THREE.Object3D[] = [];
+  private armorBands: THREE.Object3D[] = [];
   private fistAnim = 0;
   // Per-phase appearance escalation (built once, revealed on transition).
   private p2Plates: THREE.Object3D[] = [];
@@ -92,7 +96,9 @@ export class Colossus extends Enemy {
     const body = this.addMesh(new THREE.CylinderGeometry(1.4, 2.3, 3.6, 7), slagMat, 0, 1.8);
     body.castShadow = true;
     this.addMesh(new THREE.CylinderGeometry(1.1, 1.5, 1.0, 7), plateMat, 0, 3.9);
-    this.addMesh(new THREE.SphereGeometry(0.55, 8, 6), this.coreMat, 0, 2.4, 1.85);
+    this.core = this.addMesh(new THREE.SphereGeometry(0.55, 8, 6), this.coreMat, 0, 2.4, 1.85);
+    this.addMesh(new THREE.TorusGeometry(0.72, 0.055, 6, 24), this.veinMat, 0, 2.4, 1.86).rotation.x = Math.PI / 2;
+    this.addMesh(new THREE.BoxGeometry(0.18, 0.7, 0.16), this.veinMat, 0, 1.78, 1.88);
     // Eyes must clear the faceted head surface (facet depth 1.10–1.22 here)
     this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.14), eyeMat, -0.45, 4.1, 1.32);
     this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.14), eyeMat, 0.45, 4.1, 1.32);
@@ -103,6 +109,17 @@ export class Colossus extends Enemy {
       v.position.set(Math.sin(a) * 1.75, 1.4 + Math.random() * 0.8, Math.cos(a) * 1.75);
       v.rotation.z = (Math.random() - 0.5) * 0.5;
     }
+    // Broken outer armor bands make the mountain read as layered slag plates.
+    for (let row = 0; row < 3; row++) {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2 + row * 0.28;
+        const r = 1.35 + row * 0.18;
+        const band = this.addMesh(new THREE.BoxGeometry(0.54, 0.18, 0.28), plateMat, Math.sin(a) * r, 1.04 + row * 0.62, Math.cos(a) * r);
+        band.rotation.y = a;
+        band.rotation.x = 0.12;
+        this.armorBands.push(band);
+      }
+    }
     // Fists on heavy arms
     const armMat = this.stdMat(0x1d1410, 0x331105, 0.3);
     this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, -2.6, 2.6, 0.3).rotation.z = 0.25;
@@ -112,15 +129,28 @@ export class Colossus extends Enemy {
     for (const sx of [-1, 1]) {
       const vent = this.addMesh(new THREE.BoxGeometry(0.4, 0.25, 0.75), this.coreMat, sx * 1.45, 3.32, 1.15);
       vent.rotation.z = sx * -0.22;
+      this.heatVents.push(vent);
+      const sideVent = this.addMesh(new THREE.BoxGeometry(0.22, 0.52, 0.18), this.veinMat, sx * 1.72, 2.1, 1.1);
+      sideVent.rotation.z = sx * -0.18;
+      this.heatVents.push(sideVent);
       for (let i = 0; i < 3; i++) {
         const knuckle = this.addMesh(new THREE.BoxGeometry(0.38, 0.18, 0.32), this.veinMat, sx * (2.68 + i * 0.28), 1.65, 1.08);
         knuckle.rotation.y = sx * 0.12;
       }
       const shoulderSlab = this.addMesh(new THREE.BoxGeometry(0.74, 0.44, 0.72), plateMat, sx * 1.85, 3.02, 0.12);
       shoulderSlab.rotation.z = sx * -0.35;
+      this.armorBands.push(shoulderSlab);
     }
-    const crownBand = this.addMesh(new THREE.TorusGeometry(1.25, 0.055, 6, 36), this.veinMat, 0, 3.75);
-    crownBand.rotation.x = Math.PI / 2;
+    this.crownBand = this.addMesh(new THREE.TorusGeometry(1.25, 0.055, 6, 36), this.veinMat, 0, 3.75);
+    this.crownBand.rotation.x = Math.PI / 2;
+    const crownShardMat = this.stdMat(0x211008, 0xff7733, 1.0);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      const shard = this.addMesh(new THREE.BoxGeometry(0.16, 0.55, 0.2), crownShardMat, Math.sin(a) * 1.15, 4.05, Math.cos(a) * 1.15);
+      shard.rotation.y = a;
+      shard.rotation.x = 0.25;
+      this.armorBands.push(shard);
+    }
 
     this.patchGeo = new THREE.CircleGeometry(1.3, 24);
     this.patchGeo.rotateX(-Math.PI / 2);
@@ -399,12 +429,27 @@ export class Colossus extends Enemy {
     this.facePlayer(dt * 0.7);
     this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.6 + Math.sin(this.t * (1.5 + this.phase)) * 0.8;
     this.veinMat.emissiveIntensity = 1.6 + Math.sin(this.t * 2.3) * 0.5;
+    const corePulse = 1 + Math.sin(this.t * (1.7 + this.phase * 0.35)) * 0.055;
+    this.core.scale.set(corePulse, corePulse, 1 + (corePulse - 1) * 1.35);
+    this.crownBand.rotation.z += dt * (0.12 + this.phase * 0.04);
+    for (let i = 0; i < this.heatVents.length; i++) {
+      const vent = this.heatVents[i];
+      vent.scale.z = 1 + Math.sin(this.t * 3.1 + i) * 0.12;
+      vent.scale.y = 1 + Math.sin(this.t * 2.2 + i * 0.5) * 0.05;
+    }
+    for (let i = 0; i < this.armorBands.length; i++) {
+      const band = this.armorBands[i];
+      band.rotation.x += Math.sin(this.t * 0.9 + i) * dt * 0.015;
+    }
 
     // Fist slam animation
     this.fistAnim = Math.max(0, this.fistAnim - dt * 2.2);
     const fistY = 1.0 + Math.sin(this.fistAnim * Math.PI) * 1.6;
     this.fistL.position.y = fistY;
     this.fistR.position.y = fistY;
+    const fistSquash = Math.sin(this.fistAnim * Math.PI);
+    this.fistL.scale.set(1 + fistSquash * 0.08, 1 - fistSquash * 0.05, 1 + fistSquash * 0.08);
+    this.fistR.scale.copy(this.fistL.scale);
 
     // Pending pounds / mines / rings always advance
     for (let i = this.pounds.length - 1; i >= 0; i--) {

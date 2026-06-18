@@ -1238,9 +1238,11 @@ export class Menus {
 
   private cardEl(card: CardDef, onClick: () => void, mini = false): HTMLElement {
     const el = document.createElement("div");
-    el.className = `card${card.rarity === "rare" ? " card--rare" : ""}${mini ? " card--mini" : ""}`;
+    el.className = `card card--id-${card.id}${card.rarity === "rare" ? " card--rare" : ""}${mini ? " card--mini" : ""}`;
+    el.dataset.cardId = card.id;
     el.style.setProperty("--accent", card.color);
     el.innerHTML = `
+      <div class="card__sigil" aria-hidden="true"><span></span><i></i><b></b></div>
       <div class="card__meta">${card.rarity}</div>
       <div class="card__icon">${card.icon}</div>
       <div class="card__name">${card.name}</div>

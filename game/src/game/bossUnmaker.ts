@@ -105,6 +105,10 @@ export class Unmaker extends Enemy {
   private rings: THREE.Group;
   private debris: THREE.Group;
   private core: THREE.Mesh;
+  private innerCore: THREE.Mesh;
+  private cageStruts: THREE.Object3D[] = [];
+  private shroudShards: THREE.Object3D[] = [];
+  private quietHalo: THREE.Object3D[] = [];
   // Per-phase escalation geometry (built once, unveiled on transition).
   private p2Shards: THREE.Object3D[] = [];
   private p3Spikes: THREE.Object3D[] = [];
@@ -125,7 +129,10 @@ export class Unmaker extends Enemy {
     this.core = this.addMesh(new THREE.IcosahedronGeometry(1.0, 1), this.coreMat, 0, 2.2);
     this.core.castShadow = false;
     // A bright inner pip so the core reads as a star, not a ball
-    this.addMesh(new THREE.OctahedronGeometry(0.5), this.coreMat, 0, 2.2);
+    this.innerCore = this.addMesh(new THREE.OctahedronGeometry(0.5), this.coreMat, 0, 2.2);
+    const innerHalo = this.addMesh(new THREE.TorusGeometry(1.12, 0.035, 6, 36), this.coreMat, 0, 2.2);
+    innerHalo.rotation.set(1.05, 0.22, 0.35);
+    this.quietHalo.push(innerHalo);
 
     // Dark broken cage struts hemming the core
     for (let i = 0; i < 5; i++) {
@@ -133,12 +140,14 @@ export class Unmaker extends Enemy {
       const strut = this.addMesh(new THREE.BoxGeometry(0.16, 2.2, 0.16), this.cageMat, Math.sin(a) * 1.05, 2.2, Math.cos(a) * 1.05);
       strut.rotation.x = Math.sin(a) * 0.22;
       strut.rotation.z = Math.cos(a) * 0.22;
+      this.cageStruts.push(strut);
     }
     // Jagged shroud shards clinging around the core
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2 + 0.3;
       const sh = this.addMesh(new THREE.TetrahedronGeometry(0.4), this.cageMat, Math.sin(a) * 1.3, 2.2 + Math.cos(a * 1.7) * 0.5, Math.cos(a) * 1.3);
       sh.rotation.set(a, a * 1.3, a * 0.7);
+      this.shroudShards.push(sh);
     }
     // Anchoring skirt
     this.addMesh(new THREE.CylinderGeometry(0.5, 1.4, 0.9, 6), this.cageMat, 0, 0.5);
@@ -155,6 +164,7 @@ export class Unmaker extends Enemy {
     r2.rotation.x = 1.1;
     const r3 = this.addMesh(new THREE.TorusGeometry(1.75, 0.055, 6, 40, Math.PI * 1.75), this.coreMat, 0, 0, 0, this.rings);
     r3.rotation.set(0.85, 0.35, 1.2);
+    this.quietHalo.push(r1, r2, r3);
     for (let i = 0; i < 5; i++) {
       const a = (i / 5) * Math.PI * 2 + 0.2;
       const spike = this.addMesh(new THREE.ConeGeometry(0.1, 0.82, 4), this.ringMat, Math.sin(a) * 2.15, Math.cos(a * 2) * 0.25, Math.cos(a) * 2.15, this.rings);
@@ -170,6 +180,12 @@ export class Unmaker extends Enemy {
       const rr = 2.9 + (i % 3) * 0.4;
       const piece = this.addMesh(new THREE.OctahedronGeometry(0.22 + (i % 2) * 0.1), this.debrisMat, Math.sin(a) * rr, Math.sin(a * 2) * 0.5, Math.cos(a) * rr, this.debris);
       piece.rotation.set(a, a * 1.5, 0);
+    }
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2 + 0.12;
+      const rr = 2.15 + (i % 4) * 0.28;
+      const shard = this.addMesh(new THREE.TetrahedronGeometry(0.09 + (i % 2) * 0.04), this.debrisMat, Math.sin(a) * rr, Math.cos(a * 3) * 0.35, Math.cos(a) * rr, this.debris);
+      shard.rotation.set(a * 0.4, a * 1.8, a);
     }
 
     this.buildPhaseLooks();
@@ -541,6 +557,21 @@ export class Unmaker extends Enemy {
     }
     this.rings.rotation.x = Math.sin(this.t * 0.6) * 0.2;
     this.pos.y = 0.4 + Math.sin(this.t * 1.4) * 0.16;
+    this.core.rotation.y += dt * (this.phase >= 4 ? 0.08 : 0.22 + this.phase * 0.04);
+    this.innerCore.rotation.y -= dt * (this.phase >= 4 ? 0.12 : 0.55 + this.phase * 0.1);
+    this.innerCore.scale.setScalar(this.phase >= 4 ? 0.82 + Math.sin(this.t * 1.2) * 0.035 : 1 + Math.sin(this.t * 3.6) * 0.07);
+    for (let i = 0; i < this.cageStruts.length; i++) {
+      const strut = this.cageStruts[i];
+      strut.rotation.y = Math.sin(this.t * 0.85 + i) * (this.phase >= 4 ? 0.025 : 0.08);
+    }
+    for (let i = 0; i < this.shroudShards.length; i++) {
+      const shard = this.shroudShards[i];
+      shard.scale.setScalar(1 + Math.sin(this.t * 1.9 + i) * (this.phase >= 4 ? 0.025 : 0.07));
+    }
+    for (let i = 0; i < this.quietHalo.length; i++) {
+      const ring = this.quietHalo[i];
+      ring.rotation.z += dt * (this.phase >= 4 ? 0.025 : 0.12 + i * 0.02);
+    }
 
     // Queued attacks always advance — even mid-freeze or phase shift.
     for (let i = this.novas.length - 1; i >= 0; i--) {

@@ -25,7 +25,7 @@ export class Hud {
   private roomName!: HTMLElement;
   private roomProgress!: HTMLElement;
   private pips: HTMLElement[] = [];
-  private slotEls: { el: HTMLElement; icon: HTMLElement; name: HTMLElement; cd: HTMLElement; cdnum: HTMLElement }[] = [];
+  private slotEls: { el: HTMLElement; icon: HTMLElement; name: HTMLElement; sigil: HTMLElement; cd: HTMLElement; cdnum: HTMLElement }[] = [];
   private tempoDial!: HTMLElement;
   private tempoValue!: HTMLElement;
   private tempoZoneName!: HTMLElement;
@@ -155,6 +155,7 @@ export class Hud {
       el.className = "slot slot--empty";
       el.innerHTML = `
         <div class="slot__key">${i + 1}</div>
+        <div class="slot__sigil" aria-hidden="true"><span></span><i></i><b></b></div>
         <div class="slot__icon"></div>
         <div class="slot__name"></div>
         <div class="slot__cd" style="--cd:0%"></div>
@@ -165,6 +166,7 @@ export class Hud {
         el,
         icon: el.querySelector(".slot__icon") as HTMLElement,
         name: el.querySelector(".slot__name") as HTMLElement,
+        sigil: el.querySelector(".slot__sigil") as HTMLElement,
         cd: el.querySelector(".slot__cd") as HTMLElement,
         cdnum: el.querySelector(".slot__cdnum") as HTMLElement,
       });
@@ -429,13 +431,18 @@ export class Hud {
       const id = card?.id ?? null;
       const up = deck.upgraded[i];
       if (id !== this.lastSlotIds[i] || up !== this.lastUpgraded[i]) {
+        const prevId = this.lastSlotIds[i];
+        if (prevId) s.el.classList.remove(`slot--card-${prevId}`);
         this.lastSlotIds[i] = id;
         this.lastUpgraded[i] = up;
         s.el.classList.toggle("slot--empty", !card);
         s.el.classList.toggle("slot--honed", !!card && up);
+        s.el.dataset.cardId = id ?? "";
+        if (id) s.el.classList.add(`slot--card-${id}`);
         s.icon.textContent = card?.icon ?? "";
         s.name.textContent = card ? (up ? `${card.name} +` : card.name) : "";
         s.el.style.setProperty("--accent", card?.color ?? "rgba(255,255,255,0.2)");
+        s.sigil.style.display = card ? "" : "none";
       }
       if (card) {
         const cd = deck.cooldowns[i];

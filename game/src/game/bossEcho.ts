@@ -37,7 +37,12 @@ export class RiftEcho extends Enemy {
 
   private coreMat: THREE.MeshStandardMaterial;
   private ringMat: THREE.MeshStandardMaterial;
+  private echoTrailMat: THREE.MeshStandardMaterial;
+  private core: THREE.Mesh;
+  private innerCore: THREE.Mesh;
   private rings: THREE.Group;
+  private mirrorShards: THREE.Object3D[] = [];
+  private phaseShards: THREE.Object3D[] = [];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -48,24 +53,34 @@ export class RiftEcho extends Enemy {
 
     this.coreMat = this.stdMat(0x0a1626, ECHO_CORE, 2.6);
     this.ringMat = this.stdMat(0x0a1422, ECHO_EDGE, 1.4);
+    this.echoTrailMat = this.stdMat(0x06111f, ECHO_CORE, 1.1);
+    this.echoTrailMat.transparent = true;
+    this.echoTrailMat.opacity = 0.28;
 
     // A bright crystalline core
-    this.addMesh(new THREE.OctahedronGeometry(0.8, 0), this.coreMat, 0, 2.0);
-    this.addMesh(new THREE.OctahedronGeometry(0.45, 0), this.coreMat, 0, 2.0);
+    this.core = this.addMesh(new THREE.OctahedronGeometry(0.8, 0), this.coreMat, 0, 2.0);
+    this.innerCore = this.addMesh(new THREE.OctahedronGeometry(0.45, 0), this.coreMat, 0, 2.0);
     // Cage of spectral blades
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2;
       const blade = this.addMesh(new THREE.ConeGeometry(0.12, 1.3, 4), this.ringMat, Math.sin(a) * 0.9, 2.0, Math.cos(a) * 0.9);
       blade.rotation.set(Math.PI, a, 0);
+      this.mirrorShards.push(blade);
     }
     this.addMesh(new THREE.CylinderGeometry(0.4, 1.1, 0.7, 6), this.ringMat, 0, 0.4);
     for (const sx of [-1, 1]) {
       const wing = this.addMesh(new THREE.BoxGeometry(0.12, 1.0, 0.34), this.ringMat, sx * 0.9, 1.55, -0.12);
       wing.rotation.z = sx * -0.42;
       wing.rotation.y = sx * 0.22;
+      this.mirrorShards.push(wing);
       const dagger = this.addMesh(new THREE.ConeGeometry(0.08, 0.9, 4), this.coreMat, sx * 0.62, 1.05, 0.62);
       dagger.rotation.x = Math.PI / 2;
       dagger.rotation.z = sx * 0.2;
+      this.mirrorShards.push(dagger);
+      const afterimage = this.addMesh(new THREE.BoxGeometry(0.08, 1.15, 0.26), this.echoTrailMat, sx * 1.12, 1.35, -0.34);
+      afterimage.rotation.z = sx * -0.28;
+      afterimage.rotation.y = sx * 0.32;
+      this.mirrorShards.push(afterimage);
     }
 
     // Counter-spinning ring
@@ -76,6 +91,13 @@ export class RiftEcho extends Enemy {
     r1.rotation.x = Math.PI / 2;
     const r2 = this.addMesh(new THREE.TorusGeometry(1.18, 0.035, 6, 32), this.coreMat, 0, 0, 0, this.rings);
     r2.rotation.set(1.0, 0.25, 0.6);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
+      const shard = this.addMesh(new THREE.TetrahedronGeometry(0.16), this.coreMat, Math.sin(a) * 1.42, 2.0 + Math.cos(a * 2) * 0.22, Math.cos(a) * 1.42);
+      shard.rotation.set(a, a * 1.3, 0);
+      shard.visible = false;
+      this.phaseShards.push(shard);
+    }
   }
 
   protected deathColor(): number { return ECHO_CORE; }
@@ -89,6 +111,8 @@ export class RiftEcho extends Enemy {
       this.state = "phaseShift";
       this.timer = 1.1;
       this.speed = 6.2;
+      this.root.scale.setScalar(1.08);
+      for (const shard of this.phaseShards) shard.visible = true;
       this.coreMat.emissive.set(0xffffff);
       this.coreMat.emissiveIntensity = 3.4;
       this.ringMat.emissive.set(ECHO_CORE);
@@ -172,6 +196,19 @@ export class RiftEcho extends Enemy {
     this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.4 + Math.sin(this.t * 4) * 0.6;
     this.rings.rotation.y += dt * (1.5 + this.phase);
     this.pos.y = 0.3 + Math.sin(this.t * 2) * 0.12;
+    this.core.rotation.y += dt * (0.8 + this.phase * 0.3);
+    this.innerCore.rotation.y -= dt * (1.1 + this.phase * 0.4);
+    this.innerCore.scale.setScalar(1 + Math.sin(this.t * 5.2) * 0.075);
+    this.echoTrailMat.opacity = this.phase >= 2 ? 0.3 + Math.sin(this.t * 4.5) * 0.08 : 0.2 + Math.sin(this.t * 3.2) * 0.045;
+    for (let i = 0; i < this.mirrorShards.length; i++) {
+      const shard = this.mirrorShards[i];
+      shard.scale.y = 1 + Math.sin(this.t * 2.8 + i * 0.7) * 0.045;
+    }
+    for (let i = 0; i < this.phaseShards.length; i++) {
+      const shard = this.phaseShards[i];
+      shard.rotation.y += dt * (0.55 + i * 0.04);
+      shard.scale.setScalar(1 + Math.sin(this.t * 3.1 + i) * 0.06);
+    }
 
     for (let i = this.novas.length - 1; i >= 0; i--) {
       this.novas[i].timer -= dt;
