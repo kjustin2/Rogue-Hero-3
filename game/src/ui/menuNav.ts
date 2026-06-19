@@ -27,6 +27,11 @@ export class MenuNav {
 
   /** Called every frame while not in active gameplay. No-op without a controller. */
   update(dt: number): void {
+    if (!this.input.gamepadConnected || !this.input.usingGamepad) {
+      if (this.current) this.setCurrent(null); // hand control back to the mouse
+      return;
+    }
+
     const screen = document.querySelector<HTMLElement>(".screen");
     if (screen !== this.root) {
       this.root = screen;
@@ -35,11 +40,6 @@ export class MenuNav {
       this.repeatTimer = 0;
     }
     if (!this.root) return;
-
-    if (!this.input.gamepadConnected || !this.input.usingGamepad) {
-      if (this.current) this.setCurrent(null); // hand control back to the mouse
-      return;
-    }
 
     // Story cutscenes: A advances to the next line, B skips the whole thing — no ring.
     if (this.root.classList.contains("story")) {

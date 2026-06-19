@@ -37,6 +37,7 @@ export class Particles {
   private lifeTotal: Float32Array;
   private gravity: Float32Array;
   private drag: Float32Array;
+  private tmpColor = new THREE.Color();
   private cursor = 0;
   private points: THREE.Points;
 
@@ -154,8 +155,7 @@ export class Particles {
     const gravity = opts.gravity ?? -9;
     const drag = opts.drag ?? 2.5;
     const jitter = opts.jitter ?? 0.15;
-    const palette = Array.isArray(opts.color) ? opts.color : [opts.color];
-    const tmp = new THREE.Color();
+    const palette = Array.isArray(opts.color) ? opts.color : null;
 
     for (let n = 0; n < opts.count; n++) {
       const i = this.cursor;
@@ -180,10 +180,11 @@ export class Particles {
       this.velocities[i3 + 1] = dy;
       this.velocities[i3 + 2] = dz;
 
-      tmp.set(palette[Math.floor(Math.random() * palette.length)]);
-      this.colors[i3] = tmp.r;
-      this.colors[i3 + 1] = tmp.g;
-      this.colors[i3 + 2] = tmp.b;
+      const color = palette ? palette[Math.floor(Math.random() * palette.length)] : opts.color as number;
+      this.tmpColor.set(color);
+      this.colors[i3] = this.tmpColor.r;
+      this.colors[i3 + 1] = this.tmpColor.g;
+      this.colors[i3 + 2] = this.tmpColor.b;
 
       this.sizes[i] = size[0] + Math.random() * (size[1] - size[0]);
       const lf = life[0] + Math.random() * (life[1] - life[0]);

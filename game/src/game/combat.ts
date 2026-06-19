@@ -239,11 +239,29 @@ export class Combat {
   private enemyHitFx(e: Enemy, opts: DamageOpts, color: number, critical: boolean, killed: boolean): void {
     const armored = e.kind === "bastion" || e.kind === "sentinel" || e.kind === "brute" || e.kind === "mirror";
     const voidTouched = e.kind === "shade" || e.kind === "voidling" || e.kind === "warper" || e.kind === "boss";
+    const p = this.ctx.player;
+    const dx = e.pos.x - p.pos.x;
+    const dz = e.pos.z - p.pos.z;
+    const dl = Math.hypot(dx, dz) || 1;
+    const ix = e.pos.x - (dx / dl) * e.radius * 0.45;
+    const iz = e.pos.z - (dz / dl) * e.radius * 0.45;
     const palette = armored
       ? [0xffe0a0, 0xffffff, color]
       : voidTouched
         ? [0x9a5cff, 0xe8e0ff, color]
         : [0xffeeaa, color, critical ? 0xffffff : color];
+    this.ctx.fx.burst({
+      x: ix, y: armored ? 1.1 : 0.9, z: iz,
+      count: opts.heavy ? 12 : critical ? 10 : 6,
+      color: [0xffffff, opts.heavy ? 0xffcc66 : color],
+      speed: [1.5, opts.heavy || critical ? 9 : 6],
+      up: 0.25,
+      size: [0.16, opts.heavy ? 0.52 : 0.36],
+      life: [0.08, 0.22],
+      gravity: -5,
+      drag: 5,
+      jitter: 0.08,
+    });
     const count = killed ? 22 : opts.heavy ? 18 : critical ? 14 : 8;
     this.ctx.fx.burst({
       x: e.pos.x, y: armored ? 1.15 : voidTouched ? 1.08 : 1.0, z: e.pos.z,

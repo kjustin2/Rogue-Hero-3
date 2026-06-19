@@ -49,7 +49,7 @@ check("Attack charges when held", isCharged);
 check("Charged heavy strikes a foe ahead", heavy.dmgd < hpBefore || heavy.dmgd === -99);
 check("Charged heavy leaves the foe Vulnerable", heavy.vuln || heavy.dmgd === -99);
 
-// --- Parry: start a swing, then take a frontal blow within the opening window
+// --- Parry: start a swing, then take a frontal parryable hit within the opening window
 const parry = await page.evaluate(() => {
   const c = window.__rh3;
   return new Promise((res) => {
@@ -62,7 +62,7 @@ const parry = await page.evaluate(() => {
         const hp0 = c.player.hp, t0 = c.tempo.value;
         const sx = c.player.pos.x + Math.sin(c.player.facing) * 5;
         const sz = c.player.pos.z + Math.cos(c.player.facing) * 5;
-        const result = c.combat.damagePlayer(20, sx, sz);
+        const result = c.combat.damagePlayer(20, sx, sz, { parryable: true });
         res({ active, result, noHpLoss: c.player.hp >= hp0, tempoUp: c.tempo.value > t0 });
       }, 50);
     }, 30);

@@ -218,6 +218,22 @@ const unlock = () => {
 window.addEventListener("pointerdown", unlock);
 window.addEventListener("keydown", unlock);
 
+let combatWarmupDone = false;
+let combatWarmupScheduled = false;
+function warmCombatShaders(): void {
+  if (combatWarmupDone) return;
+  combatWarmupDone = true;
+  combatWarmupScheduled = false;
+  ctx.caster.precompile();
+  ctx.enemies.precompile();
+}
+
+function scheduleCombatWarmup(): void {
+  if (combatWarmupDone || combatWarmupScheduled) return;
+  combatWarmupScheduled = true;
+  window.setTimeout(() => warmCombatShaders(), 140);
+}
+
 // ---------------------------------------------------------------- state flow
 function startRun(hero: HeroDef, resume?: RunSave): void {
   menus.clear();
@@ -262,6 +278,7 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
     ctx.cam.mode = "follow";
     hud.setVisible(true);
     presentFork();
+    scheduleCombatWarmup();
     return;
   }
 
@@ -321,6 +338,7 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
     hud.setVisible(true);
     presentFork();
   });
+  scheduleCombatWarmup();
 }
 
 /**
@@ -396,6 +414,7 @@ function enterCurrentNode(): void {
         hud.setVisible(true);
         state = "playing";
         ctx.input.enabled = true;
+        warmCombatShaders();
         ctx.run.loadCurrentNode();
       };
       // Crossing into a new act (2+) plays a short story cutscene before the fight.
@@ -485,6 +504,7 @@ function abandonRun(): void {
 function startTutorial(): void {
   menus.clear();
   ctx.sfx.stopAmbient();
+  warmCombatShaders();
   inTutorial = true;
   currentRunDaily = false;
   ctx.stats = freshStats();
@@ -549,7 +569,9 @@ function toMenu(): void {
   ctx.arena.applyTheme(THEMES.rift);
   ctx.cam.snapTo(0, 5.2);
   ctx.fx.ambientColor = THEMES.rift.ember;
-  ctx.fx.ambientRate = 10;
+  // The drifting embers are a big part of the menu's "deep rift" backdrop — keep
+  // them rich (the pool is a single draw call); only trim slightly on the low preset.
+  ctx.fx.ambientRate = menus.settings.quality === "low" ? 7 : 10;
   hud.setVisible(false);
   menus.showMain();
   musicLament = false;
@@ -1377,6 +1399,14 @@ window.addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- frame loop
 let last = performance.now();
+// While a menu/overlay is up the scene is near-static, so we render it at a
+// capped rate (logic + input still poll every vsync) — a still title screen has
+// no reason to redraw 120–144×/sec and that's exactly where weak GPUs choke.
+let menuRenderAccum = 0;
+// Cap menu/overlay redraws so a high-refresh panel doesn't redraw a near-static
+// screen 144×/sec. 40fps is smooth for the slow orbiting backdrop + twinkling sky
+// (the orbit turns ~0.1°/frame) while keeping the per-frame cost well clear of stalls.
+const MENU_FRAME = 1 / 40;
 const trailTip = new THREE.Vector3();
 const trailBase = new THREE.Vector3();
 
@@ -1455,13 +1485,23 @@ ctx.stage.renderer.setAnimationLoop(() => {
   ctx.tele.update(dt);
   ctx.cam.update(dt);
   ctx.stage.update(dt);
-  ctx.stage.render(dt);
+
+  // Combat + cinematics get the full post chain at full rate; menus/overlays get
+  // the lean chain (no bloom/SMAA/grain/shadows) rendered at a capped frame rate.
+  const cinematic = ctx.playing || state === "cutscene";
+  ctx.stage.setLowCost(!cinematic);
+  if (cinematic) {
+    ctx.stage.render(dt);
+    menuRenderAccum = 0;
+  } else {
+    menuRenderAccum += dt;
+    if (menuRenderAccum >= MENU_FRAME) {
+      ctx.stage.render(menuRenderAccum);
+      menuRenderAccum = 0;
+    }
+  }
   ctx.input.endFrame();
 });
-
-// Pre-compile all pooled combat shaders AND every roster enemy's materials so the
-// first boss shot / cast / enemy spawn never stalls on a real GPU.
-ctx.enemies.precompile();
 
 // Boot into the menu
 toMenu();

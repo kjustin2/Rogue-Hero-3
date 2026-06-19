@@ -4,6 +4,8 @@ import { heroById, type HeroDef } from "./heroes";
 import { DEFAULT_COSMETICS, cosmeticById } from "./cosmetics";
 import type { Ctx } from "./ctx";
 
+const HERO_VISUAL_SCALE = 1.2;
+
 /**
  * The hero: stats + a fully procedural low-poly knight, rebuilt from any
  * HeroDef palette + cosmetic colors. No asset files — flat-shaded boxes with
@@ -47,6 +49,9 @@ export class Player {
   private crashRingMat!: THREE.MeshBasicMaterial;
   private crashFillMat!: THREE.MeshBasicMaterial;
   private wasCrashReady = false;
+  private visualHeroId = "";
+  private visualCapeId = "";
+  private visualBladeId = "";
 
   // Animation inputs (set by controller/combat each frame)
   animMoveAmount = 0;
@@ -59,13 +64,16 @@ export class Player {
   private moveBlend = 0;
   private moveSide = 0;
   private moveForward = 0;
+  private accelPose = 0;
+  private stopPose = 0;
+  private lastMoveBlend = 0;
   private visualFacing = 0;
   private t = 0;
   private hitFlash = 0;
 
   constructor(private ctx: Ctx) {
     this.root = new THREE.Group();
-    this.root.scale.setScalar(1.12);
+    this.root.scale.setScalar(HERO_VISUAL_SCALE);
     ctx.stage.scene.add(this.root);
     this.applyHero(this.hero, DEFAULT_COSMETICS.cape, DEFAULT_COSMETICS.blade);
   }
@@ -76,6 +84,14 @@ export class Player {
     this.maxHp = hero.maxHp;
     const capeColor = cosmeticById(capeId).color;
     this.bladeColor = cosmeticById(bladeId).color;
+    if (
+      this.visualHeroId === hero.id &&
+      this.visualCapeId === capeId &&
+      this.visualBladeId === bladeId &&
+      this.root.children.length > 0
+    ) {
+      return;
+    }
 
     // Dispose previous build
     this.root.traverse((o) => {
@@ -542,8 +558,11 @@ export class Player {
     this.crashRing.add(new THREE.Mesh(crashFillGeo, this.crashFillMat));
     this.crashRing.position.y = 0.04;
     this.crashRing.visible = false;
-    this.crashRing.scale.setScalar(1 / 1.12);
+    this.crashRing.scale.setScalar(1 / HERO_VISUAL_SCALE);
     this.root.add(this.crashRing);
+    this.visualHeroId = hero.id;
+    this.visualCapeId = capeId;
+    this.visualBladeId = bladeId;
   }
 
   flashHit(): void {
@@ -569,7 +588,7 @@ export class Player {
       }
     });
     ghost.position.copy(this.pos);
-    ghost.scale.multiplyScalar(1.12);
+    ghost.scale.multiplyScalar(HERO_VISUAL_SCALE);
     ghost.rotation.y = this.root.rotation.y;
     this.ctx.stage.scene.add(ghost);
     const start = performance.now();
@@ -637,9 +656,17 @@ export class Player {
       this.visualFacing = rollYaw;
       this.root.rotation.y = rollYaw;
       this.rollGroup.rotation.x = ease.outCubic(d.phase) * TAU;
-      this.body.rotation.set(0, 0, 0);
-      this.torso.rotation.set(0, 0, 0);
-      this.cape.rotation.x = 0.9;
+      const tuck = Math.sin(d.phase * Math.PI);
+      this.body.position.y = damp(this.body.position.y, -0.6 + tuck * 0.12, 18, dt);
+      this.body.rotation.set(-0.24 * tuck, 0, 0.18 * Math.sin(d.phase * TAU));
+      this.torso.rotation.set(-0.18 * tuck, 0, -0.18 * tuck);
+      this.armR.rotation.x = -1.25 + tuck * 0.5;
+      this.armR.rotation.z = 0.45;
+      this.armL.rotation.x = -0.95;
+      this.armL.rotation.z = -0.38;
+      this.legR.rotation.x = 0.62 * tuck;
+      this.legL.rotation.x = -0.62 * tuck;
+      this.cape.rotation.x = 0.95 + tuck * 0.28;
       return;
     }
     this.rollGroup.rotation.x = damp(this.rollGroup.rotation.x % TAU, 0, 18, dt);
@@ -647,41 +674,65 @@ export class Player {
     this.root.rotation.y = this.visualFacing;
 
     // Locomotion
+    const prevMove = this.lastMoveBlend;
     this.moveBlend = damp(this.moveBlend, clamp01(this.animMoveAmount), 12, dt);
+    this.lastMoveBlend = this.moveBlend;
     this.moveSide = damp(this.moveSide, clamp(this.animMoveX, -1, 1), 10, dt);
     this.moveForward = damp(this.moveForward, clamp(this.animMoveZ, -1, 1), 10, dt);
     const moving = this.moveBlend;
     const side = this.moveSide;
     const forward = this.moveForward;
-    if (moving > 0.035) this.locoClock += dt * (7.0 + moving * 8.0);
+
+    const started = Math.max(0, moving - prevMove);
+    const stopped = Math.max(0, prevMove - moving);
+    this.accelPose = damp(this.accelPose, Math.min(1, started * 8), 8, dt);
+    this.stopPose = damp(this.stopPose, Math.min(1, stopped * 12), 10, dt);
+
+    const h = this.hero.id;
+    const gait =
+      h === "bulwark" ? { stride: 0.72, bob: 0.032, arm: 0.34, lean: 0.075, rate: 0.78, plant: 1.35 } :
+      h === "tempest" ? { stride: 1.16, bob: 0.034, arm: 0.52, lean: 0.095, rate: 1.28, plant: 0.88 } :
+      h === "sparkmage" ? { stride: 0.86, bob: 0.052, arm: 0.32, lean: 0.06, rate: 0.96, plant: 0.95 } :
+      h === "reaver" ? { stride: 0.98, bob: 0.05, arm: 0.56, lean: 0.12, rate: 1.02, plant: 1.12 } :
+      h === "revenant" ? { stride: 0.82, bob: 0.045, arm: 0.42, lean: 0.085, rate: 0.9, plant: 1.18 } :
+      { stride: 1.0, bob: 0.04, arm: 0.44, lean: 0.08, rate: 1.0, plant: 1.0 };
+
+    if (moving > 0.035) this.locoClock += dt * (5.6 + moving * 8.7) * gait.rate;
     const reversing = forward < -0.2 && Math.abs(forward) > Math.abs(side) * 0.75;
     const strideDir = reversing ? -1 : 1;
-    const swing = Math.sin(this.locoClock) * strideDir;
-    const liftR = Math.max(0, -swing) * moving;
-    const liftL = Math.max(0, swing) * moving;
-    const stepSnap = Math.abs(Math.cos(this.locoClock));
-    const bob = stepSnap * 0.045 * moving;
-    const idleBreath = Math.sin(this.t * 1.8) * 0.012 * (1 - moving * 0.55);
-    this.body.position.y = damp(this.body.position.y, -0.55 + bob + idleBreath, 18, dt);
-    this.body.rotation.x = damp(this.body.rotation.x, -Math.max(0, forward) * 0.045 * moving + Math.max(0, -forward) * 0.025 * moving, 11, dt);
-    this.body.rotation.z = damp(this.body.rotation.z, 0, 16, dt);
-    this.legR.rotation.x = damp(this.legR.rotation.x, swing * 0.82 * moving, 18, dt);
-    this.legL.rotation.x = damp(this.legL.rotation.x, -swing * 0.82 * moving, 18, dt);
-    this.legR.rotation.z = damp(this.legR.rotation.z, -liftR * 0.035, 14, dt);
-    this.legL.rotation.z = damp(this.legL.rotation.z, liftL * 0.035, 14, dt);
-    this.legR.position.y = damp(this.legR.position.y, 0.55 + liftR * 0.045, 18, dt);
-    this.legL.position.y = damp(this.legL.position.y, 0.55 + liftL * 0.045, 18, dt);
-    this.legR.position.z = damp(this.legR.position.z, swing * 0.055 * moving, 16, dt);
-    this.legL.position.z = damp(this.legL.position.z, -swing * 0.055 * moving, 16, dt);
-    this.armL.rotation.x = damp(this.armL.rotation.x, -swing * 0.48 * moving - 0.05, 14, dt);
-    this.armL.rotation.z = damp(this.armL.rotation.z, -0.08, 12, dt);
-    this.armL.rotation.y = damp(this.armL.rotation.y, side * 0.012 * moving, 12, dt);
+    const cycle = this.locoClock;
+    const swingRaw = Math.sin(cycle) * strideDir;
+    const swing = Math.tanh(swingRaw * gait.plant);
+    const liftR = Math.pow(Math.max(0, -Math.sin(cycle)), 1.8) * moving;
+    const liftL = Math.pow(Math.max(0, Math.sin(cycle)), 1.8) * moving;
+    const footPlant = Math.pow(Math.abs(Math.cos(cycle)), 6) * moving;
+    const stepSnap = Math.max(liftR, liftL) * 0.6 + footPlant * 0.35;
+    const bob = stepSnap * gait.bob * moving;
+    const idleBreath = Math.sin(this.t * (h === "revenant" ? 1.25 : 1.8)) * 0.012 * (1 - moving * 0.55);
+    const runLean = Math.max(0, forward) * gait.lean * moving + this.accelPose * 0.05 - this.stopPose * 0.04;
+    const backLean = Math.max(0, -forward) * 0.04 * moving;
+    const strafeLean = clamp(side, -1, 1) * 0.04 * moving;
 
-    // Cape: restrained lift with speed, no lateral sway.
-    const flap = Math.sin(this.t * 3.1) * 0.012 + Math.sin(this.locoClock * 0.5) * 0.018 * moving;
-    this.cape.rotation.x = damp(this.cape.rotation.x, 0.12 + moving * 0.22 + Math.max(0, -forward) * 0.08 + flap, 9, dt);
-    this.cape.rotation.z = damp(this.cape.rotation.z, 0, 10, dt);
-    this.cape.rotation.y = damp(this.cape.rotation.y, 0, 10, dt);
+    this.body.position.y = damp(this.body.position.y, -0.55 + bob + idleBreath, 18, dt);
+    this.body.rotation.x = damp(this.body.rotation.x, -runLean + backLean, 11, dt);
+    this.body.rotation.z = damp(this.body.rotation.z, -strafeLean, 13, dt);
+    this.legR.rotation.x = damp(this.legR.rotation.x, swing * 0.92 * moving * gait.stride - liftR * 0.22, 20, dt);
+    this.legL.rotation.x = damp(this.legL.rotation.x, -swing * 0.92 * moving * gait.stride - liftL * 0.22, 20, dt);
+    this.legR.rotation.z = damp(this.legR.rotation.z, -liftR * 0.07 - side * 0.08 * moving, 16, dt);
+    this.legL.rotation.z = damp(this.legL.rotation.z, liftL * 0.07 - side * 0.08 * moving, 16, dt);
+    this.legR.position.y = damp(this.legR.position.y, 0.55 + liftR * 0.075 - footPlant * 0.012, 20, dt);
+    this.legL.position.y = damp(this.legL.position.y, 0.55 + liftL * 0.075 - footPlant * 0.012, 20, dt);
+    this.legR.position.z = damp(this.legR.position.z, swing * 0.09 * moving * gait.stride + side * 0.028 * moving, 18, dt);
+    this.legL.position.z = damp(this.legL.position.z, -swing * 0.09 * moving * gait.stride + side * 0.028 * moving, 18, dt);
+    this.armL.rotation.x = damp(this.armL.rotation.x, -swing * gait.arm * moving - 0.08 - this.stopPose * 0.18, 14, dt);
+    this.armL.rotation.z = damp(this.armL.rotation.z, -0.11 - side * 0.08 * moving, 12, dt);
+    this.armL.rotation.y = damp(this.armL.rotation.y, side * 0.035 * moving, 12, dt);
+
+    // Cape: speed lift and restrained side response so it reads as cloth, not noise.
+    const flap = Math.sin(this.t * 3.1) * 0.012 + Math.sin(this.locoClock * 0.5) * 0.02 * moving;
+    this.cape.rotation.x = damp(this.cape.rotation.x, 0.12 + moving * 0.24 + Math.max(0, -forward) * 0.08 + this.accelPose * 0.12 + flap, 9, dt);
+    this.cape.rotation.z = damp(this.cape.rotation.z, -side * 0.045 * moving, 10, dt);
+    this.cape.rotation.y = damp(this.cape.rotation.y, side * 0.035 * moving, 10, dt);
 
     // Sword arm: swing animation overrides idle/run pose
     if (this.animSwing) {
@@ -693,6 +744,9 @@ export class Player {
         this.armR.rotation.z = k * 0.5;
         this.torso.rotation.y = k * (heavy ? 0.55 : 0.35);
         this.torso.rotation.x = -k * 0.08;
+        this.body.rotation.x = damp(this.body.rotation.x, -0.12 - (heavy ? 0.08 : 0), 16, dt);
+        this.armL.rotation.x = damp(this.armL.rotation.x, -0.45 - k * 0.3, 16, dt);
+        this.armL.rotation.z = damp(this.armL.rotation.z, -0.35, 16, dt);
       } else {
         // Strike: whip through with follow-through overshoot
         const k = ease.outQuart((phase - 0.22) / 0.78);
@@ -701,17 +755,20 @@ export class Player {
         this.armR.rotation.z = 0.5 - k * 0.7;
         this.torso.rotation.y = (heavy ? 0.55 : 0.35) - k * (heavy ? 1.0 : 0.7);
         this.torso.rotation.x = k * 0.14;
+        this.body.rotation.x = damp(this.body.rotation.x, heavy ? -0.18 + k * 0.12 : -0.1 + k * 0.08, 16, dt);
+        this.armL.rotation.x = damp(this.armL.rotation.x, -0.35 + k * 0.25, 16, dt);
+        this.armL.rotation.z = damp(this.armL.rotation.z, -0.28 + k * 0.18, 16, dt);
       }
       this.torso.rotation.z = damp(this.torso.rotation.z, 0, 12, dt);
       this.sword.rotation.x = -0.4;
     } else {
       // Idle/run arm pose, sword low at the side
-      this.armR.rotation.x = damp(this.armR.rotation.x, swing * 0.36 * moving - 0.14, 14, dt);
-      this.armR.rotation.z = damp(this.armR.rotation.z, 0.08, 14, dt);
-      this.armR.rotation.y = damp(this.armR.rotation.y, -side * 0.012 * moving, 12, dt);
+      this.armR.rotation.x = damp(this.armR.rotation.x, swing * gait.arm * 0.8 * moving - 0.16 - this.stopPose * 0.1, 14, dt);
+      this.armR.rotation.z = damp(this.armR.rotation.z, 0.09 + side * 0.05 * moving, 14, dt);
+      this.armR.rotation.y = damp(this.armR.rotation.y, -side * 0.035 * moving, 12, dt);
       this.torso.rotation.y = damp(this.torso.rotation.y, 0, 14, dt);
-      this.torso.rotation.x = damp(this.torso.rotation.x, 0.035 + Math.max(0, forward) * 0.045 * moving, 10, dt);
-      this.torso.rotation.z = damp(this.torso.rotation.z, 0, 14, dt);
+      this.torso.rotation.x = damp(this.torso.rotation.x, 0.035 + Math.max(0, forward) * 0.07 * moving + this.accelPose * 0.04 - this.stopPose * 0.03, 10, dt);
+      this.torso.rotation.z = damp(this.torso.rotation.z, -side * 0.035 * moving, 14, dt);
       this.sword.rotation.x = damp(this.sword.rotation.x, -0.15, 10, dt);
     }
   }

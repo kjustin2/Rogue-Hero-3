@@ -61,12 +61,40 @@ const SETTINGS_DEFAULTS: Settings = {
   reduceMotion: false, colorblind: false, brightness: 1, fov: 50, autoAim: true,
 };
 
+/**
+ * Best-guess starting quality for a *fresh* profile. Integrated GPUs and low
+ * core counts begin lighter so the menus don't lurch before the first fight —
+ * the default used to be a blind "high" (the heaviest post chain) for everyone.
+ * Players can still raise it in Settings; a saved choice always wins.
+ */
+function detectDefaultQuality(): Settings["quality"] {
+  try {
+    const cores = navigator.hardwareConcurrency || 4;
+    let renderer = "";
+    const cv = document.createElement("canvas");
+    const gl = (cv.getContext("webgl") || cv.getContext("experimental-webgl")) as WebGLRenderingContext | null;
+    if (gl) {
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      if (dbg) renderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    }
+    // Only genuinely weak / software setups start below "high" — the rich menu
+    // backdrop (bloom glow, aurora, embers) is worth keeping for any normal GPU,
+    // and the menu-mode render path already keeps "high" smooth here.
+    if (/SwiftShader|llvmpipe|Microsoft Basic|software/i.test(renderer) || cores <= 2) return "low";
+    if (cores <= 4 && /Intel|UHD Graphics|HD Graphics/i.test(renderer)) return "medium";
+    return "high";
+  } catch {
+    return "medium";
+  }
+}
+
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) };
   } catch { /* fall through */ }
-  return { ...SETTINGS_DEFAULTS };
+  return { ...SETTINGS_DEFAULTS, quality: detectDefaultQuality() };
 }
 
 export interface MenuCallbacks {
@@ -96,6 +124,9 @@ export class Menus {
   private heroDepth = 0;
   private heroBlessing = "";
   private heroDailySeed: number | null = null;
+  private heroPreviewTimer = 0;
+  private heroPreviewFrame = 0;
+  private heroPreviewId = "";
 
   constructor(private ctx: Ctx, private cb: MenuCallbacks) {
     this.root = document.getElementById("overlay")!;
@@ -112,13 +143,65 @@ export class Menus {
     this.ctx.cam.setBaseFov(this.settings.fov);
     setTempoPalette(this.settings.colorblind);
     this.ctx.controller.autoAim = this.settings.autoAim;
+    // Reduce Motion / Low quality also silence the continuous, paint-heavy CSS
+    // flourishes (card sigils, title glow, drifting menu sigils) via this class.
+    document.body.classList.toggle("rh-no-anim", this.settings.reduceMotion || this.settings.quality === "low");
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
     } catch { /* private mode */ }
   }
 
   clear(): void {
+    this.cancelHeroPreview();
     this.root.innerHTML = "";
+  }
+
+  private cancelHeroPreview(): void {
+    if (this.heroPreviewTimer) {
+      window.clearTimeout(this.heroPreviewTimer);
+      this.heroPreviewTimer = 0;
+    }
+    if (this.heroPreviewFrame) {
+      cancelAnimationFrame(this.heroPreviewFrame);
+      this.heroPreviewFrame = 0;
+    }
+  }
+
+  private previewHero(hero: HeroDef): void {
+    // The live 3D hero swap rebuilds the whole procedural mesh on the main thread
+    // (`applyHero`) — a real hover hitch on lighter machines. It's a "high"-only
+    // nicety; the CSS card silhouette already reads the hero everywhere else.
+    if (this.settings.quality !== "high") return;
+    if (this.ctx.player.hero.id === hero.id && this.heroPreviewFrame === 0 && this.heroPreviewTimer === 0) {
+      this.heroPreviewId = hero.id;
+      return;
+    }
+    if (this.heroPreviewId === hero.id && (this.heroPreviewFrame !== 0 || this.heroPreviewTimer !== 0)) return;
+    this.heroPreviewId = hero.id;
+    this.cancelHeroPreview();
+    // Longer settle window so a quick sweep across the row rebuilds once, not six times.
+    this.heroPreviewTimer = window.setTimeout(() => {
+      this.heroPreviewTimer = 0;
+      this.heroPreviewFrame = requestAnimationFrame(() => {
+        this.heroPreviewFrame = 0;
+        if (this.heroPreviewId !== hero.id) return;
+        this.ctx.player.applyHero(hero, this.ctx.profile.data.equipped.cape, this.ctx.profile.data.equipped.blade);
+        this.ctx.player.hp = Math.min(this.ctx.player.hp, this.ctx.player.maxHp);
+      });
+    }, 220);
+  }
+
+  private blessingDesc(): string {
+    return BLESSINGS.find((b) => b.id === this.heroBlessing)?.desc
+      ?? "An optional gift to begin the run with — pick one, or none. Locked blessings are earned through play.";
+  }
+
+  private refreshBlessingPick(scope: HTMLElement): void {
+    scope.querySelectorAll<HTMLElement>(".blessing-chip").forEach((chip) => {
+      chip.classList.toggle("blessing-chip--on", (chip.dataset.bl ?? null) === this.heroBlessing);
+    });
+    const desc = scope.querySelector(".blessing-desc");
+    if (desc) desc.textContent = this.blessingDesc();
   }
 
   private screen(extraClass = "screen--dim"): HTMLElement {
@@ -197,11 +280,11 @@ export class Menus {
 
   // ---------------------------------------------------------------- hero select
   showHeroSelect(opts: { dailySeed?: number } = {}): void {
+    this.heroPreviewId = "";
     this.heroDailySeed = opts.dailySeed ?? null;
     const maxD = this.ctx.profile.data.maxDepth;
     this.heroDepth = Math.max(0, Math.min(this.heroDepth || maxD, maxD));
-    const render = () => this.renderHeroSelect();
-    render();
+    this.renderHeroSelect();
   }
 
   private renderHeroSelect(): void {
@@ -242,13 +325,22 @@ export class Menus {
             : `<button class="blessing-chip blessing-chip--locked" data-bl-locked="${b.id}">🔒 ${b.name}</button>`;
         }).join("")}
       </div>
-      <div class="blessing-desc">${BLESSINGS.find((b) => b.id === this.heroBlessing)?.desc ?? "An optional gift to begin the run with — pick one, or none. Locked blessings are earned through play."}</div>
+      <div class="blessing-desc">${this.blessingDesc()}</div>
       <div class="hero-row"></div>
       <button class="draft-skip">BACK</button>
     `;
     const row = s.querySelector(".hero-row")!;
+    const heroFrag = document.createDocumentFragment();
     const bars = (n: number) =>
       Array.from({ length: 5 }, (_, i) => `<span class="hbar${i < n ? " hbar--on" : ""}"></span>`).join("");
+    const heroFigure = (hero: HeroDef) => `
+      <div class="hero-card__figure hero-card__figure--${hero.id}" aria-hidden="true">
+        <span class="hero-fig__cape"></span>
+        <span class="hero-fig__body"></span>
+        <span class="hero-fig__head"></span>
+        <span class="hero-fig__blade"></span>
+        <span class="hero-fig__aura"></span>
+      </div>`;
 
     for (const hero of HEROES) {
       const unlocked = this.ctx.profile.isUnlocked(`hero:${hero.id}`);
@@ -261,6 +353,7 @@ export class Menus {
       }).join("");
       el.innerHTML = unlocked
         ? `
+          ${heroFigure(hero)}
           <div class="hero-card__icon">${hero.icon}</div>
           <div class="hero-card__name">${hero.name}</div>
           <div class="hero-card__title">${hero.title}</div>
@@ -273,19 +366,25 @@ export class Menus {
           <div class="hero-passive"><b>${hero.passiveName}</b> — ${hero.passiveDesc}</div>
           <div class="hero-hand">${handIcons}</div>`
         : `
+          ${heroFigure(hero)}
           <div class="hero-card__icon">🔒</div>
           <div class="hero-card__name">???</div>
           <div class="hero-card__title">${hero.title}</div>
           <div class="hero-card__desc hero-card__desc--hint">${this.ctx.profile.unlockHintFor(`hero:${hero.id}`)}</div>`;
       if (unlocked) {
-        el.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
+        el.addEventListener("mouseenter", () => {
+          this.ctx.events.emit("UI_HOVER", {});
+          this.previewHero(hero);
+        });
         el.addEventListener("click", () => {
+          this.cancelHeroPreview();
           this.ctx.events.emit("UI_CLICK", {});
           this.cb.onStartRun(hero, this.heroDepth, this.heroBlessing);
         });
       }
-      row.appendChild(el);
+      heroFrag.appendChild(el);
     }
+    row.appendChild(heroFrag);
     this.wireButtons(s);
     const refreshDepth = () => {
       const nextDiff = difficultyFor(this.heroDepth);
@@ -317,7 +416,7 @@ export class Menus {
           return;
         }
         this.heroBlessing = chip.dataset.bl ?? "";
-        this.renderHeroSelect();
+        this.refreshBlessingPick(s);
       });
     });
     s.querySelector(".draft-skip")!.addEventListener("click", () => this.showMain());
@@ -643,32 +742,37 @@ export class Menus {
         this.applySettings();
       });
     });
+    // Toggle groups update the active chip in place rather than rebuilding the
+    // whole (large) settings panel + rewiring every listener on each click.
+    const flipGroup = (attr: string, active: HTMLButtonElement): void => {
+      s.querySelectorAll<HTMLButtonElement>(`.qbtn[${attr}]`).forEach((x) => x.classList.toggle("qbtn--on", x === active));
+    };
     s.querySelectorAll<HTMLButtonElement>(".qbtn[data-q]").forEach((b) => {
       b.addEventListener("click", () => {
         this.settings.quality = b.dataset.q as Settings["quality"];
         this.applySettings();
-        this.showSettings(back);
+        flipGroup("data-q", b);
       });
     });
     s.querySelectorAll<HTMLButtonElement>(".qbtn[data-rm]").forEach((b) => {
       b.addEventListener("click", () => {
         this.settings.reduceMotion = b.dataset.rm === "on";
         this.applySettings();
-        this.showSettings(back);
+        flipGroup("data-rm", b);
       });
     });
     s.querySelectorAll<HTMLButtonElement>(".qbtn[data-cb]").forEach((b) => {
       b.addEventListener("click", () => {
         this.settings.colorblind = b.dataset.cb === "on";
         this.applySettings();
-        this.showSettings(back);
+        flipGroup("data-cb", b);
       });
     });
     s.querySelectorAll<HTMLButtonElement>(".qbtn[data-aa]").forEach((b) => {
       b.addEventListener("click", () => {
         this.settings.autoAim = b.dataset.aa === "on";
         this.applySettings();
-        this.showSettings(back);
+        flipGroup("data-aa", b);
       });
     });
     s.querySelector('[data-act="controls"]')!.addEventListener("click", () => this.showControls(() => this.showSettings(back)));

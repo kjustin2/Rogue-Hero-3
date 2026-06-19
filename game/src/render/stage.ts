@@ -33,10 +33,17 @@ export class Stage {
   readonly fog: THREE.FogExp2;
   quality: Quality = "high";
 
+  /** Full chain used in combat/cutscenes (bloom, CA, grade, grain, SMAA per preset). */
   private composer!: EffectComposer;
+  /** Lean chain used behind menus/overlays: render + vignette + grade only. Built
+   *  fresh (not the full chain with passes disabled) — a disabled trailing pass in
+   *  `postprocessing` leaves the output unrouted and the screen crushes to black. */
+  private menuComposer!: EffectComposer;
   private vignette!: VignetteEffect;
   private aberration: ChromaticAberrationEffect | null = null;
   private bloom: BloomEffect | null = null;
+  /** True while a menu/overlay is up: render the lean chain and drop shadows. */
+  private lowCost = false;
 
   /** 0..1 transient screen stress — pushed up by hits/crashes, decays fast. */
   private stress = 0;
@@ -88,9 +95,13 @@ export class Stage {
     window.addEventListener("resize", () => this.onResize());
   }
 
-  /** (Re)build the whole post chain for the current quality preset. */
+  /** (Re)build both post chains for the current quality preset. */
   private buildPost(): void {
-    if (this.composer) this.composer.dispose();
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+
+    // --- Full combat chain ---
+    this.composer?.dispose();
     this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType });
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
@@ -130,7 +141,24 @@ export class Stage {
     if (this.quality !== "low") {
       this.composer.addPass(new EffectPass(this.camera, new SMAAEffect()));
     }
-    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.setSize(w, h);
+
+    // --- Lean menu chain ---
+    // Just render + vignette + grade. No bloom (its mipmap blur crushes the menu's
+    // subtle starfield/aurora to near-black — dropping it makes the rift backdrop
+    // read *richer*), no grain, no SMAA. Combined with shadows-off in menu mode this
+    // is both the look we want behind the menus and a big perf win. Built as its own
+    // chain so the final pass actually routes to screen (see menuComposer doc).
+    this.menuComposer?.dispose();
+    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType });
+    this.menuComposer.addPass(new RenderPass(this.scene, this.camera));
+    this.menuComposer.addPass(new EffectPass(
+      this.camera,
+      new VignetteEffect({ darkness: this.baseVignette, offset: 0.32 }),
+      new HueSaturationEffect({ saturation: 0.12 }),
+      new BrightnessContrastEffect({ contrast: 0.07 }),
+    ));
+    this.menuComposer.setSize(w, h);
   }
 
   applyQuality(q: Quality): void {
@@ -140,8 +168,9 @@ export class Stage {
     this.renderer.setPixelRatio(q === "high" ? Math.min(dpr, 2) : q === "medium" ? Math.min(dpr, 1.5) : 1);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
 
-    // Shadows: high 2048, medium 1024, low off
-    this.keyLight.castShadow = q !== "low";
+    // Shadows: high 2048, medium 1024, low off — but never while a menu is up
+    // (the low-cost path keeps them off there; see setLowCost).
+    this.keyLight.castShadow = !this.lowCost && q !== "low";
     const size = q === "high" ? 2048 : 1024;
     if (this.keyLight.shadow.mapSize.x !== size) {
       this.keyLight.shadow.mapSize.set(size, size);
@@ -149,6 +178,18 @@ export class Stage {
       this.keyLight.shadow.map = null;
     }
     this.buildPost();
+  }
+
+  /**
+   * Switch to the lean menu chain while a menu/overlay is up, and back to the full
+   * chain for combat/cutscenes. Menu mode also drops the key light's shadow — pure
+   * perf there (no shadow-map render), and gameplay restores it. The lean chain is
+   * what makes the rift backdrop read rich behind the menus while staying cheap.
+   */
+  setLowCost(on: boolean): void {
+    if (on === this.lowCost) return;
+    this.lowCost = on;
+    this.keyLight.castShadow = on ? false : this.quality !== "low";
   }
 
   /** Brightness/gamma: `mult` scales the base ACES exposure (1.0 = default). */
@@ -163,6 +204,7 @@ export class Stage {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+    this.menuComposer.setSize(w, h);
   }
 
   /** Punch the screen — hurt, crash, big impacts. amount 0..1. */
@@ -181,7 +223,7 @@ export class Stage {
   }
 
   render(dt: number): void {
-    this.composer.render(dt);
+    (this.lowCost ? this.menuComposer : this.composer).render(dt);
   }
 
   /**

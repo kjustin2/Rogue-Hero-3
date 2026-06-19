@@ -21,12 +21,13 @@ await page.evaluate(() => {
 await page.reload({ waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
 
-// --- Hero select: 5 heroes, 4 locked on a fresh profile (only The Blade is free)
+// --- Hero select: every roster hero appears; only The Blade is free on a fresh profile.
 await page.locator("button", { hasText: "Begin Run" }).click();
 await page.waitForTimeout(700);
 const heroes = await page.locator(".hero-card").count();
 const lockedHeroes = await page.locator(".hero-card--locked").count();
-console.log(`HERO SELECT: ${heroes} heroes, ${lockedHeroes} locked`, heroes === 5 && lockedHeroes === 4 ? "OK" : "FAIL");
+const expectedHeroes = await page.evaluate(() => window.__rh3heroes.length);
+console.log(`HERO SELECT: ${heroes} heroes, ${lockedHeroes} locked`, heroes === expectedHeroes && lockedHeroes === expectedHeroes - 1 ? "OK" : "FAIL");
 await page.screenshot({ path: "shots/r-heroselect.png" });
 await page.locator(".hero-card").first().click();
 await page.waitForTimeout(800);

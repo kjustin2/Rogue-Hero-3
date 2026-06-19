@@ -34,6 +34,13 @@ export class Sfx {
   private ambientGain: GainNode | null = null;
   volume = 0.7;
   private noiseBuf: AudioBuffer | null = null;
+  private lastLightHitAt = -Infinity;
+  private lastHeavyHitAt = -Infinity;
+  private lastKillAt = -Infinity;
+  private lastExplosionAt = -Infinity;
+  private lastPhantomBoomAt = -Infinity;
+  private lastSpawnAt = -Infinity;
+  private lastShieldBreakAt = -Infinity;
 
   constructor(events: EventBus) {
     try {
@@ -50,7 +57,7 @@ export class Sfx {
       this.ac = null;
     }
 
-    events.on("ENEMY_HIT", (e) => (e.heavy ? this.hitHeavy() : this.hit()));
+    events.on("ENEMY_HIT", (e) => this.enemyHit(!!e.heavy));
     events.on("KILL", () => this.kill());
     events.on("PLAYER_HIT", () => this.hurt());
     events.on("DODGE", () => this.dodge());
@@ -116,6 +123,19 @@ export class Sfx {
   }
 
   // ---------------------------------------------------------------- combat
+  private enemyHit(heavy: boolean): void {
+    const now = performance.now();
+    if (heavy) {
+      if (now - this.lastHeavyHitAt < 55) return;
+      this.lastHeavyHitAt = now;
+      this.hitHeavy();
+      return;
+    }
+    if (now - this.lastLightHitAt < 28) return;
+    this.lastLightHitAt = now;
+    this.hit();
+  }
+
   swing(stage: number, connected: boolean): void {
     // A clean air-whoosh; the 360° finisher adds a low body sweep.
     this.noise({ dur: 0.13, freq: 900 + stage * 350, freq2: 2400, q: 1.1, gain: 0.07, type: "bandpass" });
@@ -138,6 +158,9 @@ export class Sfx {
   }
 
   private kill(): void {
+    const now = performance.now();
+    if (now - this.lastKillAt < 38) return;
+    this.lastKillAt = now;
     // A satisfying pop: quick downward chirp, airy burst, soft thump.
     this.tone({ f: 520, f2: 120, dur: 0.13, type: "triangle", gain: 0.13 });
     this.noise({ dur: 0.2, freq: 2400, freq2: 500, q: 0.7, gain: 0.1, type: "bandpass" });
@@ -364,6 +387,9 @@ export class Sfx {
   }
 
   explosion(): void {
+    const now = performance.now();
+    if (now - this.lastExplosionAt < 55) return;
+    this.lastExplosionAt = now;
     this.tone({ f: 90, f2: 30, dur: 0.4, type: "sine", gain: 0.3 });
     this.noise({ dur: 0.45, freq: 1200, freq2: 100, q: 0.5, gain: 0.26, type: "lowpass" });
   }
@@ -378,6 +404,9 @@ export class Sfx {
   }
 
   spawn(): void {
+    const now = performance.now();
+    if (now - this.lastSpawnAt < 25) return;
+    this.lastSpawnAt = now;
     this.tone({ f: 150, f2: 400, dur: 0.18, type: "triangle", gain: 0.08 });
   }
 
@@ -386,11 +415,17 @@ export class Sfx {
   }
 
   shieldBreak(): void {
+    const now = performance.now();
+    if (now - this.lastShieldBreakAt < 50) return;
+    this.lastShieldBreakAt = now;
     this.noise({ dur: 0.3, freq: 3500, freq2: 800, q: 2, gain: 0.16 });
     this.tone({ f: 700, f2: 200, dur: 0.25, type: "triangle", gain: 0.12 });
   }
 
   phantomBoom(): void {
+    const now = performance.now();
+    if (now - this.lastPhantomBoomAt < 65) return;
+    this.lastPhantomBoomAt = now;
     this.tone({ f: 250, f2: 60, dur: 0.3, type: "sawtooth", gain: 0.16 });
     this.noise({ dur: 0.25, freq: 1800, freq2: 300, q: 1, gain: 0.14 });
   }

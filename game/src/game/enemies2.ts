@@ -79,6 +79,7 @@ export class Wisp extends Enemy {
         this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 5, 0.9, 0.4, 0x3effd2);
       }
     } else {
+      this.setIntentPose(1 - Math.max(0, this.windup) / 0.4);
       this.windup -= dt;
       this.orbMat.emissiveIntensity = 2.4 + (0.4 - this.windup) * 8;
       if (this.windup <= 0) {
@@ -173,6 +174,7 @@ export class Leaper extends Enemy {
         break;
       }
       case "crouch": {
+        this.setIntentPose(1);
         this.facePlayer(dt);
         this.root.scale.y = 0.75 + (this.timer / 0.5) * 0.25;
         if (this.timer <= 0) {
@@ -196,6 +198,7 @@ export class Leaper extends Enemy {
         break;
       }
       case "leap": {
+        this.setIntentPose(0.45);
         this.leapT += dt / 0.55;
         const k = Math.min(1, this.leapT);
         this.pos.x = this.leapFrom.x + (this.leapTo.x - this.leapFrom.x) * k;
@@ -301,6 +304,7 @@ export class Tether extends Enemy {
         }
       }
     } else {
+      this.setIntentPose(1 - Math.max(0, this.windup) / 0.45);
       this.windup -= dt;
       this.crystalMat.emissiveIntensity = 2 + (0.45 - this.windup) * 8;
       if (this.windup <= 0) {
@@ -413,6 +417,7 @@ export class Mirror extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     if (this.shieldTimer > 0) {
+      this.setIntentPose(0.85);
       this.shieldTimer -= dt;
       // Bubble visibly thins as it is beaten down — "keep hitting, it is about to pop".
       const sFrac = this.shieldMaxHp > 0 ? this.shieldHp / this.shieldMaxHp : 0;
@@ -444,6 +449,7 @@ export class Mirror extends Enemy {
         break;
       }
       case "windup":
+        this.setIntentPose(1);
         if (this.timer <= 0) {
           this.ctx.fx.ring(this.slamX, this.slamZ, { radius: 2.0, color: 0x99ccff, duration: 0.35 });
           this.ctx.cam.addTrauma(0.15);
@@ -551,6 +557,7 @@ export class Caster extends Enemy {
       this.orbMat.emissiveIntensity = 6;
     }
     if (this.pendingBlast) {
+      this.setIntentPose(1 - Math.max(0, this.pendingBlast.timer) / 1.0);
       this.pendingBlast.timer -= dt;
       if (this.pendingBlast.timer <= 0) {
         const b = this.pendingBlast;
@@ -658,6 +665,7 @@ export class Shade extends Enemy {
         break;
       }
       case "fade":
+        this.setIntentPose(0.75);
         if (this.timer <= 0) {
           // Materialize behind the player's current facing
           const bx = p.pos.x - Math.sin(p.facing) * 2.2;
@@ -677,6 +685,7 @@ export class Shade extends Enemy {
         }
         break;
       case "strike":
+        this.setIntentPose(1);
         this.facePlayer(dt * 2);
         if (this.timer <= 0) {
           if (Math.hypot(p.pos.x - this.strikeX, p.pos.z - this.strikeZ) < 1.8 + p.radius) {
@@ -839,6 +848,7 @@ export class Bastion extends Enemy {
         this.ctx.tele.circle(this.pos.x + fx * 1.6, this.pos.z + fz * 1.6, 2.2, 0.6, 0xffaa33);
       }
     } else {
+      this.setIntentPose(1 - Math.max(0, this.slamWindup) / 0.6);
       this.facePlayer(dt * 0.4);
       this.slamWindup -= dt;
       if (this.slamWindup <= 0) {
@@ -942,10 +952,13 @@ export class Brute extends Enemy {
         break;
       }
       case "windup":
+        this.setIntentPose(1);
+        this.root.scale.set(1.1, 0.88, 1.18);
         this.facePlayer(dt * 0.6);
         // Lock the charge direction to the current facing as the lane commits
         this.chargeDir.set(Math.sin(this.heading), Math.cos(this.heading));
         if (this.timer <= 0) {
+          this.root.scale.set(1, 1, 1);
           this.state = "charge";
           this.timer = 0.65;
           this.kb.x += this.chargeDir.x * 26;
@@ -955,6 +968,8 @@ export class Brute extends Enemy {
         }
         break;
       case "charge":
+        this.setIntentPose(0.6);
+        this.root.scale.set(0.96, 1.05, 1.22);
         // Sustain the dash impulse so the overshoot reads as a committed lunge
         this.kb.x += this.chargeDir.x * 70 * dt;
         this.kb.y += this.chargeDir.y * 70 * dt;
@@ -972,6 +987,7 @@ export class Brute extends Enemy {
         }
         break;
       case "recover":
+        this.root.scale.set(1, 1, 1);
         if (this.timer <= 0) {
           this.state = "chase";
           this.timer = 0.5;
@@ -1062,6 +1078,7 @@ export class Harrier extends Enemy {
         this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 6, 0.7, 0.32, 0x33ccff);
       }
     } else {
+      this.setIntentPose(1 - Math.max(0, this.windup) / 0.32);
       this.windup -= dt;
       this.orbMat.emissiveIntensity = 2.4 + (0.32 - this.windup) * 11;
       this.orb.scale.setScalar(1 + (0.32 - this.windup) * 2.0);
@@ -1360,6 +1377,7 @@ export class Warper extends Enemy {
         break;
       }
       case "blinkTell":
+        this.setIntentPose(0.8);
         if (this.timer <= 0) {
           // Arrive at the telegraphed destination.
           this.pos.x = this.blinkTo.x;
@@ -1373,6 +1391,7 @@ export class Warper extends Enemy {
         }
         break;
       case "aim":
+        this.setIntentPose(1 - Math.max(0, this.timer) / 0.45);
         this.facePlayer(dt * 0.5);
         this.orbMat.emissiveIntensity = 2.2 + (0.45 - this.timer) * 8;
         if (this.timer <= 0) {

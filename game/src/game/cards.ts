@@ -304,6 +304,54 @@ export class CardCaster {
     });
   }
 
+  /** Warm representative dynamic card-effect materials before combat can cast them. */
+  precompile(): void {
+    const scene = this.ctx.stage.scene;
+    const root = new THREE.Group();
+    root.position.set(0, -1000, 0);
+    scene.add(root);
+    const add = (mesh: THREE.Object3D): void => {
+      mesh.visible = true;
+      root.add(mesh);
+    };
+
+    add(new THREE.Mesh(
+      new THREE.SphereGeometry(0.7, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x9a6bff, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false }),
+    ));
+    add(new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.35, 0.9, 4, 8),
+      new THREE.MeshBasicMaterial({ color: 0xc98fff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }),
+    ));
+    add(new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.22, 1.4, 6),
+      new THREE.MeshStandardMaterial({ color: 0x4a3a12, emissive: 0xffd24d, emissiveIntensity: 0.8, flatShading: true }),
+    ));
+    add(new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.32, 0),
+      new THREE.MeshStandardMaterial({ color: 0x664400, emissive: 0xffd24d, emissiveIntensity: 1.6, flatShading: true }),
+    ));
+    add(new THREE.Mesh(
+      new THREE.TorusGeometry(0.42, 0.12, 6, 12, Math.PI * 1.3),
+      new THREE.MeshStandardMaterial({ color: 0x551515, emissive: 0xff5555, emissiveIntensity: 1.5, flatShading: true }),
+    ));
+    add(new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-1, 1, 0), new THREE.Vector3(1, 1.2, 0)]),
+      new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 1 }),
+    ));
+
+    this.ctx.stage.warmUp();
+    scene.remove(root);
+    root.traverse((o) => {
+      if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
+        o.geometry.dispose();
+        const mat = o.material as THREE.Material | THREE.Material[];
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat.dispose();
+      }
+    });
+  }
+
   /** Apply a damage-over-time stack (Bleeding Edge, Ember Wave burns). */
   addBleed(enemy: Enemy, ticks: number, dmg: number, color = 0xff6b7a): void {
     this.bleeds.push({ enemy, ticks, timer: 0.5, dmg, color });

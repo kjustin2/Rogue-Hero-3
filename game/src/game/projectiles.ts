@@ -159,6 +159,7 @@ export class Projectiles {
   }
 
   update(dt: number): void {
+    const enemies = this.ctx.enemies.living();
     for (const s of this.pool) {
       if (!s.active) continue;
       if (!stepShot(s, dt, this.ctx)) {
@@ -166,7 +167,8 @@ export class Projectiles {
         s.mesh.visible = false;
         continue;
       }
-      for (const e of this.ctx.enemies.living()) {
+      for (const e of enemies) {
+        if (!e.alive) continue;
         if (s.hitIds.has(e.id)) continue;
         const dx = e.pos.x - s.x;
         const dz = e.pos.z - s.z;

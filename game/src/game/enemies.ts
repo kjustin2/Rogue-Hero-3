@@ -26,6 +26,11 @@ interface FlashMat {
 
 type RoleSilhouette = "charger" | "caster" | "swarm" | "bomber" | "shield" | "flier" | "void" | "splitter";
 
+interface RoleSilhouetteRecord {
+  kind: RoleSilhouette;
+  group: THREE.Group;
+}
+
 export interface DamageOpts {
   kbX?: number;
   kbZ?: number;
@@ -69,12 +74,24 @@ export abstract class Enemy {
   /** Brief post-break exposure that interrupts any in-progress attack (not freeze — no blue tint). */
   protected stagger = 0;
   private spawnGrace = 0;
+  private spawnGraceUntil = 0;
   /** Read by combat.dealDamage for honest floaters/stats: how much of the last hit reached the body, and whether a shield ate it. */
   lastBodyDamage = 0;
   lastHitShielded = false;
   private shieldBg: THREE.Sprite | null = null;
   private shieldFill: THREE.Sprite | null = null;
   private affixCrown: THREE.Group | null = null;
+  private roleSilhouettes: RoleSilhouetteRecord[] = [];
+  private intentPose = 0;
+  private reactT = 0;
+  private reactDur = 0.16;
+  private reactPitch = 0;
+  private reactRoll = 0;
+  private reactYaw = 0;
+  private reactLift = 0;
+  private readonly flashWhite = new THREE.Color(0xffffff);
+  private readonly vulnColor = new THREE.Color(0xffd86b);
+  private readonly emissiveScratch = new THREE.Color();
 
   readonly root = new THREE.Group();
   protected heading = 0;
@@ -147,6 +164,7 @@ export abstract class Enemy {
     const g = new THREE.Group();
     g.name = `role-${kind}`;
     this.root.add(g);
+    this.roleSilhouettes.push({ kind, group: g });
     const mat = this.stdMat(0x0b0d14, color, 0.75);
     const bright = this.stdMat(0x11131f, color, 1.35);
     const accent = this.stdMat(0x06080f, color, 1.8);
@@ -233,6 +251,29 @@ export abstract class Enemy {
     }
   }
 
+  /** Subclasses refresh this while winding up, bracing, fusing, or committing. */
+  protected setIntentPose(amount: number): void {
+    this.intentPose = Math.max(this.intentPose, amount);
+  }
+
+  private hitReaction(opts: DamageOpts = {}, shielded = false): void {
+    if (this.kind === "boss" && !opts.heavy) return;
+    const p = this.ctx.player;
+    const dx = opts.kbX ?? (this.pos.x - p.pos.x);
+    const dz = opts.kbZ ?? (this.pos.z - p.pos.z);
+    const len = Math.hypot(dx, dz) || 1;
+    const local = Math.atan2(dx / len, dz / len) - this.heading;
+    const heavy = !!opts.heavy;
+    const base = shielded ? 0.08 : heavy ? 0.17 : 0.1;
+    const bossScale = this.kind === "boss" ? 0.45 : 1;
+    this.reactDur = heavy ? 0.24 : 0.15;
+    this.reactT = this.reactDur;
+    this.reactPitch = -Math.cos(local) * base * bossScale;
+    this.reactRoll = Math.sin(local) * base * 1.25 * bossScale;
+    this.reactYaw = Math.sin(local) * base * 0.65 * bossScale;
+    this.reactLift = (shielded ? 0.02 : heavy ? 0.08 : 0.045) * bossScale;
+  }
+
   /** Public entry. Subclasses override to insert a shield check, then call super (full body) or hitShield. */
   takeDamage(amount: number, opts: DamageOpts = {}): boolean {
     this.lastHitShielded = false;
@@ -258,6 +299,7 @@ export abstract class Enemy {
     this.lastBodyDamage = Math.min(amount, Math.max(0, this.hp));
     this.hp -= amount;
     this.hitFlash = 1;
+    this.hitReaction(opts);
     const kbStrength = (opts.kb ?? 0) * (opts.heavy ? 1.4 : 1) * (1 - kbResist);
     if (kbStrength > 0) {
       const len = Math.hypot(opts.kbX ?? 0, opts.kbZ ?? 0) || 1;
@@ -283,6 +325,7 @@ export abstract class Enemy {
     this.shieldHp = Math.max(0, before - amount);
     this.lastHitShielded = true;
     this.hitFlash = 1;
+    this.hitReaction(opts, true);
     if (this.shieldHp > 0) {
       // Chipped: show the guard-colored number that hit the shield, leak a little to the body.
       this.ctx.floaters.spawn(this.pos.x, 1.7, this.pos.z, String(Math.round(amount)), "dmg", hex(color));
@@ -341,11 +384,13 @@ export abstract class Enemy {
   /** Hold an enemy's brain still after materialization without showing freeze/stagger FX. */
   setSpawnGrace(seconds: number): void {
     this.spawnGrace = Math.max(this.spawnGrace, seconds);
+    this.spawnGraceUntil = Math.max(this.spawnGraceUntil, performance.now() + seconds * 1000);
   }
 
   /** Feedback when a hit lands on a warded boss: a clink spark + throttled "WARDED" tag. */
   private deflect(): void {
     this.hitFlash = Math.max(this.hitFlash, 0.5);
+    this.hitReaction({ heavy: true }, true);
     if (this.deflectCd > 0) return;
     this.deflectCd = 0.4;
     const p = this.ctx.player;
@@ -514,6 +559,7 @@ export abstract class Enemy {
   update(dt: number): void {
     if (!this.alive) return;
     this.t += dt;
+    this.reactT = Math.max(0, this.reactT - dt);
     this.contactCd -= dt;
     if (this.vulnTime > 0) this.vulnTime -= dt;
     if (this.invulnTime > 0) this.invulnTime -= dt;
@@ -533,16 +579,57 @@ export abstract class Enemy {
         f.mat.emissiveIntensity = 0.9 + Math.sin(this.t * 6) * 0.2;
       }
     } else {
-      this.spawnGrace = Math.max(0, this.spawnGrace - dt);
+      if (this.spawnGrace > 0) {
+        const byDt = Math.max(0, this.spawnGrace - dt);
+        const byClock = Math.max(0, (this.spawnGraceUntil - performance.now()) / 1000);
+        this.spawnGrace = Math.min(byDt, byClock);
+      }
       // Spawn grace/stagger interrupt the brain (no blue tint) but the body still flashes/settles.
       if (this.stagger <= 0 && this.spawnGrace <= 0) this.tick(dt);
       // Hit flash: spike emissive to white, settle back
       this.hitFlash = Math.max(0, this.hitFlash - dt * 7);
+      const vulnGlow = this.vulnTime > 0 ? 0.32 + Math.sin(this.t * 9) * 0.1 : 0;
       for (const f of this.flashMats) {
-        f.mat.emissive.copy(f.baseEmissive).lerp(new THREE.Color(0xffffff), this.hitFlash);
+        this.emissiveScratch.copy(f.baseEmissive);
+        if (vulnGlow > 0) this.emissiveScratch.lerp(this.vulnColor, vulnGlow);
+        f.mat.emissive.copy(this.emissiveScratch).lerp(this.flashWhite, this.hitFlash);
         f.mat.emissiveIntensity = f.baseIntensity + this.hitFlash * 3;
       }
     }
+
+    const intent = this.intentPose;
+    for (const r of this.roleSilhouettes) {
+      const g = r.group;
+      const beat = Math.sin(this.t * 5.2 + this.id * 0.7);
+      g.position.y = beat * 0.018 + intent * 0.065;
+      g.rotation.x = 0;
+      g.rotation.z = 0;
+      g.scale.setScalar(1);
+      if (r.kind === "charger") {
+        g.rotation.x = -intent * 0.36;
+        g.position.z = intent * 0.18;
+        g.scale.set(1 + intent * 0.06, 1 - intent * 0.08, 1 + intent * 0.18);
+      } else if (r.kind === "caster") {
+        g.rotation.y += dt * (0.8 + intent * 3.2);
+        g.scale.setScalar(1 + intent * 0.16 + Math.max(0, beat) * 0.025);
+      } else if (r.kind === "bomber") {
+        const swell = 1 + intent * 0.18 + Math.max(0, beat) * intent * 0.05;
+        g.scale.set(swell, 1 + intent * 0.1, swell);
+      } else if (r.kind === "shield") {
+        g.position.z = intent * 0.12;
+        g.scale.set(1 + intent * 0.14, 1 + intent * 0.04, 1 + intent * 0.08);
+      } else if (r.kind === "flier") {
+        g.position.y += Math.sin(this.t * 7 + this.id) * 0.055 + intent * 0.08;
+        g.rotation.z = Math.sin(this.t * 4.5) * 0.08;
+      } else if (r.kind === "void") {
+        g.rotation.y += dt * (0.45 + intent * 1.8);
+        g.scale.setScalar(1 + intent * 0.12);
+      } else if (r.kind === "swarm") {
+        g.rotation.y += dt * 2.4;
+        g.scale.setScalar(1 + Math.max(0, beat) * 0.08);
+      }
+    }
+    this.intentPose = Math.max(0, this.intentPose - dt * 5.5);
 
     // Knockback decay
     this.pos.x += this.kb.x * dt;
@@ -561,8 +648,10 @@ export abstract class Enemy {
       this.ctx.arena.resolveObstacles(this.pos, this.radius);
     }
 
-    this.root.position.set(this.pos.x, this.pos.y, this.pos.z);
-    this.root.rotation.y = this.heading;
+    const reactK = this.reactDur > 0 ? this.reactT / this.reactDur : 0;
+    const reactEase = Math.sin(Math.max(0, Math.min(1, reactK)) * Math.PI);
+    this.root.position.set(this.pos.x, this.pos.y + this.reactLift * reactEase, this.pos.z);
+    this.root.rotation.set(this.reactPitch * reactEase, this.heading + this.reactYaw * reactEase, this.reactRoll * reactEase);
 
     // HP bar
     const frac = Math.max(0, this.hp / this.maxHp);
@@ -708,8 +797,11 @@ export class Husk extends Enemy {
         break;
       }
       case "windup":
+        this.setIntentPose(1);
+        this.root.scale.set(1.08, 0.86, 1.18);
         this.facePlayer(dt);
         if (this.timer <= 0) {
+          this.root.scale.set(1, 1, 1);
           this.state = "lunge";
           this.timer = 0.22;
           this.kb.x += this.lungeDir.x * 13;
@@ -718,6 +810,8 @@ export class Husk extends Enemy {
         }
         break;
       case "lunge":
+        this.setIntentPose(0.55);
+        this.root.scale.set(0.96, 1.04, 1.16);
         if (!this.struck && this.distToPlayer() < this.radius + p.radius + 0.7) {
           this.struck = true;
           this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z);
@@ -729,6 +823,7 @@ export class Husk extends Enemy {
         }
         break;
       case "recover":
+        this.root.scale.set(1, 1, 1);
         if (this.timer <= 0) this.state = "chase";
         break;
     }
@@ -804,6 +899,7 @@ export class Spitter extends Enemy {
         this.fireTimer = 2.3;
       }
     } else {
+      this.setIntentPose(1 - Math.max(0, this.windup) / 0.38);
       this.windup -= dt;
       this.orbMat.emissiveIntensity = 2.2 + (0.38 - this.windup) * 9;
       this.orb.scale.setScalar(1 + (0.38 - this.windup) * 1.6);
@@ -960,6 +1056,7 @@ export class Bomber extends Enemy {
       this.fuse -= dt;
       this.seek(p.pos.x, p.pos.z, dt, 0.3);
       const k = 1 - Math.max(0, this.fuse) / 0.95;
+      this.setIntentPose(k);
       this.coreMat.emissiveIntensity = 1.6 + k * 7 + Math.sin(this.t * (10 + k * 40)) * 1.5;
       this.root.scale.setScalar(1 + k * 0.25);
       if (this.fuse <= 0) {
@@ -1065,6 +1162,7 @@ export class Sentinel extends Enemy {
     } else {
       const prev = this.aiming;
       this.aiming -= dt;
+      this.setIntentPose(1 - Math.max(0, this.aiming) / 1.25);
       // Track until lock at 0.45s remaining, then the line is committed — dodge it
       if (this.aiming > 0.45) {
         this.facePlayer(dt * 0.6);
@@ -1241,7 +1339,9 @@ export class EnemyManager {
   }
 
   get remaining(): number {
-    return this.living().length + this.pending.length;
+    let alive = 0;
+    for (const e of this.enemies) if (e.alive) alive++;
+    return alive + this.pending.length;
   }
 
   freezeAll(duration: number): void {
@@ -1289,7 +1389,12 @@ export class EnemyManager {
     }
 
     for (const e of this.enemies) e.update(dt);
-    this.enemies = this.enemies.filter((e) => e.alive);
+    let write = 0;
+    for (let read = 0; read < this.enemies.length; read++) {
+      const e = this.enemies[read];
+      if (e.alive) this.enemies[write++] = e;
+    }
+    this.enemies.length = write;
 
     // Soft separation so packs don't merge into one blob
     const list = this.enemies;

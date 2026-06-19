@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Ctx } from "../game/ctx";
+import type { Enemy } from "../game/enemies";
 import { ZONES, CRASH_THRESHOLD } from "../game/tempo";
 import { ROMAN } from "../game/run";
 import type { RunPlan } from "../game/mapgen";
@@ -52,6 +53,8 @@ export class Hud {
   private hitArrow!: HTMLElement;
   private threatEls: HTMLElement[] = [];
   private threatVec = new THREE.Vector3();
+  private threatCandidates: { e: Enemy | null; d: number; sx: number; sy: number; ang: number }[] =
+    Array.from({ length: 5 }, () => ({ e: null, d: 0, sx: 0, sy: 0, ang: 0 }));
   private combo = 0;
   private comboExpiry = 0;
   private lastComboMilestone = 0;
@@ -474,13 +477,10 @@ export class Hud {
     const w = window.innerWidth || 1;
     const h = window.innerHeight || 1;
     const cam = this.ctx.stage.camera;
-    const enemies = this.ctx.enemies.living()
-      .map((e) => ({ e, d: Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) }))
-      .filter(({ d }) => d > 5)
-      .sort((a, b) => (a.e.kind === "boss" ? -1 : b.e.kind === "boss" ? 1 : a.d - b.d));
-    let shown = 0;
-    for (const { e, d } of enemies) {
-      if (shown >= this.threatEls.length) break;
+    for (const c of this.threatCandidates) c.e = null;
+    for (const e of this.ctx.enemies.living()) {
+      const d = Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z);
+      if (d <= 5) continue;
       const v = this.threatVec.set(e.pos.x, e.pos.y + 1.0, e.pos.z).project(cam);
       const behind = v.z > 1;
       const off = behind || v.x < -0.88 || v.x > 0.88 || v.y < -0.8 || v.y > 0.8;
@@ -495,13 +495,39 @@ export class Hud {
       sx = Math.min(w - 58, Math.max(58, sx));
       sy = Math.min(h - 58, Math.max(58, sy));
       const ang = Math.atan2(sy - h * 0.5, sx - w * 0.5);
+      const priority = e.kind === "boss" ? d - 10000 : d;
+      for (let i = 0; i < this.threatCandidates.length; i++) {
+        const slot = this.threatCandidates[i];
+        const slotPriority = slot.e?.kind === "boss" ? slot.d - 10000 : slot.d;
+        if (slot.e && priority >= slotPriority) continue;
+        for (let j = this.threatCandidates.length - 1; j > i; j--) {
+          const prev = this.threatCandidates[j - 1];
+          const dst = this.threatCandidates[j];
+          dst.e = prev.e;
+          dst.d = prev.d;
+          dst.sx = prev.sx;
+          dst.sy = prev.sy;
+          dst.ang = prev.ang;
+        }
+        slot.e = e;
+        slot.d = d;
+        slot.sx = sx;
+        slot.sy = sy;
+        slot.ang = ang;
+        break;
+      }
+    }
+
+    let shown = 0;
+    for (const c of this.threatCandidates) {
+      if (!c.e) break;
       const el = this.threatEls[shown++];
-      el.style.left = `${sx}px`;
-      el.style.top = `${sy}px`;
-      el.style.setProperty("--ang", `${ang}rad`);
-      el.style.setProperty("--scale", `${Math.max(0.72, 1.15 - Math.min(1, d / 20) * 0.32)}`);
+      el.style.left = `${c.sx}px`;
+      el.style.top = `${c.sy}px`;
+      el.style.setProperty("--ang", `${c.ang}rad`);
+      el.style.setProperty("--scale", `${Math.max(0.72, 1.15 - Math.min(1, c.d / 20) * 0.32)}`);
       el.classList.add("threat--on");
-      el.classList.toggle("threat--boss", e.kind === "boss");
+      el.classList.toggle("threat--boss", c.e.kind === "boss");
     }
     for (let i = shown; i < this.threatEls.length; i++) {
       this.threatEls[i].classList.remove("threat--on", "threat--boss");
