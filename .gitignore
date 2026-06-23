@@ -15,6 +15,9 @@ game/release/
 # Smoke-test screenshots
 game/shots/
 
+# Self-iterating improvement-loop artifacts (screenshots, traces, reports)
+game/artifacts/
+
 # Logs
 *.log
 npm-debug.log*

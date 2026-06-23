@@ -335,21 +335,50 @@ export class Arena {
         float hash(vec2 p) {
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
         }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+        }
+        float fbm(vec2 p) {
+          float v = 0.0, amp = 0.55;
+          for (int i = 0; i < 4; i++) { v += amp * vnoise(p); p = p * 2.03 + 7.1; amp *= 0.5; }
+          return v;
+        }
+        // One twinkling star layer at a given density + grid scale.
+        float starLayer(vec2 dirxz, float gscale, float thresh) {
+          vec2 cell = floor(dirxz * gscale);
+          float s = step(thresh, hash(cell));
+          float tw = 0.55 + 0.45 * sin(uTime * (1.0 + hash(cell + 7.0) * 3.0) + hash(cell) * 50.0);
+          return s * tw;
+        }
         void main() {
           vec3 dir = normalize(vPos);
           float h = dir.y * 0.5 + 0.5;
           vec3 col = mix(bottomColor, topColor, pow(h, 0.65));
-          // Star field above the horizon
-          vec2 sp = dir.xz / max(0.12, dir.y + 0.25) * 28.0;
-          vec2 cell = floor(sp);
-          float star = step(0.985, hash(cell));
-          float tw = 0.5 + 0.5 * sin(uTime * (1.0 + hash(cell + 7.0) * 3.0) + hash(cell) * 50.0);
-          col += vec3(0.9, 0.95, 1.0) * star * tw * smoothstep(0.0, 0.35, h) * 0.5;
-          // Aurora bands drifting through the upper sky, act-colored
+          vec2 proj = dir.xz / max(0.12, dir.y + 0.25);
+
+          // Drifting nebula clouds, tinted to the act palette — gives the sky depth
+          // and atmosphere instead of a flat gradient. Concentrated in the mid-upper sky.
+          vec2 np = proj * 1.5;
+          float neb = fbm(np + vec2(uTime * 0.012, uTime * 0.006));
+          neb = smoothstep(0.46, 1.0, neb);
+          float nebMask = smoothstep(0.16, 0.55, h) * smoothstep(1.02, 0.66, h);
+          vec3 nebCol = mix(auroraColor, topColor * 2.2 + bottomColor, 0.45);
+          col += nebCol * neb * nebMask * 0.45;
+
+          // Two star layers (bright sparse + faint dense) for parallax depth.
+          float hmask = smoothstep(0.0, 0.32, h);
+          col += vec3(0.92, 0.96, 1.0) * starLayer(proj, 28.0, 0.974) * hmask * 0.75;
+          col += vec3(0.8, 0.86, 1.0) * starLayer(proj + 3.3, 52.0, 0.95) * hmask * 0.3;
+
+          // Aurora bands drifting through the upper sky, act-colored.
           float band = sin(dir.x * 3.2 + uTime * 0.16 + sin(dir.z * 2.4 - uTime * 0.11) * 1.4);
           float band2 = sin(dir.z * 2.7 - uTime * 0.09 + dir.x * 1.6);
           float aur = smoothstep(0.5, 0.72, h) * smoothstep(0.98, 0.78, h);
-          col += auroraColor * aur * (max(0.0, band) * 0.30 + max(0.0, band2) * 0.18);
+          col += auroraColor * aur * (max(0.0, band) * 0.36 + max(0.0, band2) * 0.22);
           gl_FragColor = vec4(col, 1.0);
         }
       `,

@@ -289,4 +289,21 @@ export class RunManager {
     this.loadCurrentNode();
     return true;
   }
+
+  /** Warm boss shader/material variants under the boot loader. Bosses aren't in the
+   *  enemy registry, so the first time one is constructed mid-run its materials
+   *  compile on a live frame (a ~250ms+ stall). Build each off-screen, warm the
+   *  whole scene, then dispose — so no boss ever compiles during play. */
+  warmBosses(): void {
+    const dummies: Enemy[] = [];
+    for (const key of Object.keys(BOSSES) as BossKind[]) {
+      try {
+        const b = BOSSES[key].make(this.ctx, 0, -1000);
+        b.warmVisuals();
+        dummies.push(b);
+      } catch { /* skip a bad ctor */ }
+    }
+    this.ctx.stage.warmUp();
+    for (const b of dummies) b.dispose();
+  }
 }

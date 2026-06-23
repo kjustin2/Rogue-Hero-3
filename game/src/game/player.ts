@@ -41,6 +41,7 @@ export class Player {
   private visorMat!: THREE.MeshStandardMaterial;
   private auraMat!: THREE.MeshBasicMaterial;
   private auraRing!: THREE.Mesh;
+  private auraPhase = 0; // accumulated pulse phase (frequency varies with tempo)
   private auraLight!: THREE.PointLight;
   private armorMats: THREE.MeshStandardMaterial[] = [];
   private shieldBubble!: THREE.Mesh;
@@ -526,7 +527,7 @@ export class Player {
     this.auraMat = new THREE.MeshBasicMaterial({
       color: 0x3df59a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
     });
-    const auraGeo = new THREE.RingGeometry(0.55, 0.72, 40);
+    const auraGeo = new THREE.RingGeometry(0.55, 0.72, 96);
     auraGeo.rotateX(-Math.PI / 2);
     this.auraRing = new THREE.Mesh(auraGeo, this.auraMat);
     this.auraRing.position.y = 0.06;
@@ -623,7 +624,12 @@ export class Player {
     const heat = this.ctx.tempo.value / 100;
     this.auraLight.intensity = 3 + heat * 9;
     this.auraMat.opacity = 0.3 + heat * 0.45;
-    const pulse = 1 + Math.sin(this.t * (2 + heat * 7)) * 0.07;
+    // Accumulate the pulse PHASE rather than computing sin(t * freq): the frequency
+    // rises with tempo, and multiplying a large `t` by a fast-changing frequency makes
+    // the phase jump frame-to-frame when tempo swings (e.g. a crash) — which is the
+    // "circle wiggles then settles" glitch. Integrating dt*freq keeps it continuous.
+    this.auraPhase += dt * (2 + heat * 7);
+    const pulse = 1 + Math.sin(this.auraPhase) * 0.07;
     this.auraRing.scale.setScalar(pulse + heat * 0.25);
     this.visorMat.emissive.set(zone.color);
 

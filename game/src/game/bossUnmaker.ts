@@ -21,6 +21,8 @@ type UnmakerState =
   | "novaTell"
   | "pullTell"
   | "starRainTell"
+  | "crushTell" // close-range singularity slam — punishes hugging the star
+  | "pulseAura" // sustained close-range void pulses — denies melee camping
   | "guard"
   | "recover" | "phaseShift"
   | "fading"; // final, defenceless phase — the star gives up
@@ -94,8 +96,10 @@ export class Unmaker extends Enemy {
   private novas: PendingNova[] = [];
   private pulls: PendingPull[] = [];
   private stars: PendingStar[] = [];
+  private pulses: PendingStar[] = []; // close-range void pulses (reuse the x/z/radius/timer shape)
   private fxBeams: Beam[] = [];
   private lockAngle = 0;
+  private crushRadius = 0;
 
   private coreMat: THREE.MeshStandardMaterial;
   private ringMat: THREE.MeshStandardMaterial;
@@ -115,7 +119,7 @@ export class Unmaker extends Enemy {
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 3000;
+    this.hp = this.maxHp = 4800;
     this.speed = 3.0;
     this.radius = 1.7;
     this.wardColor = VOID_VIOLET;
@@ -219,15 +223,15 @@ export class Unmaker extends Enemy {
   /** Visibly escalate the boss at each phase transition. */
   private applyPhaseLook(phase: number): void {
     if (phase === 2) {
-      this.root.scale.setScalar(1.1);
-      for (const s of this.p2Shards) s.visible = true;
+      this.setBossScale(1.1);
+      this.eruptReveal(this.p2Shards);
       this.ringMat.emissive.set(0xc070ff);
       this.ringMat.emissiveIntensity = 2.0;
       this.debrisMat.emissive.set(0xb080ff);
       this.coreMat.emissive.set(0xf6f0ff);
     } else if (phase === 3) {
-      this.root.scale.setScalar(1.2);
-      for (const s of this.p3Spikes) s.visible = true;
+      this.setBossScale(1.2);
+      this.eruptReveal(this.p3Spikes);
       this.core.scale.setScalar(1.25);
       this.cageMat.color.set(0x1a1030);
       this.ringMat.emissive.set(0xe6d0ff);
@@ -236,7 +240,7 @@ export class Unmaker extends Enemy {
       this.coreMat.emissiveIntensity = 4.0;
     } else if (phase === 4) {
       // Fading: the star dims, cools to a sad blue-grey, and sags inward — spent.
-      this.root.scale.setScalar(1.04);
+      this.setBossScale(1.04);
       this.core.scale.setScalar(0.95);
       this.cageMat.color.set(0x0a0a14);
       this.ringMat.emissive.set(0x4a5a8a);
@@ -324,6 +328,7 @@ export class Unmaker extends Enemy {
     this.novas = [];
     this.pulls = [];
     this.stars = [];
+    this.pulses = [];
   }
 
   // ---------------------------------------------------------------- fading (the end)
@@ -336,6 +341,7 @@ export class Unmaker extends Enemy {
     this.novas = [];
     this.pulls = [];
     this.stars = [];
+    this.pulses = [];
     this.applyPhaseLook(4);
     // Its minions wink out with it — the end is meant to be just you and the dying star.
     this.ctx.enemies.clearNonBosses();
@@ -539,6 +545,71 @@ export class Unmaker extends Enemy {
     }
   }
 
+  // ---------------------------------------------------------------- singularity crush (close range)
+  /** A fast, heavy slam centered on the star — the price of hugging it. Not warded; it can be punished. */
+  private beginCrush(): void {
+    this.state = "crushTell";
+    this.timer = 0.5; // wind-up = telegraph duration
+    const R = this.phase >= 3 ? 4.9 : 4.3;
+    this.crushRadius = R;
+    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.5, VOID_CORE);
+    // A collapsing ring screams "incoming" so the close player can dive clear.
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R, color: VOID_VIOLET, duration: 0.5, startRadius: R + 1.4 });
+    this.ctx.sfx.beamCharge();
+  }
+
+  private landCrush(R: number): void {
+    const p = this.ctx.player;
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R, color: VOID_CORE, duration: 0.5 });
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R * 0.55, color: VOID_VIOLET, duration: 0.34 });
+    this.ctx.fx.burst({
+      x: this.pos.x, y: 0.6, z: this.pos.z,
+      count: 42, color: [VOID_WHITE, VOID_VIOLET, 0xffffff],
+      speed: [5, 16], up: 0.9, size: [0.45, 1.2], life: [0.3, 0.85], gravity: -6, drag: 2.4,
+    });
+    this.ctx.cam.addTrauma(0.5);
+    this.ctx.stage.punch(0.34);
+    this.ctx.sfx.bossSlam();
+    const d = Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+    if (d < R + p.radius) {
+      this.ctx.combat.damagePlayer(this.phase >= 3 ? 30 : 26, this.pos.x, this.pos.z);
+      const len = Math.max(0.001, d);
+      this.ctx.controller.push(((p.pos.x - this.pos.x) / len) * 11, ((p.pos.z - this.pos.z) / len) * 11);
+    }
+  }
+
+  // ---------------------------------------------------------------- void pulse aura (close range)
+  /** A sustained ring of telegraphed close pulses — standing in the star's reach is lethal. */
+  private beginPulseAura(): void {
+    this.state = "pulseAura";
+    const n = this.phase >= 3 ? 4 : 3;
+    const tell = 0.5;
+    const gap = 0.42;
+    const radius = 3.6;
+    this.timer = tell + n * gap + 0.1;
+    // Telegraph the whole salvo up front so the close player can read it and leave.
+    for (let i = 0; i < n; i++) {
+      const t = tell + i * gap;
+      this.ctx.tele.circle(this.pos.x, this.pos.z, radius, t, i % 2 === 0 ? VOID_VIOLET : VOID_WHITE);
+      this.pulses.push({ x: this.pos.x, z: this.pos.z, radius, timer: t });
+    }
+    this.ctx.sfx.beamCharge();
+  }
+
+  private landPulse(pl: PendingStar): void {
+    const p = this.ctx.player;
+    this.ctx.fx.ring(pl.x, pl.z, { radius: pl.radius, color: VOID_VIOLET, duration: 0.3 });
+    this.ctx.fx.burst({
+      x: pl.x, y: 0.5, z: pl.z,
+      count: 16, color: [VOID_VIOLET, VOID_WHITE], speed: [3, 10], up: 0.5, size: [0.3, 0.8], life: [0.2, 0.5], gravity: -3, drag: 2.6,
+    });
+    this.ctx.cam.addTrauma(0.2);
+    this.ctx.sfx.enemyShoot();
+    if (Math.hypot(p.pos.x - pl.x, p.pos.z - pl.z) < pl.radius + p.radius) {
+      this.ctx.combat.damagePlayer(this.phase >= 3 ? 13 : 11, pl.x, pl.z);
+    }
+  }
+
   // ---------------------------------------------------------------- tick
   protected tick(dt: number): void {
     const p = this.ctx.player;
@@ -604,6 +675,13 @@ export class Unmaker extends Enemy {
         this.stars.splice(i, 1);
       }
     }
+    for (let i = this.pulses.length - 1; i >= 0; i--) {
+      this.pulses[i].timer -= dt;
+      if (this.pulses[i].timer <= 0) {
+        this.landPulse(this.pulses[i]);
+        this.pulses.splice(i, 1);
+      }
+    }
     // Beam visuals fade.
     for (let i = this.fxBeams.length - 1; i >= 0; i--) {
       const b = this.fxBeams[i];
@@ -615,6 +693,9 @@ export class Unmaker extends Enemy {
         this.fxBeams.splice(i, 1);
       }
     }
+
+    // Dramatic weight: coil on tells, lunge on novas/beams/crush, rear on phase shifts, sag while fading.
+    this.poseForState(dt, this.state, this.state === "idle");
 
     switch (this.state) {
       case "idle": {
@@ -659,6 +740,22 @@ export class Unmaker extends Enemy {
           this.timer = 0.42;
         }
         break;
+      case "crushTell":
+        // Plant and slam — do not drift, so the telegraph stays true.
+        this.facePlayer(dt * 0.4);
+        if (this.timer <= 0) {
+          this.landCrush(this.crushRadius);
+          this.state = "recover";
+          this.timer = 0.4;
+        }
+        break;
+      case "pulseAura":
+        this.facePlayer(dt * 0.3);
+        if (this.timer <= 0 && this.pulses.length === 0) {
+          this.state = "recover";
+          this.timer = 0.4;
+        }
+        break;
       case "guard":
         this.facePlayer(dt * 0.5);
         if (this.timer <= 0) {
@@ -672,7 +769,7 @@ export class Unmaker extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.42, 1.35 - this.phase * 0.28);
+          this.attackCd = Math.max(0.3, 0.85 - this.phase * 0.18);
           this.timer = this.attackCd;
         }
         break;
@@ -685,12 +782,21 @@ export class Unmaker extends Enemy {
 
   private pickAttack(): void {
     this.attackPick++;
+    // Punish the hugger: a player in the star's reach eats a crush, or a pulsing
+    // void aura in later phases. The star will not be camped in melee.
+    if (this.distToPlayer() < 5.2) {
+      if (this.phase >= 2 && this.attackPick % 2 === 1) { this.beginPulseAura(); return; }
+      this.beginCrush();
+      return;
+    }
     if (this.phase >= 2 && (this.attackPick % 5 === 0 || (this.phase >= 3 && this.attackPick % 6 === 1))) {
       this.beginStarRain();
       return;
     }
     // An unmaking ward every 4th attack (phases 1–3 only — never in the fading end).
     if (this.phase < 4 && this.attackPick % 4 === 3) { this.beginGuard(); return; }
+    // A reaching crush now and then denies the mid band, not just point-blank.
+    if (this.attackPick % 6 === 4) { this.beginCrush(); return; }
     // The implosion pull joins the pool at phase 3.
     if (this.phase >= 3 && this.attackPick % 3 === 0) {
       this.beginPull();

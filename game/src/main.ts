@@ -1153,7 +1153,14 @@ function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, titl
     { at: 1930, type: "burst", preset: kind === "spire" || kind === "echo" ? "shards" : cfg.seismic ? "seismic" : "summon" },
     { at: 2180, type: "flash", color: cfg.hex, intensity: cfg.quiet ? 0.16 : 0.24 },
     { at: 2240, type: "pulse", trauma: cfg.quiet ? 0.1 : 0.2, fov: cfg.quiet ? 0.18 : 0.32 },
+    // The name-drop lands as a real impact: a column of light, a shock ring out of
+    // the spawn, a screen flash, and a punch — the boss "arrives" instead of fading in.
+    { at: 2470, type: "burst", preset: cfg.quiet ? "starfall" : "pillar" },
+    { at: 2500, type: "ring", radius: cfg.quiet ? 9 : 13, color: "c1", duration: 0.55, startRadius: 1 },
+    { at: 2520, type: "flash", color: cfg.hex, intensity: cfg.quiet ? 0.2 : 0.42 },
     { at: 2550, type: "reveal", name, title },
+    { at: 2580, type: "pulse", trauma: cfg.quiet ? 0.12 : 0.34, punch: cfg.quiet ? 0.18 : 0.42, fov: cfg.quiet ? 0.2 : 0.34 },
+    { at: 2620, type: "ring", radius: cfg.quiet ? 6 : 8, color: "white", duration: 0.4, startRadius: 0.5 },
   ];
 
   if (kind === "warden") {
@@ -1292,17 +1299,31 @@ function playBossPhaseCutscene(phase: number, line: string): void {
     cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 5400));
   } else {
     ctx.music.duckTo(0.5);
-    ctx.cam.cinematic(boss.pos.x, boss.pos.z, cfg.seismic ? 0.58 : 0.7);
+    const bx = boss.pos.x, bz = boss.pos.z;
+    ctx.cam.cinematic(bx, bz, cfg.seismic ? 0.55 : 0.66);
     ctx.sfx.bossRoar();
-    ctx.cam.addTrauma(cfg.seismic ? 0.68 : 0.5);
-    ctx.stage.punch(cfg.seismic ? 0.5 : 0.4);
-    ctx.cam.pulseFov(1);
-    hud.flash(cfg.phaseHex || (PHASE_FLASH[Math.min(phase, PHASE_FLASH.length - 1)] ?? "#ff7a4a"), 0.45);
+    ctx.cam.addTrauma(cfg.seismic ? 0.8 : 0.62);
+    ctx.stage.punch(cfg.seismic ? 0.55 : 0.46);
+    ctx.cam.pulseFov(1.15);
+    hud.flash(cfg.phaseHex || (PHASE_FLASH[Math.min(phase, PHASE_FLASH.length - 1)] ?? "#ff7a4a"), 0.5);
     hud.banner(line, `PHASE ${phase}`, `banner--boss banner--long banner--cutscene ${cfg.bannerClass}`);
-    addBossOmen(cfg.omen, cfg, boss.pos.x, boss.pos.z, phase);
-    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 5, color: cfg.phaseColor, duration: 0.7 });
-    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 3.1, color: 0xffffff, duration: 0.45 });
-    bossBurst(cfg.seismic ? "seismic" : cfg.tear ? "tear" : kind === "spire" ? "shards" : "summon", cfg, boss.pos.x, boss.pos.z);
+    addBossOmen(cfg.omen, cfg, bx, bz, phase);
+    // Staged eruption: white core-flash → themed shockwave → (520ms) column of light +
+    // a wider ring + a second jolt → (1050ms) a far outer shock + flash. Reads as the
+    // boss tearing itself up a tier, not a single ping.
+    ctx.fx.ring(bx, bz, { radius: 3.1, color: 0xffffff, duration: 0.4, startRadius: 0.5 });
+    ctx.fx.ring(bx, bz, { radius: 6, color: cfg.phaseColor, duration: 0.7 });
+    bossBurst(cfg.seismic ? "seismic" : cfg.tear ? "tear" : kind === "spire" ? "shards" : "summon", cfg, bx, bz);
+    cutsceneTimers.push(window.setTimeout(() => {
+      bossBurst("pillar", cfg, bx, bz);
+      ctx.fx.ring(bx, bz, { radius: 11, color: cfg.c1, duration: 0.55, startRadius: 4 });
+      ctx.cam.addTrauma(0.4); ctx.stage.punch(0.3);
+    }, 520));
+    cutsceneTimers.push(window.setTimeout(() => {
+      ctx.fx.ring(bx, bz, { radius: 16, color: cfg.c2, duration: 0.6, startRadius: 8 });
+      hud.flash(cfg.phaseHex || "#ffffff", 0.3);
+      ctx.cam.pulseFov(0.5);
+    }, 1050));
     cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 4300));
   }
   window.addEventListener("pointerdown", skipCutscene);
@@ -1398,6 +1419,10 @@ window.addEventListener("keydown", (e) => {
 });
 
 // ---------------------------------------------------------------- frame loop
+// True until the loading screen has warmed the menu render path + fonts. While it
+// holds, the loop runs its (cheap) logic but skips the visible render — the only
+// render during boot is the warm-up itself, behind the opaque loader.
+let booting = true;
 let last = performance.now();
 // While a menu/overlay is up the scene is near-static, so we render it at a
 // capped rate (logic + input still poll every vsync) — a still title screen has
@@ -1488,23 +1513,110 @@ ctx.stage.renderer.setAnimationLoop(() => {
 
   // Combat + cinematics get the full post chain at full rate; menus/overlays get
   // the lean chain (no bloom/SMAA/grain/shadows) rendered at a capped frame rate.
-  const cinematic = ctx.playing || state === "cutscene";
-  ctx.stage.setLowCost(!cinematic);
-  if (cinematic) {
-    ctx.stage.render(dt);
-    menuRenderAccum = 0;
-  } else {
-    menuRenderAccum += dt;
-    if (menuRenderAccum >= MENU_FRAME) {
-      ctx.stage.render(menuRenderAccum);
+  // While the loading screen is up, skip the visible render entirely (the loader
+  // is opaque) so the menu's first real frame is already warm and never compiles.
+  //
+  // `dead`/`victory` deliberately stay on the FULL path: the player can die with the
+  // boss + a full enemy pack still on the field, and flipping to the lean menu path
+  // there (drop shadows + switch composer) would relink every lit material on that
+  // one live frame — the "killed by a boss → ~3-second freeze". Holding the full path
+  // means no flip happens until `toMenu()`/retry has cleared the scene back to the
+  // (already-warm) menu, where the toggle is cheap.
+  if (!booting) {
+    const fullPath = ctx.playing || state === "cutscene" || state === "dead" || state === "victory";
+    ctx.stage.setLowCost(!fullPath);
+    if (fullPath) {
+      ctx.stage.render(dt);
       menuRenderAccum = 0;
+    } else {
+      menuRenderAccum += dt;
+      if (menuRenderAccum >= MENU_FRAME) {
+        ctx.stage.render(menuRenderAccum);
+        menuRenderAccum = 0;
+      }
     }
   }
   ctx.input.endFrame();
 });
 
-// Boot into the menu
-toMenu();
+// ---------------------------------------------------------------- boot
+// The loading screen (#rift-loader in index.html) is already painting. Under it we
+// build the menu scene, wait for the webfonts (so the title doesn't swap/reflow),
+// and pre-compile the menu + combat render paths — so the moment the loader lifts,
+// the menu is smooth and the first fight won't hitch on a first-use shader compile.
+const RIFT_LOADER_MIN_MS = 900;
+async function boot(): Promise<void> {
+  const loader = document.getElementById("rift-loader");
+  const bar = loader?.querySelector<HTMLElement>(".rl-bar-fill") ?? null;
+  const status = loader?.querySelector<HTMLElement>(".rl-status") ?? null;
+  const step = (pct: number, text: string): void => {
+    if (bar) bar.style.width = `${Math.round(pct * 100)}%`;
+    if (status) status.textContent = text;
+  };
+  // Yield two frames so the loader can paint the new status/bar between heavy,
+  // main-thread-blocking warm-up steps (keeps the loader animation alive).
+  const paint = (): Promise<void> =>
+    new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+  const startedAt = performance.now();
+
+  try {
+    // 1. Build the menu scene (rift theme, hero mesh, ambient embers, main-menu DOM).
+    toMenu();
+    step(0.18, "Kindling the rift…");
+    await paint();
+
+    // 2. Webfonts — gate the reveal on these so the menu doesn't render in a
+    //    fallback face and then reflow (FOUT). Bounded so a slow fetch can't hang.
+    try {
+      await Promise.race([
+        Promise.all([
+          document.fonts.load("700 1em Cinzel"),
+          document.fonts.load("600 1em Cinzel"),
+          document.fonts.load("600 1em Rajdhani"),
+          document.fonts.load("500 1em Rajdhani"),
+        ]),
+        new Promise((r) => window.setTimeout(r, 1500)),
+      ]);
+    } catch { /* fonts optional — fall through to fallback faces */ }
+    step(0.42, "Forging the arena…");
+    await paint();
+
+    // 3. Compile the menu render path (in-scene materials + lean menuComposer).
+    ctx.stage.warmMenu();
+    step(0.62, "Lighting the embers…");
+    await paint();
+
+    // 4. Pre-render the combat roster + card effects (and both shadow states, so the
+    //    menu↔combat and death transitions never compile on a live frame). Done in
+    //    two yielded chunks so no single compile dominates a frame and the loader
+    //    keeps animating. Latch first so any in-run warm call (node load) no-ops.
+    if (!combatWarmupDone) {
+      combatWarmupDone = true;
+      combatWarmupScheduled = false;
+      ctx.caster.precompile();
+      step(0.74, "Sharpening the blades…");
+      await paint();
+      ctx.enemies.precompile();
+      step(0.86, "Summoning the wardens…");
+      await paint();
+      ctx.run.warmBosses();
+      step(0.92, "Binding the wardens…");
+      await paint();
+    }
+
+    // 5. Let the (cool) loader read as intentional rather than a flash, then reveal.
+    const elapsed = performance.now() - startedAt;
+    if (elapsed < RIFT_LOADER_MIN_MS) await new Promise((r) => window.setTimeout(r, RIFT_LOADER_MIN_MS - elapsed));
+    step(1, "Descend.");
+  } catch { /* never trap the player behind the loader */ }
+
+  booting = false;
+  if (loader) {
+    loader.classList.add("rl-done");
+    window.setTimeout(() => loader.remove(), 700);
+  }
+}
+void boot();
 
 // Debug/automation hook. Exposed in BOTH dev and production builds so the
 // real-runtime Electron smoke (scripts/smoke-electron.cjs) can drive the
@@ -1517,4 +1629,113 @@ toMenu();
   w.__rh3cards = CARDS;
   w.__rh3heroes = HEROES;
   w.__rh3menus = menus;
+  // Current top-level UI screen, for the automation/capture harness so it can
+  // tell menu/draft/pause/end states apart without guessing from the DOM.
+  w.__rh3state = () => state;
+
+  // ── Debug scenario system ────────────────────────────────────────────────
+  // A single documented surface for automated tests to "cut to" a scenario and
+  // screenshot it, instead of hand-stitching debugLoadBoss/spawn/cinematic calls.
+  //   __rh3debug.scenario("boss:colossus:p2")   boss room, jumped to phase 2
+  //   __rh3debug.scenario("enemy:caster")       one framed enemy in a holding room
+  //   __rh3debug.scenario("room:elite")         a node kind (combat/elite/shop/…)
+  //   __rh3debug.scenario("menu"|"victory"|"death")
+  // plus low-level helpers (frame/godmode/setBossPhase/killEnemies/skipCutscene).
+  type DebugBoss = Parameters<typeof ctx.run.debugLoadBoss>[0];
+  type DebugNode = Parameters<typeof ctx.run.debugLoadNode>[0];
+  type DebugKind = Parameters<typeof ctx.enemies.spawn>[0];
+  interface ScenarioOpts { act?: number; seed?: number; depth?: number; skipIntro?: boolean; frame?: boolean; zoom?: number; }
+  const BOSS_ACT: Record<string, number> = { warden: 1, spire: 2, colossus: 3, tyrant: 4, unmaker: 5, echo: 4 };
+  const PHASE_FRAC: Record<string, number> = { p2: 0.66, p3: 0.32, p4: 0.1 };
+  // Time-based (NOT frame-based) deferral: headless renderers can run the rAF loop
+  // uncapped, so a frame-count budget burns through in a fraction of a second and
+  // misses a boss that spawns a couple seconds into a long entrance.
+  const soon = (fn: () => void, ms = 50) => window.setTimeout(fn, ms);
+  const livingBoss = () => ctx.enemies.living().find((e) => e.kind === "boss") ?? null;
+  /** Run fn once a boss has actually spawned (it materializes during the entrance). */
+  const whenBoss = (fn: () => void, ms = 12000): void => {
+    const t0 = performance.now();
+    const tick = () => { if (livingBoss()) fn(); else if (performance.now() - t0 < ms) soon(tick, 60); };
+    tick();
+  };
+
+  const debug = {
+    /** Cut to a named scenario. Returns true if the name was recognized. */
+    scenario(name: string, opts: ScenarioOpts = {}): boolean {
+      const parts = String(name).split(":");
+      switch (parts[0]) {
+        case "boss": return debug.boss(parts[1], parts[2], opts);
+        case "enemy": return debug.enemy(parts[1], opts);
+        case "room": return debug.room(parts[1], opts.act ?? 1);
+        case "menu": toMenu(); return true;
+        case "victory": ctx.events.emit("RUN_VICTORY", {}); return true;
+        case "death": ctx.combat.damagePlayer(99999, ctx.player.pos.x, ctx.player.pos.z); return true;
+        default: return false;
+      }
+    },
+    /** Load a boss room; optional phase tag ("p2"/"p3"/"p4") jumps straight there. */
+    boss(kind: string, phase?: string, opts: ScenarioOpts = {}): boolean {
+      const act = opts.act ?? BOSS_ACT[kind] ?? 4;
+      const ok = ctx.run.debugLoadBoss(kind as DebugBoss, act, opts.seed ?? 424242, opts.depth ?? (kind === "echo" ? 3 : 5));
+      const target = phase === "p4" ? 4 : phase === "p3" ? 3 : phase === "p2" ? 2 : 0;
+      whenBoss(() => {
+        // Each frame: keep trying to skip the entrance (the skip is grace-gated for
+        // ~700ms, and a boss can't be phase-advanced until it's actually in play),
+        // then push the boss to the target phase. Continue until the intro is over
+        // AND the phase has landed — robust to long entrances + entrance wards.
+        const t0 = performance.now();
+        const step = () => {
+          if (opts.skipIntro !== false) skipCutscene();
+          const b = livingBoss();
+          const atPhase = target === 0 || (b ? ((b as { phase?: number }).phase ?? 1) >= target : false);
+          if (target > 0 && b && !atPhase) debug.setBossPhase(PHASE_FRAC[phase!]);
+          if ((state !== "playing" || !atPhase) && performance.now() - t0 < 12000) soon(step, 80);
+        };
+        step();
+      });
+      return ok;
+    },
+    /** Spawn one enemy at the origin in a holding room (a hidden, banished boss
+     *  keeps the room from auto-clearing), framed for a portrait. */
+    enemy(kind: string, opts: ScenarioOpts = {}): boolean {
+      ctx.run.debugLoadBoss("warden", 1, 424242, 1);
+      whenBoss(() => {
+        skipCutscene();
+        const b = livingBoss();
+        if (b) { b.root.visible = false; b.setSpawnGrace(1e9); b.pos.x = 0; b.pos.z = -60; }
+        ctx.enemies.spawn(kind as DebugKind, 0, 0, 0);
+        ctx.player.pos.x = 26; ctx.player.pos.z = 26; ctx.player.hp = ctx.player.maxHp;
+      });
+      if (opts.frame !== false) window.setTimeout(() => debug.frame(0, 0, opts.zoom ?? 0.36), 1500);
+      return true;
+    },
+    /** Load any node kind: combat/elite/shop/treasure/rest/event. */
+    room(kind: string, act = 1): boolean { return ctx.run.debugLoadNode(kind as DebugNode, act); },
+    /** Dolly the cinematic camera onto a point (small zoom = closer). */
+    frame(x = 0, z = 0, zoom = 0.5): void { ctx.cam.cinematic(x, z, zoom); },
+    /** Hand the camera back to gameplay follow. */
+    follow(): void { ctx.cam.mode = "follow"; },
+    /** Drop the active boss to a HP fraction (triggers its phase cutscene). */
+    setBossPhase(frac: number): boolean { const b = livingBoss(); if (b) b.takeDamage(Math.max(1, Math.round(b.hp - b.maxHp * frac))); return !!b; },
+    /** Refill player HP (keep the test subject alive). */
+    godmode(): void { ctx.player.hp = ctx.player.maxHp; },
+    /** Clear all non-boss enemies. */
+    killEnemies(): void { for (const e of ctx.enemies.living()) if (e.kind !== "boss") e.takeDamage(99999); },
+    /** Skip an active intro/phase cutscene. */
+    skipCutscene(): void { skipCutscene(); },
+    /** The active boss instance (or null). */
+    boss0() { return livingBoss(); },
+    /** Current top-level UI screen. */
+    state(): string { return state; },
+    /** The recognized scenario name patterns. */
+    list(): string[] {
+      return [
+        "boss:<warden|spire|colossus|tyrant|unmaker|echo>[:p2|p3|p4]",
+        "enemy:<husk|spitter|swarmer|bomber|sentinel|wisp|leaper|tether|mirror|caster|shade|bastion|brute|harrier|splitter|voidling|warper>",
+        "room:<combat|elite|shop|treasure|rest|event>",
+        "menu", "victory", "death",
+      ];
+    },
+  };
+  w.__rh3debug = debug;
 }

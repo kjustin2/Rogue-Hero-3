@@ -228,13 +228,52 @@ export class Stage {
 
   /**
    * Pre-compile shaders for everything already in the scene (pooled telegraphs,
-   * projectiles, slash arcs, particles, the hero) plus the full post chain — so
-   * the first time any of them appears in combat there's no synchronous shader
-   * compile stall (the cause of the "first boss shot froze for a second" hitch).
-   * Three's compile() warms in-scene materials regardless of their `visible` flag.
+   * projectiles, slash arcs, particles, the hero — plus any dummies a caller has
+   * staged) so the first time any of them appears there's no synchronous shader
+   * compile stall. Three's compile() warms in-scene materials regardless of their
+   * `visible` flag.
+   *
+   * Critically this warms BOTH shadow states and BOTH post chains. In Three a
+   * directional light's `castShadow` flag is baked into every lit material's
+   * program cache key, so toggling it (menu ↔ combat, via setLowCost) forces a
+   * synchronous relink of every MeshStandardMaterial in the scene on the very next
+   * render. Warming the shadows-ON (combat) and shadows-OFF (menu/death) variants
+   * up front means those transitions — including the death → "dead" screen flip in
+   * a material-dense boss room — never compile on a live frame. That flip was the
+   * "~3-second freeze when a boss killed me" hitch. On the low preset combat has no
+   * shadows, so both passes stay shadows-off (and the second compile is a cache hit).
    */
   warmUp(): void {
-    try { this.renderer.compile(this.scene, this.camera); } catch { /* headless / lost ctx */ }
-    try { this.composer.render(0.016); } catch { /* noop */ }
+    const prevCast = this.keyLight.castShadow;
+    try {
+      // Combat path: shadows in the state gameplay actually uses + the full chain.
+      this.keyLight.castShadow = this.quality !== "low";
+      this.renderer.compile(this.scene, this.camera);
+      this.composer.render(0.016);
+      // Menu / death path: shadows off + the lean chain.
+      this.keyLight.castShadow = false;
+      this.renderer.compile(this.scene, this.camera);
+      this.menuComposer.render(0.016);
+    } catch { /* headless / lost ctx */ } finally {
+      this.keyLight.castShadow = prevCast;
+    }
+  }
+
+  /**
+   * Warm only the menu render path: in-scene materials (shadows off) plus the lean
+   * menuComposer's fused EffectPass, which is a *distinct* GL program from the full
+   * chain and so isn't covered by rendering `composer`. Cheap enough to run at boot
+   * under the loading screen so the first menu frame doesn't pay a synchronous GLSL
+   * compile — the "menus lag a little right after startup" hitch.
+   */
+  warmMenu(): void {
+    const prevCast = this.keyLight.castShadow;
+    try {
+      this.keyLight.castShadow = false; // the menu always draws with shadows off
+      this.renderer.compile(this.scene, this.camera);
+      this.menuComposer.render(0.016);
+    } catch { /* headless / lost ctx */ } finally {
+      this.keyLight.castShadow = prevCast;
+    }
   }
 }

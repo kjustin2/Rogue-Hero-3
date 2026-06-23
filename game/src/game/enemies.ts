@@ -41,6 +41,31 @@ export interface DamageOpts {
   noDetonate?: boolean;
 }
 
+// Shared assets for the ground-contact glow under every enemy (one soft radial
+// sprite + one flat plane, reused across all enemies — only the material is
+// per-enemy so each can tint to its own accent).
+let GLOW_TEX: THREE.CanvasTexture | null = null;
+let GLOW_GEO: THREE.PlaneGeometry | null = null;
+function groundGlowAssets(): { tex: THREE.CanvasTexture; geo: THREE.PlaneGeometry } {
+  if (!GLOW_TEX) {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 64;
+    const g = cv.getContext("2d")!;
+    const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, "rgba(255,255,255,1)");
+    grad.addColorStop(0.4, "rgba(255,255,255,0.45)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 64, 64);
+    GLOW_TEX = new THREE.CanvasTexture(cv);
+  }
+  if (!GLOW_GEO) {
+    GLOW_GEO = new THREE.PlaneGeometry(1, 1);
+    GLOW_GEO.rotateX(-Math.PI / 2);
+  }
+  return { tex: GLOW_TEX, geo: GLOW_GEO };
+}
+
 /**
  * Base enemy: HP, knockback physics, hit-flash, freeze, billboard HP bar and
  * a per-type `tick` brain. All attacks must telegraph — that's the contract.
@@ -83,6 +108,20 @@ export abstract class Enemy {
   private affixCrown: THREE.Group | null = null;
   private roleSilhouettes: RoleSilhouetteRecord[] = [];
   private intentPose = 0;
+  // Dramatic boss flourish — additive pose the base folds into the root transform.
+  // All default-neutral so non-bosses are unaffected. Bosses drive these via
+  // drivePose()/setBossScale()/eruptReveal() to give attacks, movement, and phase
+  // shifts weight: poseRear leans back (coil/roar), poseLunge leans forward
+  // (commit), poseRise lifts (rear up / leap), poseSwell pulses the body bigger.
+  protected poseRear = 0;
+  protected poseLunge = 0;
+  protected poseRise = 0;
+  protected poseSwell = 0;
+  protected bossScale = 1;          // target base scale (phase growth)
+  private bossScaleCur = 1;         // smoothly eased toward bossScale
+  private eruptList: { o: THREE.Object3D; s: THREE.Vector3 }[] = [];
+  private eruptT = 0;
+  private eruptDur = 0;
   private reactT = 0;
   private reactDur = 0.16;
   private reactPitch = 0;
@@ -103,6 +142,9 @@ export abstract class Enemy {
   protected invulnTime = 0;
   private deflectCd = 0;
   private wardRing: THREE.Mesh | null = null;
+  private groundGlow: THREE.Mesh | null = null;
+  private groundGlowInit = false;
+  private bossFxAcc = 0;
   /** Ward-aura colour; bosses override to match their palette. */
   protected wardColor = 0x88ccff;
 
@@ -128,16 +170,49 @@ export abstract class Enemy {
   /** Lazily build the shield bar (only shielded enemies ever need it). */
   private ensureShieldBar(): void {
     if (this.shieldBg) return;
-    const bg = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x000000, opacity: 0.55, transparent: true, depthWrite: false }));
-    const fill = new THREE.Sprite(new THREE.SpriteMaterial({ color: this.shieldBarColor, opacity: 0.95, transparent: true, depthWrite: false }));
-    bg.scale.set(1.0, 0.07, 1);
-    fill.scale.set(0.96, 0.045, 1);
+    // A deliberately slim, bright indicator — distinct from the HP bar so it never
+    // reads as a redundant "empty health bar". Only a faint track sits behind it.
+    const bg = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0x05070d, opacity: 0.3, transparent: true, depthWrite: false }));
+    const fill = new THREE.Sprite(new THREE.SpriteMaterial({ color: this.shieldBarColor, opacity: 1.0, transparent: true, depthWrite: false }));
+    bg.scale.set(0.84, 0.04, 1);
+    fill.scale.set(0.8, 0.052, 1);
     fill.center.set(0, 0.5);
     bg.visible = fill.visible = false;
     this.root.add(bg, fill);
     this.shieldBg = bg;
     this.shieldFill = fill;
   }
+
+  /** Lazily add a soft ground-contact glow, auto-tinted from the enemy's own
+   *  brightest emissive accent — grounds the body and lifts it off the dark floor.
+   *  Built on first update, once the subclass has registered all its materials. */
+  private ensureGroundGlow(): void {
+    if (this.groundGlowInit) return;
+    this.groundGlowInit = true;
+    let best = 0.25;
+    const color = new THREE.Color(0x000000);
+    for (const f of this.flashMats) {
+      const c = f.baseEmissive;
+      const lum = (c.r + c.g + c.b) * Math.min(1.5, Math.max(0.3, f.baseIntensity));
+      if (lum > best) { best = lum; color.copy(c); }
+    }
+    if (color.r + color.g + color.b <= 0.02) return; // no emissive accent → no glow
+    const { tex, geo } = groundGlowAssets();
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, color, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const m = new THREE.Mesh(geo, mat);
+    // Bosses get a wider, more menacing pool than rank-and-file enemies.
+    const s = this.kind === "boss" ? Math.max(6, this.radius * 4.6) : Math.max(1.5, this.radius * 3.4);
+    m.scale.set(s, s, s);
+    m.renderOrder = -1;
+    this.ctx.stage.scene.add(m);
+    this.groundGlow = m;
+  }
+
+  /** Force first-time visual sub-objects (the ground glow) into the scene so their
+   *  shader programs compile during warm-up, not as a mid-fight hitch on first spawn. */
+  warmVisuals(): void { this.ensureGroundGlow(); }
 
   protected registerFlash(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
     this.flashMats.push({ mat, baseEmissive: mat.emissive.clone(), baseIntensity: mat.emissiveIntensity });
@@ -254,6 +329,43 @@ export abstract class Enemy {
   /** Subclasses refresh this while winding up, bracing, fusing, or committing. */
   protected setIntentPose(amount: number): void {
     this.intentPose = Math.max(this.intentPose, amount);
+  }
+
+  /** Ease the dramatic boss pose toward target offsets — call once per tick. */
+  protected drivePose(dt: number, t: { rear?: number; lunge?: number; rise?: number; swell?: number }, rate = 9): void {
+    const k = Math.min(1, dt * rate);
+    this.poseRear += ((t.rear ?? 0) - this.poseRear) * k;
+    this.poseLunge += ((t.lunge ?? 0) - this.poseLunge) * k;
+    this.poseRise += ((t.rise ?? 0) - this.poseRise) * k;
+    this.poseSwell += ((t.swell ?? 0) - this.poseSwell) * k;
+  }
+
+  /** Map a boss attack-state name to a dramatic pose and ease toward it. Wind-ups
+   *  (…Tell / guard / channel / track) coil back; commits (…ing / nova / slam /
+   *  pound / crush / pulse / rain) lunge forward; phaseShift rears up + swells. */
+  protected poseForState(dt: number, state: string, moving = false): void {
+    let t: { rear?: number; lunge?: number; rise?: number; swell?: number };
+    if (state === "phaseShift") t = { rear: 0.34, rise: 0.18, swell: 0.12 };
+    else if (state === "leap") t = { lunge: 0.16, rise: 0.24 };
+    else if (state === "fading") t = { rear: -0.14 };
+    else if (/tell$|guard|channel|track|brace$/i.test(state)) t = { rear: 0.22, swell: 0.03 };
+    else if (/ing$|nova|slam|pound|crush|pulse|tecton|rain|crossfire|beam$|seq$/i.test(state)) t = { lunge: 0.26 };
+    else t = moving ? { lunge: 0.07 } : {};
+    this.drivePose(dt, t);
+  }
+
+  /** Set the boss's base body-scale target (smoothly grown toward in update). */
+  protected setBossScale(s: number): void { this.bossScale = s; }
+
+  /** Reveal phase geometry with an erupting overshoot scale-pop (0 → ~1.2 → rest). */
+  protected eruptReveal(meshes: THREE.Object3D[], dur = 0.75): void {
+    for (const o of meshes) {
+      o.visible = true;
+      this.eruptList.push({ o, s: o.scale.clone() });
+      o.scale.setScalar(0.0001);
+    }
+    this.eruptDur = dur;
+    this.eruptT = dur;
   }
 
   private hitReaction(opts: DamageOpts = {}, shielded = false): void {
@@ -542,6 +654,11 @@ export abstract class Enemy {
 
   dispose(): void {
     this.ctx.stage.scene.remove(this.root);
+    if (this.groundGlow) {
+      this.ctx.stage.scene.remove(this.groundGlow);
+      (this.groundGlow.material as THREE.Material).dispose(); // shared geo/tex are kept
+      this.groundGlow = null;
+    }
     // Each enemy builds its own geometries/materials — release them or rooms leak GPU memory
     this.root.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.Sprite) {
@@ -648,14 +765,64 @@ export abstract class Enemy {
       this.ctx.arena.resolveObstacles(this.pos, this.radius);
     }
 
+    // Dramatic geometry eruption (phase reveals): overshoot scale-in.
+    if (this.eruptT > 0) {
+      this.eruptT = Math.max(0, this.eruptT - dt);
+      const k = 1 - this.eruptT / this.eruptDur;            // 0 → 1
+      const c = 1.9;                                        // easeOutBack overshoot
+      const ease = Math.max(0.0001, 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2));
+      for (const e of this.eruptList) e.o.scale.copy(e.s).multiplyScalar(ease);
+      if (this.eruptT === 0) this.eruptList.length = 0;
+    }
+
     const reactK = this.reactDur > 0 ? this.reactT / this.reactDur : 0;
     const reactEase = Math.sin(Math.max(0, Math.min(1, reactK)) * Math.PI);
-    this.root.position.set(this.pos.x, this.pos.y + this.reactLift * reactEase, this.pos.z);
-    this.root.rotation.set(this.reactPitch * reactEase, this.heading + this.reactYaw * reactEase, this.reactRoll * reactEase);
+    this.root.position.set(this.pos.x, this.pos.y + this.reactLift * reactEase + this.poseRise, this.pos.z);
+    this.root.rotation.set(
+      this.reactPitch * reactEase + this.poseRear - this.poseLunge,
+      this.heading + this.reactYaw * reactEase,
+      this.reactRoll * reactEase,
+    );
+    // Boss body scale: ease toward the phase-growth target with a swell pulse on top,
+    // plus a subtle always-on "breathing" pulse so a boss never reads as a frozen
+    // statue. Scaling from the root origin (at the feet) keeps the base planted.
+    if (this.kind === "boss" || this.bossScale !== 1 || this.bossScaleCur !== 1 || this.poseSwell !== 0) {
+      this.bossScaleCur += (this.bossScale - this.bossScaleCur) * Math.min(1, dt * 6);
+      const breathe = this.kind === "boss" ? Math.sin(this.t * 1.5) * 0.012 : 0;
+      this.root.scale.setScalar(this.bossScaleCur * (1 + this.poseSwell + breathe));
+    }
 
-    // HP bar
+    // Ground-contact glow tracks the body on the floor (grounds it, lifts it off the dark).
+    this.ensureGroundGlow();
+    if (this.groundGlow) {
+      const isBoss = this.kind === "boss";
+      this.groundGlow.position.set(this.pos.x, 0.03, this.pos.z);
+      const gm = this.groundGlow.material as THREE.MeshBasicMaterial;
+      const glowBase = isBoss ? 0.42 : 0.26;
+      gm.opacity = (this.frozen > 0 ? 0.12 : glowBase) + Math.sin(this.t * 2.6) * (isBoss ? 0.09 : 0.05) + this.hitFlash * 0.3;
+    }
+
+    // Ambient boss presence: a slow drift of embers rising off the body, in its
+    // own palette — makes a boss feel like it's radiating power even while idle.
+    if (this.kind === "boss" && this.alive) {
+      this.bossFxAcc -= dt;
+      if (this.bossFxAcc <= 0) {
+        this.bossFxAcc = 0.11;
+        const ang = this.t * 2.3 + this.id;
+        this.ctx.fx.burst({
+          x: this.pos.x + Math.sin(ang) * this.radius * 1.4,
+          y: 0.2 + Math.random() * 0.5,
+          z: this.pos.z + Math.cos(ang * 1.3) * this.radius * 1.4,
+          count: 1, color: this.wardColor,
+          speed: [0.2, 0.9], up: 1.4, vertical: 0.5, size: [0.18, 0.42],
+          life: [0.7, 1.4], gravity: 0.25, drag: 1.1, jitter: 0.6,
+        });
+      }
+    }
+
+    // HP bar — bosses use the dedicated top-of-screen bar, so suppress the overhead one.
     const frac = Math.max(0, this.hp / this.maxHp);
-    const show = frac < 1;
+    const show = frac < 1 && this.kind !== "boss";
     this.hpBg.visible = this.hpFill.visible = show;
     if (show) {
       const h = this.barHeight();
@@ -673,10 +840,10 @@ export abstract class Enemy {
       const fill = this.shieldFill!;
       bg.visible = fill.visible = sShow;
       if (sShow) {
-        const h = this.barHeight() + 0.13;
+        const h = this.barHeight() + 0.12;
         bg.position.set(0, h, 0);
-        fill.position.set(-0.48, h, 0.001);
-        fill.scale.x = 0.96 * sFrac;
+        fill.position.set(-0.4, h, 0.001);
+        fill.scale.x = 0.8 * sFrac;
         (fill.material as THREE.SpriteMaterial).color.set(this.shieldBarColor);
       }
     }
@@ -1330,6 +1497,7 @@ export class EnemyManager {
     for (const kind of REGISTRY.keys()) {
       try { dummies.push(makeEnemy(kind, this.ctx, 0, -1000)); } catch { /* skip a bad ctor */ }
     }
+    for (const e of dummies) e.warmVisuals(); // ground glow into the scene before the compile
     this.ctx.stage.warmUp(); // compiles the whole scene, including the dummies just added
     for (const e of dummies) e.dispose();
   }

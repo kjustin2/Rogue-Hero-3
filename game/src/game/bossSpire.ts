@@ -49,8 +49,8 @@ export class SpireCaster extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: SpireState = "idle";
-  private timer = 1.4;
-  private attackCd = 1.7;
+  private timer = 1.0;
+  private attackCd = 1.1;
   private lanceCount = 0;
   private attacksSinceGuard = 0;
   private blinkCd = 0;
@@ -171,15 +171,15 @@ export class SpireCaster extends Enemy {
   /** Visibly escalate the boss at each phase transition. */
   private applyPhaseLook(phase: number): void {
     if (phase === 2) {
-      this.root.scale.setScalar(1.08);
-      for (const s of this.p2Shards) s.visible = true;
+      this.setBossScale(1.08);
+      this.eruptReveal(this.p2Shards);
       this.robeMat.emissive.set(0x1aa884);
       this.robeMat.emissiveIntensity = 1.0;
       this.trimMat.emissive.set(0x6affe0);
       this.coreMat.emissive.set(0x8affe8);
     } else if (phase === 3) {
-      this.root.scale.setScalar(1.15);
-      for (const s of this.p3Crown) s.visible = true;
+      this.setBossScale(1.15);
+      this.eruptReveal(this.p3Crown);
       this.robeMat.color.set(0x103a4a);
       this.trimMat.emissive.set(0xbfffe8);
       this.trimMat.emissiveIntensity = 1.8;
@@ -481,6 +481,9 @@ export class SpireCaster extends Enemy {
       e.group.rotation.y += dt * 0.6;
     }
 
+    // Dramatic weight: coil while channeling/guarding, lunge on casts, rear on phase shifts.
+    this.poseForState(dt, this.state, this.state === "idle");
+
     switch (this.state) {
       case "idle": {
         const d = this.distToPlayer();
@@ -535,7 +538,7 @@ export class SpireCaster extends Enemy {
       case "phaseShift":
         if (this.timer <= 0) {
           this.state = "idle";
-          const base = this.phase >= 3 ? 1.1 : this.phase === 2 ? 1.4 : 1.7;
+          const base = this.phase >= 3 ? 0.7 : this.phase === 2 ? 0.9 : 1.1;
           // Roughly every 4th attack in P2+ is a channel
           if (this.phase >= 2 && this.lanceCount % 4 === 3) this.channelsSinceShift = 0;
           this.attackCd = base;

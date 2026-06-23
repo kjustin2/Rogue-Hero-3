@@ -54,7 +54,7 @@ export class Colossus extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: ColossusState = "idle";
-  private timer = 1.7;
+  private timer = 1.1;
   private attackPick = 0;
   private pounds: PendingPound[] = [];
   private poundsLeft = 0;
@@ -80,7 +80,7 @@ export class Colossus extends Enemy {
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 2100;
+    this.hp = this.maxHp = 3000;
     this.speed = 0; // rooted — it pivots, the arena moves instead
     this.radius = 2.2;
     this.wardColor = 0xff5522;
@@ -120,8 +120,9 @@ export class Colossus extends Enemy {
         this.armorBands.push(band);
       }
     }
-    // Fists on heavy arms
-    const armMat = this.stdMat(0x1d1410, 0x331105, 0.3);
+    // Fists on heavy arms. Warmer than pitch-black so the arms read as connected
+    // slag rather than disconnected voids floating beside the body.
+    const armMat = this.stdMat(0x33231a, 0x5a2408, 0.5);
     this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, -2.6, 2.6, 0.3).rotation.z = 0.25;
     this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, 2.6, 2.6, 0.3).rotation.z = -0.25;
     this.fistL = this.addMesh(new THREE.BoxGeometry(1.5, 1.2, 1.5), plateMat, -3.1, 1.0, 0.5);
@@ -188,15 +189,15 @@ export class Colossus extends Enemy {
   /** Visibly escalate the boss at each phase transition. */
   private applyPhaseLook(phase: number): void {
     if (phase === 2) {
-      this.root.scale.setScalar(1.08);
-      for (const s of this.p2Plates) s.visible = true;
+      this.setBossScale(1.08);
+      this.eruptReveal(this.p2Plates);
       this.slagMat.emissive.set(0x7a1c08);
       this.slagMat.emissiveIntensity = 0.7;
       this.coreMat.emissive.set(0xff7733);
       this.veinMat.emissive.set(0xff9944);
     } else if (phase === 3) {
-      this.root.scale.setScalar(1.15);
-      for (const s of this.p3Crown) s.visible = true;
+      this.setBossScale(1.15);
+      this.eruptReveal(this.p3Crown);
       this.slagMat.color.set(0x401a12);
       this.slagMat.emissive.set(0xb83008);
       this.slagMat.emissiveIntensity = 1.0;
@@ -519,6 +520,9 @@ export class Colossus extends Enemy {
       }
     }
 
+    // Dramatic weight: brace on wind-ups, lunge on slams/tectonics, rear on phase shifts.
+    this.poseForState(dt, this.state, this.state === "idle");
+
     switch (this.state) {
       case "idle":
         if (this.timer <= 0) {
@@ -561,7 +565,7 @@ export class Colossus extends Enemy {
       case "phaseShift":
         if (this.timer <= 0) {
           this.state = "idle";
-          this.timer = Math.max(0.4, 1.4 - this.phase * 0.3);
+          this.timer = Math.max(0.28, 0.9 - this.phase * 0.2);
         }
         break;
     }

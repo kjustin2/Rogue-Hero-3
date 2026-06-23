@@ -111,8 +111,8 @@ export class RiftEcho extends Enemy {
       this.state = "phaseShift";
       this.timer = 1.1;
       this.speed = 6.2;
-      this.root.scale.setScalar(1.08);
-      for (const shard of this.phaseShards) shard.visible = true;
+      this.setBossScale(1.08);
+      this.eruptReveal(this.phaseShards);
       this.coreMat.emissive.set(0xffffff);
       this.coreMat.emissiveIntensity = 3.4;
       this.ringMat.emissive.set(ECHO_CORE);
@@ -219,6 +219,9 @@ export class RiftEcho extends Enemy {
       if (this.lanes[i].timer <= 0) { this.fireLane(this.lanes[i]); this.lanes.splice(i, 1); }
     }
 
+    // Dramatic weight: coil on tells/guard, lunge on commits, rear on the phase shift.
+    this.poseForState(dt, this.state, this.state === "idle");
+
     switch (this.state) {
       case "idle": {
         const d = this.distToPlayer();
@@ -242,7 +245,7 @@ export class RiftEcho extends Enemy {
       case "recover":
       case "phaseShift":
         this.facePlayer(dt);
-        if (this.timer <= 0) { this.state = "idle"; this.timer = Math.max(0.4, 1.25 - this.phase * 0.28); }
+        if (this.timer <= 0) { this.state = "idle"; this.timer = Math.max(0.28, 0.8 - this.phase * 0.16); }
         break;
     }
   }

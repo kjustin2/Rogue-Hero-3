@@ -35,7 +35,7 @@ export class PitWarden extends Enemy {
   private leapTo = new THREE.Vector3();
   private leapT = 0;
   private slamCount = 0;
-  private attackCd = 0.75;
+  private attackCd = 0.5;
   private guardWarned = false;
   private coreMat: THREE.MeshStandardMaterial;
   private eyeMat: THREE.MeshStandardMaterial;
@@ -50,6 +50,13 @@ export class PitWarden extends Enemy {
   private plate: THREE.MeshStandardMaterial;
   private p2Spikes: THREE.Object3D[] = [];
   private p3Crown: THREE.Object3D[] = [];
+  // Hip-pivoted leg groups (+ ankle pivots) so the walk reads as steps, not a slide.
+  private legs: THREE.Group[] = [];
+  private ankles: THREE.Group[] = [];
+  private walkPhase = 0;
+  private gait = 0;
+  private prevWalkX = 0;
+  private prevWalkZ = 0;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -125,13 +132,24 @@ export class PitWarden extends Enemy {
       this.chainLinks.push(link);
     }
     this.addMesh(new THREE.BoxGeometry(0.28, 0.28, 0.12), emberPlate, 0, 1.84, 1.02).rotation.z = Math.PI / 4;
-    // Stubby legs
-    this.addMesh(new THREE.BoxGeometry(0.6, 0.7, 0.7), hide, -0.55, 0.25, -0.15);
-    this.addMesh(new THREE.BoxGeometry(0.6, 0.7, 0.7), hide, 0.55, 0.25, -0.15);
+    // Stubby legs — each on a hip-pivoted group so it swings through a walk cycle,
+    // with the boot kept on its own pivot so the ankle can roll for toe-off/heel-strike.
     for (const sx of [-1, 1]) {
-      const boot = this.addMesh(new THREE.BoxGeometry(0.76, 0.18, 0.85), plate, sx * 0.55, 0.03, 0.08);
+      const leg = new THREE.Group();
+      leg.position.set(sx * 0.55, 0.62, -0.15);
+      this.root.add(leg);
+      this.addMesh(new THREE.BoxGeometry(0.6, 0.74, 0.7), hide, 0, -0.37, 0, leg);
+      // Ankle pivot near the bottom of the shin; the boot hangs off it.
+      const ankle = new THREE.Group();
+      ankle.position.set(0, -0.66, 0.05);
+      leg.add(ankle);
+      const boot = this.addMesh(new THREE.BoxGeometry(0.76, 0.18, 0.85), plate, 0, 0, 0.18, ankle);
       boot.rotation.z = sx * 0.04;
+      this.legs.push(leg); // [0] = left, [1] = right
+      this.ankles.push(ankle);
     }
+    this.prevWalkX = x;
+    this.prevWalkZ = z;
     // Back furnace flares give the silhouette a professional layered read from every angle.
     for (let i = 0; i < 5; i++) {
       const x = (i - 2) * 0.38;
@@ -186,8 +204,8 @@ export class PitWarden extends Enemy {
   /** Visibly escalate the boss at each phase transition. */
   private applyPhaseLook(phase: number): void {
     if (phase === 2) {
-      this.root.scale.setScalar(1.08);
-      for (const s of this.p2Spikes) s.visible = true;
+      this.setBossScale(1.08);
+      this.eruptReveal(this.p2Spikes);
       // Hide darkens to char, core burns hotter and shifts toward orange-white.
       this.hide.color.set(0x5a1410);
       this.hide.emissive.set(0x8a1606);
@@ -195,8 +213,8 @@ export class PitWarden extends Enemy {
       this.coreMat.emissive.set(0xff6622);
       this.eyeMat.emissive.set(0xffcc33);
     } else if (phase === 3) {
-      this.root.scale.setScalar(1.15);
-      for (const s of this.p3Crown) s.visible = true;
+      this.setBossScale(1.15);
+      this.eruptReveal(this.p3Crown);
       this.plate.emissive.set(0x551200);
       this.plate.emissiveIntensity = 0.6;
       this.coreMat.emissive.set(0xffaa44);
@@ -234,6 +252,10 @@ export class PitWarden extends Enemy {
     const targetPhase = frac <= 0.35 ? 3 : frac <= 0.7 ? 2 : 1;
     if (!killed && targetPhase > this.phase) {
       this.phase = targetPhase;
+      // A phase shift can interrupt a mid-leap. The phase cutscene freezes the
+      // world, so if we leave the boss airborne it hangs frozen in the sky for a
+      // beat — snap it down to the ground and end the leap before transitioning.
+      if (this.state === "leap") { this.pos.y = 0; this.leapT = 1; }
       this.state = "phaseShift";
       this.timer = 1.2;
       this.applyPhaseLook(this.phase);
@@ -290,6 +312,37 @@ export class PitWarden extends Enemy {
       const heat = 1 + Math.sin(this.t * 4.1 + i * 0.8) * 0.05;
       vent.scale.set(1, heat, 1);
     }
+
+    // Leg stride: a pronounced alternating step driven by how far the boss actually
+    // walks (no foot-slide). Each leg lifts and reaches forward on its swing, plants
+    // and pushes back on its stance, with the ankle rolling for heel-strike/toe-off.
+    {
+      const dxw = this.pos.x - this.prevWalkX;
+      const dzw = this.pos.z - this.prevWalkZ;
+      this.prevWalkX = this.pos.x;
+      this.prevWalkZ = this.pos.z;
+      const stepDist = Math.hypot(dxw, dzw);
+      const speed2d = stepDist / Math.max(dt, 1e-4);
+      const airborne = this.pos.y > 0.4;
+      // Advance the cycle with distance walked, plus a small idle creep so a slow
+      // shuffle still animates; gait scales the whole motion to movement intensity.
+      this.walkPhase += stepDist * 3.0 + (speed2d > 0.2 ? dt * 1.2 : 0);
+      const targetGait = airborne ? 0 : Math.min(1, speed2d / 2.0);
+      this.gait += (targetGait - this.gait) * Math.min(1, dt * 10);
+      const g = this.gait;
+      for (let i = 0; i < 2; i++) {
+        const s = Math.sin(this.walkPhase + i * Math.PI); // legs in opposite phase
+        const lift = Math.max(0, s); // 0 on stance, 1 at peak of swing
+        // Reach forward while lifting, drive back while planted.
+        this.legs[i].rotation.x = s * 0.85 * g;
+        this.legs[i].position.y = 0.62 + lift * 0.26 * g;
+        // Ankle: toes down as the foot lifts, flat/heel as it plants.
+        this.ankles[i].rotation.x = (lift * 0.7 - (1 - lift) * 0.25) * g;
+      }
+    }
+
+    // Dramatic weight: coil on wind-ups, lunge on commits, rear up on phase shifts.
+    this.poseForState(dt, this.state, this.state === "idle");
 
     switch (this.state) {
       case "idle": {
@@ -383,7 +436,7 @@ export class PitWarden extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.42, 1.35 - this.phase * 0.28);
+          this.attackCd = Math.max(0.28, 0.85 - this.phase * 0.18);
         }
         break;
     }

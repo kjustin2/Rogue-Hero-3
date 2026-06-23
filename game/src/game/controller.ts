@@ -111,7 +111,10 @@ export class Controller {
       const aim = input.aimPoint;
       const dx = aim.x - player.pos.x;
       const dz = aim.z - player.pos.z;
-      if (dx * dx + dz * dz > 0.04) {
+      // Hold facing when the cursor sits on/near the hero — at point-blank the
+      // aim angle is ill-defined, and camera shake makes it jitter, which would
+      // spin the body (and its ground rings) until you walk out from under it.
+      if (dx * dx + dz * dz > 0.64) {
         player.facing = Math.atan2(dx, dz);
       }
     }

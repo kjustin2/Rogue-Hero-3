@@ -1129,6 +1129,26 @@ body.rh-no-anim .menu-sigil {
 @keyframes crash-pulse {
   50% { text-shadow: 0 0 16px var(--ui-red); transform: scale(1.08); }
 }
+/* Critical: the meter goes charged gold→white and the zone label pulses — unmistakable at a glance */
+.tempo__dial--critical {
+  filter: drop-shadow(0 0 16px color-mix(in srgb, var(--zone, #ffe27a) 70%, #fff));
+  animation: tempo-charged 0.62s ease-in-out infinite;
+}
+.tempo__dial--critical .tempo__value .num {
+  color: #fff;
+  text-shadow: 0 0 14px var(--zone, #ffe27a), 0 0 26px var(--zone, #ffe27a);
+}
+.tempo__dial--critical .tempo__zonename {
+  color: var(--zone, #ffe27a);
+  text-shadow: 0 0 10px var(--zone, #ffe27a);
+  animation: zonename-pulse 0.62s ease-in-out infinite;
+}
+@keyframes tempo-charged {
+  50% { filter: drop-shadow(0 0 26px #fff); transform: scale(1.05); }
+}
+@keyframes zonename-pulse {
+  50% { opacity: 0.55; text-shadow: 0 0 18px #fff; }
+}
 
 /* --- boss bar --- */
 .bossbar {
@@ -1303,19 +1323,25 @@ body.rh-no-anim .menu-sigil {
   background: linear-gradient(90deg, #8a9ad0, #e8e0ff);
 }
 
-/* The Hollow Star's last words — a quiet, dim whisper, not a war cry. */
+/* The Hollow Star's last words — a quiet whisper, not a war cry, but still
+   readable: a dim panel + strong black halo keeps it legible over the blazing
+   dying star without breaking the hush. */
 .banner--lament .banner__title {
-  color: #c2ccf0;
+  display: inline-block;
+  color: #e8edff;
   font-family: var(--font-ui);
   font-size: 22px;
   font-weight: 500;
   letter-spacing: 2px;
   text-transform: none;
   line-height: 1.5;
-  max-width: 880px;
+  max-width: 820px;
   margin: 0 auto;
-  padding: 0 24px;
-  text-shadow: 0 0 26px rgba(150, 170, 230, 0.45), 0 3px 14px rgba(0, 0, 0, 0.85);
+  padding: 16px 30px;
+  border-radius: 14px;
+  background: rgba(8, 9, 18, 0.66);
+  box-shadow: 0 0 38px 22px rgba(8, 9, 18, 0.5);
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 3px 14px rgba(0, 0, 0, 0.95), 0 0 26px rgba(150, 170, 230, 0.35);
 }
 @keyframes banner-in {
   0% { opacity: 0; transform: translateY(26px) scale(0.96); letter-spacing: 20px; }
@@ -1492,12 +1518,13 @@ body.rh-no-anim .menu-sigil {
   letter-spacing: 5px;
   text-transform: uppercase;
   color: var(--ui-text);
-  background: rgba(12, 15, 26, 0.7);
+  background: linear-gradient(180deg, rgba(18, 22, 38, 0.8), rgba(10, 13, 22, 0.72));
   border: 1px solid rgba(255, 255, 255, 0.18);
   padding: 14px 30px;
   cursor: pointer;
   overflow: hidden;
-  transition: border-color 0.2s, color 0.2s, transform 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: border-color 0.2s, color 0.2s, transform 0.15s, box-shadow 0.2s;
   /* Clean tab shape: a straight right edge with small chamfered corners — no
      sharp arrow point (which left a stray glint at the apex). */
   clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
@@ -1515,6 +1542,7 @@ body.rh-no-anim .menu-sigil {
   border-color: var(--ui-cyan);
   color: #fff;
   transform: translateX(4px);
+  box-shadow: 0 0 22px rgba(95, 224, 255, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 .btn:hover::before { transform: translateX(0); }
 .btn--primary {
@@ -1561,12 +1589,33 @@ body.rh-no-anim .menu-sigil {
 
 /* --- panel (settings / how-to) --- */
 .panel {
+  position: relative;
   width: min(620px, 86vw);
-  background: rgba(10, 12, 22, 0.88);
+  /* A soft top sheen over a cool vertical gradient gives the slab depth. */
+  background:
+    linear-gradient(180deg, rgba(95, 224, 255, 0.05), transparent 130px),
+    linear-gradient(160deg, rgba(19, 23, 40, 0.93) 0%, rgba(10, 12, 21, 0.9) 55%, rgba(7, 9, 16, 0.93) 100%);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-top: 2px solid var(--ui-cyan);
   padding: 38px 46px 34px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  /* Layered edges: drop shadow + dark separation ring + inner hairline + top highlight. */
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    inset 0 0 0 1px rgba(95, 224, 255, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 70px rgba(95, 224, 255, 0.03);
+}
+/* A glowing accent rail just beneath the cyan cap edge. */
+.panel::after {
+  content: "";
+  position: absolute;
+  left: 46px;
+  right: 46px;
+  top: 2px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(95, 224, 255, 0.45), transparent);
+  pointer-events: none;
 }
 .panel h2 {
   font-family: var(--font-display);
@@ -1574,6 +1623,7 @@ body.rh-no-anim .menu-sigil {
   letter-spacing: 8px;
   margin-bottom: 26px;
   color: var(--ui-text);
+  text-shadow: 0 0 24px rgba(95, 224, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 .howto-cols { display: flex; gap: 40px; justify-content: center; text-align: left; flex-wrap: wrap; }
 .howto-cols > div { flex: 1 1 320px; max-width: 420px; }
@@ -1581,16 +1631,22 @@ body.rh-no-anim .menu-sigil {
   display: grid;
   grid-template-columns: 110px 1fr;
   gap: 13px 20px;
+  /* Center each cell's content so the key label sits centered when its
+     description wraps to two lines, rather than floating to the top. */
+  align-items: center;
   font-size: 15px;
   letter-spacing: 1px;
   color: var(--ui-dim);
 }
 .controls-grid b {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--ui-text);
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid rgba(255, 255, 255, 0.2);
   text-align: center;
-  padding: 3px 8px;
+  padding: 5px 8px;
   font-size: 13px;
   letter-spacing: 2px;
 }
@@ -1612,6 +1668,7 @@ body.rh-no-anim .menu-sigil {
 }
 .quality-row {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 .qbtn {
@@ -2382,8 +2439,15 @@ body.rh-no-anim .menu-sigil {
   line-height: 1.7;
   letter-spacing: 2px;
   text-align: center;
-  color: var(--ui-text);
-  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.9), 0 0 30px rgba(120, 200, 255, 0.15);
+  color: #fdfcff;
+  /* A panel of dark behind the glyphs + a tight black halo keeps the line
+     legible over the busy boss/arena background (e.g. the Hollow Star's
+     "...thank you" plea), without losing the moody letterbox tone. */
+  padding: 16px 26px;
+  border-radius: 14px;
+  background: rgba(6, 7, 14, 0.62);
+  box-shadow: 0 0 40px 24px rgba(6, 7, 14, 0.5);
+  text-shadow: 0 0 4px rgba(0, 0, 0, 1), 0 2px 10px rgba(0, 0, 0, 1), 0 0 26px rgba(120, 200, 255, 0.2);
   animation: story-line 1.4s ease both;
 }
 @keyframes story-line {
@@ -2705,3 +2769,21 @@ body.rh-no-anim .menu-sigil {
 .hone-pick { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 200px; }
 .hone-pick__up { font-size: 12px; line-height: 1.5; color: #ffd27a; text-align: center; max-width: 190px; }
 .hone-pick__tag { display: block; font-size: 10px; letter-spacing: 2px; color: #ffb15a; margin-bottom: 2px; }
+/* Shown in the hone view when every card is already upgraded. */
+.hone-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 440px;
+  margin: 14px auto;
+  padding: 20px 26px;
+  border: 1px solid rgba(120, 200, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(120, 200, 255, 0.06);
+  color: var(--ui-text);
+  font-size: 16px;
+  letter-spacing: 1px;
+  text-align: center;
+}
+.hone-empty span { color: var(--ui-dim); font-size: 13px; letter-spacing: 0.5px; line-height: 1.5; }

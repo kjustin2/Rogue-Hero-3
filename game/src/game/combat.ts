@@ -15,9 +15,9 @@ interface SwingStage {
 
 /** Light, light, 360° finisher. Clicking mid-swing buffers the next stage. */
 const CHAIN: SwingStage[] = [
-  { dur: 0.26, dmg: 10, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.24, dmg: 10, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.36, dmg: 22, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
+  { dur: 0.26, dmg: 8, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
+  { dur: 0.24, dmg: 8, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
+  { dur: 0.36, dmg: 17, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
 ];
 
 const STRIKE_POINT = 0.3; // fraction of swing where the hit lands

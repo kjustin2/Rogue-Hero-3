@@ -554,6 +554,7 @@ export class Menus {
               <b>SPACE</b><span>Dodge — dodge <i>through</i> a hit for a <span style="color:#66ffee">PERFECT DODGE</span>; strike as a blow lands to <span style="color:#ffe066">PARRY</span></span>
               <b>1 · 2 · 3</b><span>Cast cards</span>
               <b>F</b><span>CRASH — at 85+ tempo, detonate your heat</span>
+              <b>ESC</b><span>Pause</span>
             </div>
           </div>
           <div>
@@ -621,10 +622,11 @@ export class Menus {
         <h2>CREDITS</h2>
         <div class="credits">
           <div class="credits__title">ROGUE HERO III · THE EMBER RIFT</div>
-          <div class="credits__group"><b>Design &amp; Code</b><span>Justin Kramer</span></div>
+          <div class="credits__group"><b>A Game By</b><span>Emerald Games</span></div>
+          <div class="credits__group"><b>Design &amp; Code</b><span>Emerald Games — Justin Kramer</span></div>
+          <div class="credits__group"><b>Soundtrack</b><span>Emerald Games — Justin Kramer</span></div>
           <div class="credits__group"><b>Engine</b><span>Three.js · Vite · TypeScript · Electron</span></div>
           <div class="credits__group"><b>Sound Effects</b><span>Procedural Web Audio synthesis</span></div>
-          <div class="credits__group"><b>Soundtrack</b><span>Justin Kramer</span></div>
           <div class="credits__thanks">Thank you for braving the Rift.</div>
         </div>
         <button class="btn">Back</button>
@@ -1005,7 +1007,7 @@ export class Menus {
           <div class="armory-shards">${Math.ceil(this.ctx.player.hp)} / ${this.ctx.player.maxHp} HP — a moment's respite from the Rift</div>
           <div class="menu-buttons" style="margin:8px auto 0">
             <button class="btn btn--primary" data-act="heal">Mend Wounds&nbsp;&nbsp;(+40 HP)</button>
-            <button class="btn btn--primary" data-act="hone"${honeCount ? "" : " disabled"}>✦ Hone a Card${honeCount ? `&nbsp;&nbsp;(${honeCount} ready)` : ""}</button>
+            <button class="btn btn--primary" data-act="hone">✦ Hone a Card${honeCount ? `&nbsp;&nbsp;(${honeCount} ready)` : "&nbsp;&nbsp;(all honed)"}</button>
             <button class="btn" data-act="leave">Move On</button>
           </div>
         </div>
@@ -1034,7 +1036,7 @@ export class Menus {
       const row = s.querySelector(".draft-row")!;
       const slots = this.ctx.deck.upgradableSlots();
       if (!slots.length) {
-        row.innerHTML = `<div class="hist-row hist-row--quit"><span class="hist-row__label">Every card is already honed.</span></div>`;
+        row.innerHTML = `<div class="hone-empty">✦ All your cards are already honed.<span>There's nothing left to upgrade — rest up and move on when you're ready.</span></div>`;
       }
       for (const i of slots) {
         const c = this.ctx.deck.slots[i]!;
@@ -1246,7 +1248,11 @@ export class Menus {
             <button class="btn" data-act="back">Back</button>
           </div>`;
         const row = s.querySelector(".draft-row")!;
-        for (const i of this.ctx.deck.upgradableSlots()) {
+        const honeSlots = this.ctx.deck.upgradableSlots();
+        if (!honeSlots.length) {
+          row.innerHTML = `<div class="hone-empty">✦ All your cards are already honed.<span>There's nothing left to upgrade — spend your shards elsewhere.</span></div>`;
+        }
+        for (const i of honeSlots) {
           const c = this.ctx.deck.slots[i]!;
           const wrap = document.createElement("div");
           wrap.className = "hone-pick";

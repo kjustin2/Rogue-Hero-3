@@ -62,9 +62,11 @@ export class SwordTrail {
   }
 
   update(dt: number, tip: THREE.Vector3, base: THREE.Vector3, active: boolean): void {
-    // Age out old segments
+    // Age out old segments. They age monotonically and are stored oldest-first,
+    // so the expired ones are always at the front — shift them off in place
+    // instead of allocating a new array via filter() every single frame.
     for (const s of this.segs) s.age += dt;
-    this.segs = this.segs.filter((s) => s.age < SEG_LIFE);
+    while (this.segs.length && this.segs[0].age >= SEG_LIFE) this.segs.shift();
 
     if (active) {
       this.segs.push({ tip: tip.clone(), base: base.clone(), age: 0 });

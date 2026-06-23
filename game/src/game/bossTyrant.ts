@@ -66,8 +66,8 @@ export class RiftTyrant extends Enemy {
   readonly kind: EnemyKind = "boss";
   phase = 1;
   private state: TyrantState = "idle";
-  private timer = 1.05;
-  private attackCd = 1.25;
+  private timer = 0.8;
+  private attackCd = 0.85;
   private attackPick = 0;
   private novas: PendingNova[] = [];
   private lances: PendingLance[] = [];
@@ -200,15 +200,15 @@ export class RiftTyrant extends Enemy {
   /** Visibly escalate the boss at each phase transition. */
   private applyPhaseLook(phase: number): void {
     if (phase === 2) {
-      this.root.scale.setScalar(1.08);
-      for (const s of this.p2Shards) s.visible = true;
+      this.setBossScale(1.08);
+      this.eruptReveal(this.p2Shards);
       this.plateMat.emissive.set(0x2e1a52);
       this.plateMat.emissiveIntensity = 0.7;
       this.trimMat.emissive.set(0xb060ff);
       this.haloMat.emissive.set(0xc070ff);
     } else if (phase === 3) {
-      this.root.scale.setScalar(1.15);
-      for (const s of this.p3Crown) s.visible = true;
+      this.setBossScale(1.15);
+      this.eruptReveal(this.p3Crown);
       this.plateMat.color.set(0x241a3a);
       this.trimMat.emissive.set(0xe6d0ff);
       this.trimMat.emissiveIntensity = 1.6;
@@ -514,6 +514,9 @@ export class RiftTyrant extends Enemy {
       }
     }
 
+    // Dramatic weight: coil on tells, lunge on novas/lances/slams, rear on phase shifts.
+    this.poseForState(dt, this.state, this.state === "idle");
+
     switch (this.state) {
       case "idle": {
         const d = this.distToPlayer();
@@ -571,7 +574,7 @@ export class RiftTyrant extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.38, 1.25 - this.phase * 0.22);
+          this.attackCd = Math.max(0.26, 0.8 - this.phase * 0.15);
           this.timer = this.attackCd;
         }
         break;
