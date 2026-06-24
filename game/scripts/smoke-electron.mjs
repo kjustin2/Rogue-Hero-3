@@ -4,7 +4,9 @@ import { _electron } from "playwright-core";
 import { mkdirSync } from "node:fs";
 
 mkdirSync("shots", { recursive: true });
-const app = await _electron.launch({ args: ["."] });
+// RH3_SMOKE=1 makes electron-main.cjs show the window inactively (no focus/
+// cursor theft from the editor). The window still paints, so screenshots work.
+const app = await _electron.launch({ args: ["."], env: { ...process.env, RH3_SMOKE: "1" } });
 const win = await app.firstWindow();
 const errors = [];
 win.on("console", (m) => m.type() === "error" && errors.push(m.text()));

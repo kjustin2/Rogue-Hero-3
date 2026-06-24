@@ -42,6 +42,7 @@ import { Tutorial } from "./game/tutorial";
 import { generatePlan } from "./game/mapgen";
 import { difficultyFor, MAX_DEPTH } from "./game/difficulty";
 import { freshStats, type Ctx } from "./game/ctx";
+import { PerfMonitor } from "./debug/perfMonitor";
 
 type GameState = "menu" | "playing" | "paused" | "draft" | "cutscene" | "dead" | "victory";
 
@@ -1435,8 +1436,14 @@ const MENU_FRAME = 1 / 40;
 const trailTip = new THREE.Vector3();
 const trailBase = new THREE.Vector3();
 
+// Perf instrumentation: a single accurate source of frame pacing + GPU load for
+// the harness (window.__rh3perf) and an optional on-screen overlay. `?perf` auto-
+// shows it; F8 toggles it live. See src/debug/perfMonitor.ts.
+const perf = new PerfMonitor(ctx, () => state);
+
 ctx.stage.renderer.setAnimationLoop(() => {
   const now = performance.now();
+  perf.begin(now);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
 
@@ -1537,6 +1544,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     }
   }
   ctx.input.endFrame();
+  perf.end(dt);
 });
 
 // ---------------------------------------------------------------- boot
@@ -1629,6 +1637,11 @@ void boot();
   w.__rh3cards = CARDS;
   w.__rh3heroes = HEROES;
   w.__rh3menus = menus;
+  // Perf instrumentation surface (see src/debug/perfMonitor.ts). `?perf` opens the
+  // overlay on boot; F8 toggles it during play without touching gameplay input.
+  w.__rh3perf = perf;
+  if (new URLSearchParams(location.search).has("perf")) perf.hud(true);
+  window.addEventListener("keydown", (e) => { if (e.code === "F8") perf.hud(); });
   // Current top-level UI screen, for the automation/capture harness so it can
   // tell menu/draft/pause/end states apart without guessing from the DOM.
   w.__rh3state = () => state;

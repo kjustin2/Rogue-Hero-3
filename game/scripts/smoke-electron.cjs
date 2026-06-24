@@ -71,7 +71,13 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({
     width: 1600,
     height: 900,
-    show: true,
+    // Never show a real window: a visible Electron window grabs OS focus (and
+    // the cursor) away from the editor/terminal, then dumps it back on close.
+    // `capturePage()` still renders real frames from a hidden window as long as
+    // it keeps painting — hence paintWhenInitiallyHidden + backgroundThrottling
+    // off below. (Was `show: true`, which is what stole focus during smokes.)
+    show: false,
+    paintWhenInitiallyHidden: true,
     backgroundColor: "#05070a",
     webPreferences: { backgroundThrottling: false, offscreen: false },
   });

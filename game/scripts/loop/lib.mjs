@@ -100,9 +100,11 @@ export async function launchBrowser() {
   return { browser, page, errors };
 }
 
-/** Boot the game fresh (clears any saved run so we always start from the menu). */
-export async function bootGame(page) {
-  await page.goto(GAME_URL, { waitUntil: "networkidle" });
+/** Boot the game fresh (clears any saved run so we always start from the menu).
+ *  `query` appends a URL query string, e.g. "?perf" to bake the perf overlay into
+ *  every screenshot. */
+export async function bootGame(page, { query = "" } = {}) {
+  await page.goto(GAME_URL + query, { waitUntil: "networkidle" });
   await page.waitForTimeout(2500);              // boot loader + warm
   await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
 }
@@ -142,6 +144,96 @@ export async function snapState(page) {
       } : null,
     };
   });
+}
+
+// ───────────────────────────────────────────────────── scenario navigation ──
+
+/** Menu → hero select → first live combat room, intro skipped. Leaves the game in
+ *  `playing` with a run context so __rh3debug.scenario/room/boss can be used next. */
+export async function enterRun(page, { hero = 0, settle = 3000 } = {}) {
+  await clickIf(page, page.locator("button", { hasText: /Begin Run|New Run/ }), 700);
+  const cards = page.locator(".hero-card");
+  if (await cards.count()) { await cards.nth(hero).click(); await sleep(700); }
+  await clickIf(page, page.locator(".story-skip"), 500);
+  await sleep(settle);
+}
+
+/** Cut to a named __rh3debug scenario ("boss:colossus:p2", "room:elite", "enemy:caster",
+ *  "menu"/"victory"/"death") and settle on the live frame, skipping any cutscene.
+ *  Assumes a run is already active (call enterRun first). Returns the landed ui state. */
+export async function gotoScenario(page, name, { settle = 2600, skip = true, godmode = true } = {}) {
+  const known = await page.evaluate((n) => !!window.__rh3debug?.scenario(n), name);
+  if (!known) return { ok: false, ui: await uiState(page) };
+  if (skip) {
+    for (let i = 0; i < 16; i++) {
+      if ((await uiState(page)) === "playing") break;
+      await page.evaluate(() => window.__rh3debug?.skipCutscene?.());
+      try { await page.keyboard.press("Space"); } catch { /* ignore */ }
+      await sleep(250);
+    }
+  }
+  await sleep(settle);
+  if (godmode) await page.evaluate(() => window.__rh3debug?.godmode?.());
+  return { ok: true, ui: await uiState(page) };
+}
+
+// ───────────────────────────────────────────────────────────────── perf ──
+
+/** Sample frame pacing + GPU load over a window. Prefers the in-engine
+ *  window.__rh3perf instrument (accurate per-frame draw calls, marks, snapshot);
+ *  falls back to a raw rAF probe for older bundles that lack the hook.
+ *
+ *  opts.action(page) — optional async fn run DURING the window (e.g. spam attacks);
+ *  if omitted, simply waits opts.ms. Returns a PerfStats-shaped object (+ snap, marks). */
+export async function samplePerf(page, { ms = 4000, label = "", action = null } = {}) {
+  const hasPerf = await page.evaluate(() => !!window.__rh3perf);
+  if (hasPerf) {
+    await page.evaluate((l) => window.__rh3perf.start(l), label);
+    if (action) await action(page); else await sleep(ms);
+    return page.evaluate(() => window.__rh3perf.stop());
+  }
+  // Fallback: rAF probe (frame pacing only; no GPU-load snapshot).
+  await page.evaluate(() => {
+    const w = window; w.__ftp = []; w.__ftl = performance.now();
+    const probe = () => { const n = performance.now(); w.__ftp.push(n - w.__ftl); w.__ftl = n; w.__ftpR = requestAnimationFrame(probe); };
+    w.__ftpR = requestAnimationFrame(probe);
+  });
+  if (action) await action(page); else await sleep(ms);
+  return page.evaluate(() => {
+    const w = window; cancelAnimationFrame(w.__ftpR);
+    const ft = w.__ftp.length > 4 ? w.__ftp.slice(2) : w.__ftp;
+    const n = ft.length || 1, sum = ft.reduce((a, b) => a + b, 0), mean = sum / n;
+    const sorted = [...ft].sort((a, b) => a - b);
+    const pct = (p) => sorted[Math.min(n - 1, Math.floor(n * p))] || 0;
+    const r2 = (x) => Math.round(x * 100) / 100;
+    return {
+      ms: Math.round(sum), frames: ft.length, fps: mean > 0 ? r2(1000 / mean) : 0,
+      mean: r2(mean), p50: r2(pct(0.5)), p95: r2(pct(0.95)), p99: r2(pct(0.99)),
+      min: r2(Math.min(...ft, 0)), max: r2(Math.max(...ft, 0)),
+      long16: ft.filter((d) => d > 16.7).length, long33: ft.filter((d) => d > 33.4).length,
+      long50: ft.filter((d) => d > 50).length, long100: ft.filter((d) => d > 100).length,
+      over250: ft.filter((d) => d > 250).length,
+      snap: { calls: 0, triangles: 0, programs: 0, geometries: 0, textures: 0, heapMB: 0, enemies: 0, state: "?" },
+      marks: [], _fallback: true,
+    };
+  });
+}
+
+/** Latest rolling perf report (no window). */
+export async function perfReport(page) {
+  return page.evaluate(() => (window.__rh3perf ? window.__rh3perf.report() : null));
+}
+
+/** Compare stats against a budget of MAX values. Keys may be dotted to reach the
+ *  GPU snapshot, e.g. { p95: 120, max: 350, over250: 0, "snap.calls": 900 }.
+ *  Returns { pass, fails:[ "p95=140 > 120", … ] }. */
+export function assertBudget(stats, budget) {
+  const fails = [];
+  for (const [key, max] of Object.entries(budget)) {
+    const v = key.includes(".") ? key.split(".").reduce((o, p) => (o == null ? o : o[p]), stats) : stats[key];
+    if (typeof v === "number" && v > max) fails.push(`${key}=${v} > ${max}`);
+  }
+  return { pass: fails.length === 0, fails };
 }
 
 // ───────────────────────────────────────────────────────────────────── git ──

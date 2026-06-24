@@ -111,7 +111,14 @@ function createWindow() {
   // File/Edit menu over a fullscreen game.
   Menu.setApplicationMenu(null);
 
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => {
+    // During the Playwright smoke (smoke-electron.mjs sets RH3_SMOKE=1) show the
+    // window WITHOUT activating it — showInactive paints a real, screenshottable
+    // surface but never steals OS focus / the cursor from the editor. Real users
+    // get the normal focused window.
+    if (process.env.RH3_SMOKE === "1") win.showInactive();
+    else win.show();
+  });
   win.loadURL(`http://127.0.0.1:${serverPort}/`);
 
   // Optional devtools — set RH3_DEVTOOLS=1 to enable.

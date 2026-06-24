@@ -50,6 +50,20 @@ node scripts/smoke-perf.mjs / smoke-perf-stress.mjs  # combat frame budget under
 node scripts/shot-loader.mjs     # eyeball the boot loading screen (shots/loader-*.png)
 ```
 
+### Performance + AI-visual harness
+
+A unified instrument + tools for **measuring optimizations** and **letting Claude see frames**:
+
+- **`window.__rh3perf`** (`src/debug/perfMonitor.ts`) — always-on, near-free frame instrument. Reports accurate per-frame **draw calls / triangles / shader programs / geometries / textures / JS heap / live enemies** plus frame-pacing stats (mean/p50/p95/p99/max, long-frame + `over250` stall counts). API: `report()` (rolling window), `start(label)`/`stop()` (explicit window, returns stats + correlated `mark()` events), `snapshot()`, `hud(on?)`. Draw-call counting is accurate (it owns `renderer.info.autoReset` and resets once per frame so the composer's multiple passes sum correctly).
+- **On-screen overlay** — `?perf` URL param opens it; **F8** toggles live. Sized to stay legible in a full-frame screenshot, so a single shot carries FPS / draws / programs / state + a frame-time sparkline for Claude to read.
+- **`npm run perf:bench`** (`scripts/perf-bench.mjs`) — benchmark battery (menu → combat acts → every boss). Samples standardized perf, screenshots each frame *with the overlay baked in* → `artifacts/perf/shots/`, writes `latest.json`, and **diffs against `baseline.json`**. `npm run perf:baseline` sets the baseline; this is how you prove an optimization helped. Deterministic GPU-load + sync-stall regressions gate the exit code; noisy headless frame-timing is reported but only gates with `--gate-timing`.
+- **`npm run perf:lag-hunt`** — drives every event and flags first-time synchronous shader compiles (the hitch class).
+- **`npm run visual:diff -- <A> <B>`** (`scripts/visual-diff.mjs`) — pixel-diffs two PNGs or two shot dirs via a headless canvas (no deps); per-image %changed + heatmap PNGs to `artifacts/visual-diff/`. `--fail <pct>` gates. Catches unintended visual ripples.
+- **`npm run ai:look -- <scenario|shot.png> "<question>"`** (`scripts/ai-look.mjs`) — captures a scenario (frames bosses/enemies for the shot) and asks the `claude` CLI to judge it, with the engine's ground-truth perf numbers injected into the prompt. On-demand visual+perf critique.
+- **`npm run smoke:perf-instrument`** — regression probe guarding the `__rh3perf` contract.
+
+Shared harness helpers live in `scripts/loop/lib.mjs`: `samplePerf` (uses `__rh3perf`, rAF fallback), `perfReport`, `assertBudget`, `enterRun`, `gotoScenario`. Reuse them — don't re-bolt a rAF probe onto each new perf script.
+
 That list is the high-traffic subset — `scripts/` holds ~40 smokes total (visual-theme, player-animation, enemy-visual, card-visuals, tempo, balance, edge, boss-cutscene/pause families). `package.json` also defines `npm run smoke:*` aliases (`smoke:menu-perf`, `smoke:perf`, `smoke:perf:stress`, `smoke:polish`, `smoke:cards`, `smoke:boss-pause`) and `npm run smoke` runs the Electron smoke (`smoke-electron.cjs`).
 
 Targeted smokes jump straight to a node via `window.__rh3.run.debugLoadNode(kind, act)`; flow/map/meta navigate the real fork screens (`.mapnode`).

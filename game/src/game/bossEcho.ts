@@ -40,6 +40,7 @@ export class RiftEcho extends Enemy {
   private echoTrailMat: THREE.MeshStandardMaterial;
   private core: THREE.Mesh;
   private innerCore: THREE.Mesh;
+  private ghostCore: THREE.Mesh;
   private rings: THREE.Group;
   private mirrorShards: THREE.Object3D[] = [];
   private phaseShards: THREE.Object3D[] = [];
@@ -60,6 +61,10 @@ export class RiftEcho extends Enemy {
     // A bright crystalline core
     this.core = this.addMesh(new THREE.OctahedronGeometry(0.8, 0), this.coreMat, 0, 2.0);
     this.innerCore = this.addMesh(new THREE.OctahedronGeometry(0.45, 0), this.coreMat, 0, 2.0);
+    // A lagging translucent mirror-double of the core — it IS your reflection, so
+    // a ghosted second self trails behind it (counter-drifts in tick()).
+    this.ghostCore = this.addMesh(new THREE.OctahedronGeometry(0.9, 0), this.echoTrailMat, 0, 2.0, -0.55);
+    this.ghostCore.scale.setScalar(1.05);
     // Cage of spectral blades
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2;
@@ -199,6 +204,11 @@ export class RiftEcho extends Enemy {
     this.core.rotation.y += dt * (0.8 + this.phase * 0.3);
     this.innerCore.rotation.y -= dt * (1.1 + this.phase * 0.4);
     this.innerCore.scale.setScalar(1 + Math.sin(this.t * 5.2) * 0.075);
+    // The mirror-double lags and counter-drifts behind the real core — a reflection
+    // that's always a half-beat late, swelling as the doubled self surfaces.
+    this.ghostCore.rotation.y -= dt * (0.5 + this.phase * 0.2);
+    this.ghostCore.position.y = 2.0 + Math.sin(this.t * 2 - 0.8) * 0.12;
+    this.ghostCore.position.z = -0.55 - Math.sin(this.t * 1.3) * 0.18;
     this.echoTrailMat.opacity = this.phase >= 2 ? 0.3 + Math.sin(this.t * 4.5) * 0.08 : 0.2 + Math.sin(this.t * 3.2) * 0.045;
     for (let i = 0; i < this.mirrorShards.length; i++) {
       const shard = this.mirrorShards[i];

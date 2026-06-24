@@ -244,34 +244,17 @@ export abstract class Enemy {
     const bright = this.stdMat(0x11131f, color, 1.35);
     const accent = this.stdMat(0x06080f, color, 1.8);
 
-    const core = this.addMesh(new THREE.OctahedronGeometry(Math.max(0.055, this.radius * 0.12)), accent, 0, 0.92, this.radius + 0.12, g);
-    core.scale.y = 0.48;
+    // A single floating "soul" core crowns the body as the animated tell. Kept
+    // small and role-tinted so it complements the bespoke body instead of masking
+    // it. (The old shared mannequin — faceplate/chest/pauldrons/boots, identical on
+    // EVERY unit — was the homogenizer; the per-creature signature below replaces
+    // it with flavor specific to what each creature actually is.)
+    const core = this.addMesh(new THREE.OctahedronGeometry(Math.max(0.05, this.radius * 0.11)), accent, 0, this.radius < 0.5 ? 0.62 : 0.95, this.radius + 0.08, g);
+    core.scale.y = 0.5;
     core.rotation.y = Math.PI / 4;
-    const brow = this.addMesh(new THREE.BoxGeometry(Math.max(0.22, this.radius * 0.65), 0.055, 0.09), bright, 0, 1.18, this.radius + 0.13, g);
-    brow.rotation.x = -0.08;
-    for (const sx of [-1, 1]) {
-      const rib = this.addMesh(new THREE.BoxGeometry(0.055, 0.34, 0.08), mat, sx * (this.radius + 0.08), 0.78, 0.18, g);
-      rib.rotation.z = sx * -0.22;
-      rib.rotation.y = sx * 0.35;
-    }
-
-    // Shared detail pass: a readable layered front, shoulder accents, and a
-    // small base ring keep procedural enemies from reading as single primitives.
-    const trim = this.stdMat(0x141722, color, 1.05);
-    const dim = this.stdMat(0x05070d, color, 0.45);
-    const faceplate = this.addMesh(new THREE.BoxGeometry(Math.max(0.22, this.radius * 0.7), 0.055, 0.08), trim, 0, 1.02, this.radius + 0.18, g);
-    faceplate.rotation.x = -0.12;
-    const chestPlate = this.addMesh(new THREE.BoxGeometry(Math.max(0.28, this.radius * 0.92), 0.07, 0.1), dim, 0, 0.58, this.radius + 0.08, g);
-    chestPlate.rotation.x = 0.08;
-    for (const sx of [-1, 1]) {
-      const pauldron = this.addMesh(new THREE.BoxGeometry(0.16, 0.12, 0.28), trim, sx * (this.radius + 0.2), 1.02, 0.25, g);
-      pauldron.rotation.z = sx * -0.22;
-      pauldron.rotation.y = sx * 0.28;
-      const boot = this.addMesh(new THREE.BoxGeometry(Math.max(0.1, this.radius * 0.28), 0.08, 0.2), dim, sx * this.radius * 0.42, 0.08, this.radius * 0.2, g);
-      boot.rotation.y = sx * 0.12;
-    }
-    const base = this.addMesh(new THREE.TorusGeometry(Math.max(0.28, this.radius * 0.72), 0.018, 5, 24), trim, 0, 0.08, 0, g);
-    base.rotation.x = Math.PI / 2;
+    // A faint role-tinted contact ring settles every unit onto the floor.
+    const floor = this.addMesh(new THREE.TorusGeometry(Math.max(0.3, this.radius * 0.78), 0.016, 5, 24), mat, 0, 0.06, 0, g);
+    floor.rotation.x = Math.PI / 2;
 
     if (kind === "charger") {
       for (const sx of [-1, 1]) {
@@ -322,6 +305,195 @@ export abstract class Enemy {
       split.rotation.z = 0.12;
       for (const sx of [-1, 1]) {
         this.addMesh(new THREE.TorusGeometry(0.26, 0.025, 5, 16), bright, sx * 0.33, 0.62, 0.28, g).rotation.x = Math.PI / 2;
+      }
+    }
+
+    this.addCreatureSignature(color);
+  }
+
+  /**
+   * The per-creature signature: a small, static, body-attached detail that makes
+   * each unit unmistakably *itself* at gameplay distance — the layer that gives
+   * flavor specific to what the creature actually is, on top of the role read.
+   * Tiny on purpose (1–4 primitives); the bespoke body carries the rest.
+   */
+  protected addCreatureSignature(color: number): void {
+    const g = new THREE.Group();
+    g.name = "signature";
+    this.root.add(g);
+    const r = this.radius;
+    // Cold forged steel — for impaled blades and assassin daggers.
+    const steel = (): THREE.MeshStandardMaterial => this.stdMat(0x252b33, 0x8a9bb0, 0.45);
+    // The creature's own accent, at chosen brightness — for glows/runes/lenses.
+    const glow = (ei = 2.0): THREE.MeshStandardMaterial => this.stdMat(0x04060a, color, ei);
+
+    switch (this.kind) {
+      case "husk": {
+        // A broken blade still impaling the risen corpse — snapped off, never removed.
+        // Bright cold steel so it reads as metal against the red body at distance.
+        const blade = this.stdMat(0x39424e, 0xb4c4d6, 1.0);
+        const shaft = this.addMesh(new THREE.BoxGeometry(0.09, 0.09, 1.5), blade, 0.06, 1.04, -0.05, g);
+        shaft.rotation.set(0.55, 0.2, 0);
+        this.addMesh(new THREE.BoxGeometry(0.36, 0.07, 0.07), blade, 0.2, 0.76, -0.5, g).rotation.y = 0.2;
+        const tip = this.addMesh(new THREE.ConeGeometry(0.06, 0.26, 4), blade, -0.08, 1.34, 0.64, g);
+        tip.rotation.set(-1.0, 0, 0);
+        // A smouldering wound glow where it pierces the chest.
+        this.addMesh(new THREE.SphereGeometry(0.1, 6, 5), glow(2.2), 0.05, 0.98, 0.34, g);
+        break;
+      }
+      case "spitter": {
+        // A floating targeting reticle hangs before the casting orb.
+        const rm = glow(2.2);
+        const reticle = this.addMesh(new THREE.TorusGeometry(0.15, 0.014, 4, 18), rm, 0, 1.27, 0.78, g);
+        reticle.rotation.x = Math.PI / 2.1;
+        for (const a of [0, Math.PI / 2]) {
+          this.addMesh(new THREE.BoxGeometry(0.2, 0.012, 0.012), rm, 0, 1.27, 0.78, g).rotation.z = a;
+        }
+        break;
+      }
+      case "swarmer": {
+        // A single furious cyclops eye, ringed in glare.
+        const eye = glow(2.6);
+        const halo = this.addMesh(new THREE.TorusGeometry(0.17, 0.02, 4, 16), eye, 0, 0.42, 0.26, g);
+        halo.rotation.x = Math.PI / 2;
+        break;
+      }
+      case "bomber": {
+        // Hazard chevrons banding the casing — read it as a live munition.
+        const warn = glow(1.6);
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * TAU + 0.4;
+          const chev = this.addMesh(new THREE.BoxGeometry(0.26, 0.05, 0.05), warn, Math.cos(a) * (r + 0.02), 0.7, Math.sin(a) * (r + 0.02), g);
+          chev.rotation.set(0, -a, 0.5);
+        }
+        break;
+      }
+      case "sentinel": {
+        // The defining beam-lens: a focusing aperture ringed at the muzzle with
+        // targeting prongs, so the artillery reads as artillery (not a "shield").
+        // Barrel points +z from x≈0.55; the muzzle sits near z≈0.95.
+        const lens = glow(2.6);
+        const housing = steel();
+        // Aperture ring around the barrel (default torus lies in XY → faces +z).
+        this.addMesh(new THREE.TorusGeometry(0.17, 0.04, 6, 20), housing, 0.55, 1.3, 0.82, g);
+        // Glowing lens disc (CircleGeometry faces +z by default).
+        this.addMesh(new THREE.CircleGeometry(0.14, 16), lens, 0.55, 1.3, 0.84, g);
+        for (const sy of [-1, 1]) {
+          const prong = this.addMesh(new THREE.ConeGeometry(0.04, 0.42, 4), housing, 0.55, 1.3 + sy * 0.2, 0.78, g);
+          prong.rotation.x = Math.PI / 2; // point the prong forward (+z)
+        }
+        break;
+      }
+      case "wisp": {
+        // A sharp refractive star burning inside the glass mote.
+        const prism = glow(3.2);
+        const star = this.addMesh(new THREE.OctahedronGeometry(0.2, 0), prism, 0, 0, 0, g);
+        star.scale.set(0.5, 1.4, 0.5);
+        const star2 = this.addMesh(new THREE.OctahedronGeometry(0.2, 0), prism, 0, 0, 0, g);
+        star2.scale.set(1.4, 0.5, 0.5);
+        break;
+      }
+      case "leaper": {
+        // A barbed tail arching over the back — the predator silhouette that
+        // breaks the "recolored husk" read and says quadruped pouncer.
+        const chitin = this.stdMat(0x1a0d22, color, 0.5);
+        const seg = [
+          [0, 0.7, -0.4, -0.4], [0, 1.0, -0.55, -0.2], [0, 1.2, -0.4, 0.2], [0, 1.25, -0.05, 0.7],
+        ] as const;
+        for (const [x, y, z, pitch] of seg) {
+          const s = this.addMesh(new THREE.ConeGeometry(0.09, 0.3, 4), chitin, x, y, z, g);
+          s.rotation.x = pitch;
+        }
+        const sting = this.addMesh(new THREE.ConeGeometry(0.07, 0.34, 4), glow(2.2), 0, 1.22, 0.18, g);
+        sting.rotation.x = 1.6;
+        break;
+      }
+      case "tether": {
+        // A trident of focus crystals fanning forward — one per locked lane.
+        const cry = glow(2.0);
+        for (const dx of [-0.3, 0, 0.3]) {
+          const c = this.addMesh(new THREE.OctahedronGeometry(0.08), cry, dx, 1.45, 0.45, g);
+          c.rotation.set(0.5, dx, 0);
+        }
+        break;
+      }
+      case "mirror": {
+        // A polished mirror pane set in the chest — the thing it raises against you.
+        const frame = this.stdMat(0x1a1f28, color, 1.0);
+        const pane = this.stdMat(0xcfe8ff, color, 0.9);
+        this.addMesh(new THREE.BoxGeometry(0.5, 0.66, 0.04), frame, 0, 1.18, 0.5, g);
+        this.addMesh(new THREE.BoxGeometry(0.38, 0.54, 0.03), pane, 0, 1.18, 0.53, g);
+        break;
+      }
+      case "caster": {
+        // A brazier-crown of floating embers above the hood — the forge-mage tell.
+        const ember = glow(2.6);
+        for (let i = 0; i < 3; i++) {
+          const a = (i / 3) * TAU;
+          this.addMesh(new THREE.SphereGeometry(0.06, 6, 5), ember, Math.cos(a) * 0.26, 2.05, Math.sin(a) * 0.26, g);
+        }
+        const flame = this.addMesh(new THREE.ConeGeometry(0.1, 0.3, 5), ember, 0, 2.18, 0, g);
+        flame.scale.y = 1.3;
+        break;
+      }
+      case "shade": {
+        // Crossed daggers floating as an assassin's mark above the cowl.
+        const dag = steel();
+        for (const s of [-1, 1]) {
+          const d = this.addMesh(new THREE.ConeGeometry(0.05, 0.5, 4), dag, 0, 1.95, 0, g);
+          d.rotation.set(Math.PI / 2, 0, s * 0.6);
+          d.position.x = s * 0.04;
+        }
+        break;
+      }
+      case "bastion": {
+        // A heraldic war-sigil branded on the great shield.
+        const sig = glow(1.6);
+        const gem = this.addMesh(new THREE.OctahedronGeometry(0.16), sig, 0, 1.0, 0.72, g);
+        gem.scale.z = 0.4;
+        // Ring framing the sigil sits flat on the shield face (default torus faces +z).
+        const halo = this.addMesh(new THREE.TorusGeometry(0.3, 0.03, 5, 6), sig, 0, 1.0, 0.7, g);
+        halo.rotation.z = Math.PI / 6;
+        break;
+      }
+      case "brute": {
+        // A glowing forge-brand seared across the breastplate.
+        const brand = glow(1.8);
+        this.addMesh(new THREE.BoxGeometry(0.12, 0.6, 0.05), brand, 0, 1.0, 0.62, g);
+        this.addMesh(new THREE.BoxGeometry(0.5, 0.12, 0.05), brand, 0, 1.1, 0.62, g);
+        break;
+      }
+      case "harrier": {
+        // Twin afterburner cones flaring off the tail — pure strafer.
+        const burn = glow(2.6);
+        for (const sx of [-0.16, 0.16]) {
+          const b = this.addMesh(new THREE.ConeGeometry(0.07, 0.34, 5), burn, sx, 0, -0.56, g);
+          b.rotation.x = Math.PI / 2;
+        }
+        break;
+      }
+      case "splitter": {
+        // Twin glowing nuclei straining at the dividing seam — about to split.
+        const nuc = glow(2.2);
+        this.addMesh(new THREE.IcosahedronGeometry(0.1, 0), nuc, -0.24, 0.62, 0.34, g);
+        this.addMesh(new THREE.IcosahedronGeometry(0.1, 0), nuc, 0.26, 0.66, 0.32, g);
+        break;
+      }
+      case "voidling": {
+        // A bright ring around the hungry maw — distinguishes it from the wraith Shade.
+        const maw = glow(2.4);
+        const ring = this.addMesh(new THREE.TorusGeometry(0.2, 0.022, 5, 14), maw, 0, 0.4, 0.16, g);
+        ring.rotation.x = 0.5;
+        break;
+      }
+      case "warper": {
+        // A notched portal-glyph disc hovering before it — the blink rune.
+        const rune = glow(2.0);
+        const disc = this.addMesh(new THREE.TorusGeometry(0.22, 0.025, 3, 6), rune, 0, 1.5, 0.46, g);
+        disc.rotation.x = Math.PI / 2.2;
+        const inner = this.addMesh(new THREE.TorusGeometry(0.12, 0.02, 3, 3), rune, 0, 1.5, 0.47, g);
+        inner.rotation.x = Math.PI / 2.2;
+        break;
       }
     }
   }
@@ -935,6 +1107,17 @@ export class Husk extends Enemy {
     shl.rotation.z = 0.8;
     const shr = this.addMesh(new THREE.ConeGeometry(0.08, 0.32, 4), boneMat, 0.4, 1.05, 0);
     shr.rotation.z = -0.8;
+    // Gaunt skeletal arms reaching forward — the grasping dead. Asymmetric heights
+    // give the risen corpse a lurching, broken posture (not a tidy soldier).
+    for (const [sx, sh] of [[-1, 0.0], [1, -0.12]] as const) {
+      const upper = this.addMesh(new THREE.BoxGeometry(0.15, 0.15, 0.42), bodyMat, sx * 0.42, 0.92 + sh, 0.18);
+      upper.rotation.set(0.5, sx * 0.2, 0);
+      this.addMesh(new THREE.BoxGeometry(0.12, 0.12, 0.46), boneMat, sx * 0.5, 0.74 + sh, 0.52);
+      for (let i = 0; i < 3; i++) { // clawing fingers
+        const claw = this.addMesh(new THREE.ConeGeometry(0.028, 0.17, 4), boneMat, sx * 0.5 + (i - 1) * 0.07, 0.7 + sh, 0.76);
+        claw.rotation.x = Math.PI / 2;
+      }
+    }
   }
 
   protected deathColor(): number {

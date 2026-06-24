@@ -47,7 +47,20 @@ node scripts/loop/observe.mjs  --out artifacts/loop/cycles/manual   # calls `cla
 | `observe.mjs` | Observe | Feeds screenshots + rubrics + logic to `claude -p`; the AI judges every visual goal from the images and proposes the single best next change → `observe.json`. |
 | `implement.mjs` | Implement | Applies that proposal via headless Claude with edit tools; records the exact cycle diff + git base → `implement.json` / `cycle.patch`. |
 | `orchestrate.mjs` | Loop | Ties it together: decide, build-gate (`npm run verify`), re-verify, per-cycle reports, budget, resume. |
-| `lib.mjs` | — | Shared harness: paths, atomic JSON IO, browser, dev-server lifecycle, git snapshot/revert, `runClaude`. |
+| `lib.mjs` | — | Shared harness: paths, atomic JSON IO, browser, dev-server lifecycle, git snapshot/revert, `runClaude`, scenario nav (`enterRun`/`gotoScenario`), and perf helpers (`samplePerf`/`perfReport`/`assertBudget`). |
+| `lag-hunt.mjs` | — | Drives every gameplay event and flags first-time synchronous shader compiles (`npm run perf:lag-hunt`). |
+
+## Standalone perf + AI-visual tools (share `lib.mjs`)
+
+Outside the loop, the same harness backs three tools — see the project `CLAUDE.md`
+"Performance + AI-visual harness" section for the full rundown:
+
+- `npm run perf:bench` / `perf:baseline` — `scripts/perf-bench.mjs`: scenario battery + baseline regression diff (measure an optimization).
+- `npm run visual:diff -- <A> <B>` — `scripts/visual-diff.mjs`: PNG/dir pixel-diff + heatmaps.
+- `npm run ai:look -- <scenario> "<q>"` — `scripts/ai-look.mjs`: on-demand `claude -p` visual+perf critique of one frame.
+
+These read the in-engine `window.__rh3perf` instrument (`src/debug/perfMonitor.ts`);
+`npm run smoke:perf-instrument` guards that hook's contract.
 
 ## Outputs (all under `game/artifacts/loop/`, git-ignored)
 

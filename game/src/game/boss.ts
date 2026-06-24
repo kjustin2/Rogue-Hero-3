@@ -68,7 +68,9 @@ export class PitWarden extends Enemy {
     const hide = this.stdMat(0x4a1d1d, 0x550808, 0.3);
     const plate = this.stdMat(0x2a1518);
     const horn = this.stdMat(0xc9b8a0);
-    const chain = this.stdMat(0x180d0b, 0xff7733, 0.55);
+    // Brighter iron links catching the furnace heat — the "chained" pit demon is
+    // the Warden's defining motif, so the bindings should actually read.
+    const chain = this.stdMat(0x281712, 0xff8a3a, 0.95);
     const emberPlate = this.stdMat(0x3a0d06, 0xffaa44, 1.2);
     this.coreMat = this.stdMat(0x331111, 0xff4422, 1.8);
     this.eyeMat = this.stdMat(0x000000, 0xffaa22, 3);

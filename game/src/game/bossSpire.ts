@@ -83,7 +83,10 @@ export class SpireCaster extends Enemy {
     this.radius = 1.0;
     this.wardColor = 0x3effd2;
 
-    const robeMat = this.stdMat(0x0c2a24, 0x14705c, 0.7);
+    // Dimmer glass robe so the bright crystalline crown/fins/orbs read as the
+    // glowing "glass crown" against a darker body — value contrast the old
+    // brighter-teal silhouette lacked (it blurred into one glowing blob).
+    const robeMat = this.stdMat(0x0a201e, 0x105046, 0.48);
     const trimMat = this.stdMat(0x081a16, 0x2affc8, 1.2);
     this.coreMat = this.stdMat(0x06201a, 0x3effd2, 2.4);
     this.robeMat = robeMat;
@@ -101,6 +104,14 @@ export class SpireCaster extends Enemy {
     }
     this.crownOrb = this.addMesh(new THREE.SphereGeometry(0.38, 10, 8), trimMat, 0, 3.0);
     this.addMesh(new THREE.BoxGeometry(0.5, 0.3, 0.3), this.coreMat, 0, 1.7, 0.5);
+    // The lance focus: a forward aperture the echo-lances pour out of — echoes the
+    // Sentinel's beam-lens motif so the glass artillerist reads as artillery.
+    this.addMesh(new THREE.TorusGeometry(0.26, 0.06, 6, 24), trimMat, 0, 1.7, 0.62).rotation.x = 0;
+    this.addMesh(new THREE.CircleGeometry(0.22, 18), this.coreMat, 0, 1.7, 0.64);
+    for (const sx of [-1, 1]) {
+      const guide = this.addMesh(new THREE.ConeGeometry(0.05, 0.5, 4), trimMat, sx * 0.34, 1.7, 0.6);
+      guide.rotation.x = Math.PI / 2;
+    }
     for (const sx of [-1, 1]) {
       const fin = this.addMesh(new THREE.BoxGeometry(0.12, 1.45, 0.46), trimMat, sx * 0.72, 1.55, 0.05);
       fin.rotation.z = sx * -0.26;

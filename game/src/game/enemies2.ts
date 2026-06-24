@@ -727,41 +727,59 @@ export class Bastion extends Enemy {
     this.speed = 1.8;
     this.radius = 0.7;
     this.shieldHp = this.shieldMaxHp = 36; // ≈ one full melee combo (9+9+18) at neutral tempo
-    this.shieldBarColor = 0xffaa33;
-    this.addRoleSilhouette("shield", 0xffaa33);
+    this.shieldBarColor = 0xff8a3a;
+    this.addRoleSilhouette("shield", 0xff7a2a);
 
-    const hide = this.stdMat(0x2c2418, 0x553311, 0.3);
-    const eyeMat = this.stdMat(0x000000, 0xffbb44, 2.4);
+    const hide = this.stdMat(0x241a12, 0x3a1606, 0.22);   // charred war-hide
+    const iron = this.stdMat(0x2b2f3a, 0x10131c, 0.08);   // cold dark battle-iron (body plates)
+    const eyeMat = this.stdMat(0x000000, 0xff7a2a, 2.8);  // hot ember glare
+    // Shield frame/rune (bright) + wall face (dark iron, faintly rune-lit). Kept OUT
+    // of the flash loop so the shield-HP glow we drive each frame survives the hit-flash.
     this.shieldMat = new THREE.MeshStandardMaterial({
-      color: 0x1a1408, emissive: 0xffaa33, emissiveIntensity: 1.1, roughness: 0.6, metalness: 0.2, flatShading: true,
+      color: 0x14171f, emissive: 0xff7a2a, emissiveIntensity: 1.1, roughness: 0.55, metalness: 0.3, flatShading: true,
     });
     this.plateMat = new THREE.MeshStandardMaterial({
-      color: 0x24180a, emissive: 0xffaa33, emissiveIntensity: 0.5, roughness: 0.6, metalness: 0.2, flatShading: true,
+      color: 0x1c2029, emissive: 0xff7a2a, emissiveIntensity: 0.22, roughness: 0.6, metalness: 0.3, flatShading: true,
     });
+    // Hunched brute hauling the wall: body sits low, helm + pauldrons crest the rim.
     this.addMesh(new THREE.BoxGeometry(1.0, 1.3, 0.8), hide, 0, 0.85);
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.4, 0.4), hide, 0, 1.7);
-    // Hunched helm visor glaring over the wall
-    this.addMesh(new THREE.BoxGeometry(0.34, 0.07, 0.05), eyeMat, 0, 1.7, 0.21);
+    this.addMesh(new THREE.BoxGeometry(0.56, 0.46, 0.46), iron, 0, 1.78);  // helm
+    // Brow ridge + a glaring visor slit so the warrior reads above the shield
+    this.addMesh(new THREE.BoxGeometry(0.6, 0.1, 0.08), iron, 0, 1.99, 0.2);
+    this.addMesh(new THREE.BoxGeometry(0.36, 0.08, 0.06), eyeMat, 0, 1.83, 0.24);
+    for (const sx of [-1, 1]) {
+      const pa = this.addMesh(new THREE.BoxGeometry(0.5, 0.34, 0.66), iron, sx * 0.72, 1.64, 0);
+      pa.rotation.z = sx * -0.22;
+    }
     // Backpack counterweight + spine of rivets so it reads from behind (the kill angle)
     this.addMesh(new THREE.BoxGeometry(0.7, 0.9, 0.3), hide, 0, 0.95, -0.5);
     for (let i = 0; i < 3; i++) {
-      this.addMesh(new THREE.SphereGeometry(0.07, 5, 4), hide, 0, 0.6 + i * 0.35, -0.66);
+      this.addMesh(new THREE.SphereGeometry(0.07, 5, 4), iron, 0, 0.6 + i * 0.35, -0.66);
     }
-    // The wall itself: a broad frontal shield with a glowing edge
-    this.addMesh(new THREE.BoxGeometry(1.7, 1.7, 0.16), this.plateMat, 0, 1.0, 0.62);
-    this.addMesh(new THREE.BoxGeometry(1.8, 0.12, 0.2), this.shieldMat, 0, 1.9, 0.62);
-    this.addMesh(new THREE.BoxGeometry(1.8, 0.12, 0.2), this.shieldMat, 0, 0.12, 0.62);
-    // Vertical center boss-rib + corner studs on the shield (share the glowing wall mats)
-    this.addMesh(new THREE.BoxGeometry(0.16, 1.7, 0.22), this.shieldMat, 0, 1.0, 0.64);
-    for (const sx of [-0.7, 0.7]) for (const sy of [0.35, 1.65]) {
-      this.addMesh(new THREE.SphereGeometry(0.1, 6, 5), this.shieldMat, sx, sy, 0.7);
+    // The wall: a great round war-shield (a faceted iron aspis) — a disc is
+    // unmistakably a shield and never a treasure chest. Dark iron face split into
+    // a wheel by recessed iron spokes, with a single bright domed umbo + rim runes.
+    const R = 0.98, SY = 1.05, SZ = 0.6, TAU = Math.PI * 2;
+    const disc = this.addMesh(new THREE.CylinderGeometry(R, R, 0.16, 12), this.plateMat, 0, SY, SZ);
+    disc.rotation.x = Math.PI / 2;                                                            // face the player (+z)
+    this.addMesh(new THREE.TorusGeometry(R, 0.08, 6, 12), this.shieldMat, 0, SY, SZ + 0.02);  // bright rune rim
+    this.addMesh(new THREE.TorusGeometry(R * 0.6, 0.045, 6, 12), this.shieldMat, 0, SY, SZ + 0.05); // inner ring
+    for (let i = 0; i < 3; i++) {                                                             // recessed iron spokes → a wheel, not slats
+      const bar = this.addMesh(new THREE.BoxGeometry(R * 1.78, 0.07, 0.16), iron, 0, SY, SZ + 0.03);
+      bar.rotation.z = i * (Math.PI / 3);
+    }
+    const umbo = this.addMesh(new THREE.ConeGeometry(0.28, 0.34, 8), this.shieldMat, 0, SY, SZ + 0.08); // central domed boss
+    umbo.rotation.x = Math.PI / 2;
+    for (let i = 0; i < 8; i++) {                                                             // rim rivets
+      const a = (i / 8) * TAU;
+      this.addMesh(new THREE.SphereGeometry(0.06, 5, 4), this.shieldMat, Math.cos(a) * R * 0.86, SY + Math.sin(a) * R * 0.86, SZ + 0.06);
     }
     this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, -0.6, 0.3, 0);
     this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, 0.6, 0.3, 0);
   }
 
   protected deathColor(): number {
-    return 0xffaa33;
+    return 0xff7a2a;
   }
 
   protected barHeight(): number {
@@ -790,10 +808,10 @@ export class Bastion extends Enemy {
         const fz = Math.cos(this.heading);
         this.ctx.fx.burst({
           x: this.pos.x + fx * 0.8, y: 1.1, z: this.pos.z + fz * 0.8,
-          count: 6, color: 0xffaa33, speed: [2, 5], up: 0.5, size: [0.3, 0.55], life: [0.15, 0.3], gravity: -2, drag: 3,
+          count: 6, color: 0xff7a2a, speed: [2, 5], up: 0.5, size: [0.3, 0.55], life: [0.15, 0.3], gravity: -2, drag: 3,
         });
         this.ctx.sfx.shieldHit();
-        return this.hitShield(amount, opts, 0.25, 0xffaa33, "SHIELD BREAK");
+        return this.hitShield(amount, opts, 0.25, 0xff7a2a, "SHIELD BREAK");
       }
     }
     return super.takeDamage(amount, opts);
@@ -820,12 +838,12 @@ export class Bastion extends Enemy {
       this.plateMat.emissiveIntensity = fi;
       return;
     }
-    // Drive shield/plate glow off shield HP (restore amber after any freeze tint).
-    this.shieldMat.emissive.set(0xffaa33);
-    this.plateMat.emissive.set(0xffaa33);
+    // Drive shield/plate glow off shield HP (restore ember after any freeze tint).
+    this.shieldMat.emissive.set(0xff7a2a);
+    this.plateMat.emissive.set(0xff7a2a);
     const frac = this.shieldHp / this.shieldMaxHp;
     this.shieldMat.emissiveIntensity = 0.12 + frac * (1.0 + Math.sin(this.t * 2.5) * 0.3);
-    this.plateMat.emissiveIntensity = 0.06 + frac * 0.5;
+    this.plateMat.emissiveIntensity = 0.02 + frac * 0.16;
   }
 
   protected tick(dt: number): void {
@@ -845,7 +863,7 @@ export class Bastion extends Enemy {
         this.slamTimer = 3.0;
         const fx = Math.sin(this.heading);
         const fz = Math.cos(this.heading);
-        this.ctx.tele.circle(this.pos.x + fx * 1.6, this.pos.z + fz * 1.6, 2.2, 0.6, 0xffaa33);
+        this.ctx.tele.circle(this.pos.x + fx * 1.6, this.pos.z + fz * 1.6, 2.2, 0.6, 0xff7a2a);
       }
     } else {
       this.setIntentPose(1 - Math.max(0, this.slamWindup) / 0.6);
@@ -857,7 +875,7 @@ export class Bastion extends Enemy {
         const fz = Math.cos(this.heading);
         const sx = this.pos.x + fx * 1.6;
         const sz = this.pos.z + fz * 1.6;
-        this.ctx.fx.ring(sx, sz, { radius: 2.2, color: 0xffaa33, duration: 0.35 });
+        this.ctx.fx.ring(sx, sz, { radius: 2.2, color: 0xff7a2a, duration: 0.35 });
         this.ctx.cam.addTrauma(0.15);
         this.ctx.sfx.bossSlam();
         if (Math.hypot(p.pos.x - sx, p.pos.z - sz) < 2.2 + p.radius) {
