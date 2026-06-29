@@ -176,11 +176,6 @@ await measure("click blessing chips", async () => {
 check("blessing selection remains visible", await page.locator(".blessing-chip--on").count() === 1);
 
 await backToMain();
-await measure("main to daily hero select", async () => {
-  await page.locator("button", { hasText: /Daily Challenge/i }).click();
-  await page.locator(".draft-title", { hasText: /Daily Challenge/i }).waitFor();
-}, 650);
-await backToMain();
 
 await measure("main to settings", async () => {
   await page.locator("button", { hasText: "Settings" }).click();

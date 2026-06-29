@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { clamp01, damp, lerp } from "../core/math";
 
+// Reused scratch for the per-frame aim-lead so the follow path allocates nothing.
+const _lead = new THREE.Vector3();
+
 /**
  * Trauma-based follow camera. Shake intensity is trauma², so small hits whisper
  * and big hits roar. Directional kicks shove the camera opposite to impacts.
@@ -91,7 +94,7 @@ export class CameraRig {
       dx = this.cineTarget.x;
       dz = this.cineTarget.z;
     } else {
-      const lead = new THREE.Vector3()
+      const lead = _lead
         .subVectors(this.aimPoint, this.target)
         .multiplyScalar(this.lookAhead);
       lead.clampLength(0, 4.5);

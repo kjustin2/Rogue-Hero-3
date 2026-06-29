@@ -12,7 +12,7 @@ const PHASE_LINES = [
 const RIFT_CYAN = 0x33e8ff;
 const RIFT_VIOLET = 0x9a4dff;
 
-type TyrantState = "idle" | "novaTell" | "lanceTrack" | "lanceTell" | "crossfireTell" | "slamTell" | "recover" | "phaseShift" | "guard";
+type TyrantState = "idle" | "novaTell" | "lanceTrack" | "lanceTell" | "crossfireTell" | "slamTell" | "radialTell" | "stormTell" | "recover" | "phaseShift" | "guard";
 
 /** A queued radial nova: telegraphed first, then fires a hostile-projectile ring on expiry. */
 interface PendingNova {
@@ -31,12 +31,14 @@ interface PendingLance {
   timer: number;
 }
 
-/** A queued ground-slam shockwave: telegraphed circle, then radial damage on expiry. */
+/** A queued ground-slam shockwave: telegraphed circle, then radial damage on expiry.
+ *  `light` detonations (the scattered rift-storm) land with cheaper FX + less force. */
 interface PendingSlam {
   x: number;
   z: number;
   radius: number;
   timer: number;
+  light?: boolean;
 }
 
 /** A spawned visual beam from a fired lance — fades out on its own clock. */
@@ -74,6 +76,8 @@ export class RiftTyrant extends Enemy {
   private slams: PendingSlam[] = [];
   private beams: Beam[] = [];
   private lockAngle = 0;
+  /** 0→1 wind-up read: the caged core blazes and the halo spins up while charging. */
+  private chargeAmt = 0;
   private coreMat: THREE.MeshStandardMaterial;
   private haloMat: THREE.MeshStandardMaterial;
   private plateMat: THREE.MeshStandardMaterial;
@@ -433,18 +437,60 @@ export class RiftTyrant extends Enemy {
     this.ctx.fx.ring(sl.x, sl.z, { radius: sl.radius * 0.5, color: 0xffffff, duration: 0.35 });
     this.ctx.fx.burst({
       x: sl.x, y: 0.5, z: sl.z,
-      count: 38, color: [RIFT_VIOLET, RIFT_CYAN, 0xffffff],
-      speed: [4, 13], up: 0.9, size: [0.5, 1.1], life: [0.3, 0.8], gravity: -7, drag: 2.5,
+      count: sl.light ? 14 : 38, color: [RIFT_VIOLET, RIFT_CYAN, 0xffffff],
+      speed: [4, sl.light ? 9 : 13], up: 0.9, size: [0.5, 1.1], life: [0.3, 0.8], gravity: -7, drag: 2.5,
     });
-    this.ctx.cam.addTrauma(0.5);
-    this.ctx.stage.punch(0.3);
+    this.ctx.cam.addTrauma(sl.light ? 0.22 : 0.5);
+    this.ctx.stage.punch(sl.light ? 0.14 : 0.3);
     this.ctx.sfx.bossSlam();
     const d = Math.hypot(p.pos.x - sl.x, p.pos.z - sl.z);
     if (d < sl.radius + p.radius) {
-      this.ctx.combat.damagePlayer(20, sl.x, sl.z);
+      this.ctx.combat.damagePlayer(sl.light ? 14 : 20, sl.x, sl.z);
       const len = Math.max(0.001, d);
-      this.ctx.controller.push(((p.pos.x - sl.x) / len) * 7, ((p.pos.z - sl.z) / len) * 7);
+      const force = sl.light ? 5 : 7;
+      this.ctx.controller.push(((p.pos.x - sl.x) / len) * force, ((p.pos.z - sl.z) / len) * force);
     }
+  }
+
+  // ---------------------------------------------------------------- radial lance fan
+  /** A star of lances fired outward from the engine — sweep the gaps, not the lanes. */
+  private beginRadialBurst(): void {
+    this.state = "radialTell";
+    const tell = 0.52;
+    this.timer = tell;
+    const n = this.phase >= 3 ? 6 : 5;
+    const base = Math.random() * Math.PI * 2;
+    for (let i = 0; i < n; i++) {
+      const angle = base + (i / n) * Math.PI * 2;
+      this.ctx.tele.line(this.pos.x, this.pos.z, angle, LANCE_LEN, LANCE_WIDTH * 0.78, tell, RIFT_CYAN);
+      this.lances.push({ x: this.pos.x, z: this.pos.z, angle, timer: tell });
+    }
+    this.ctx.sfx.beamCharge();
+  }
+
+  // ---------------------------------------------------------------- scattered rift storm
+  /** A storm of small rift detonations rains around the player — keep moving. */
+  private beginRiftStorm(): void {
+    this.state = "stormTell";
+    const p = this.ctx.player;
+    const n = this.phase >= 3 ? 4 : 3;
+    const R = 3.3;
+    let maxT = 0;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const dist = i === 0 ? 0 : 3 + Math.random() * 3.5;
+      let x = p.pos.x + Math.sin(a) * dist;
+      let z = p.pos.z + Math.cos(a) * dist;
+      const rr = Math.hypot(x, z);
+      const maxR = ARENA_RADIUS - 2.5;
+      if (rr > maxR) { x = (x / rr) * maxR; z = (z / rr) * maxR; }
+      const t = 0.7 + i * 0.22;
+      maxT = Math.max(maxT, t);
+      this.ctx.tele.circle(x, z, R, t, RIFT_VIOLET);
+      this.slams.push({ x, z, radius: R, timer: t, light: true });
+    }
+    this.timer = maxT + 0.1;
+    this.ctx.sfx.beamCharge();
   }
 
   // ---------------------------------------------------------------- tick
@@ -452,21 +498,26 @@ export class RiftTyrant extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
 
+    // Wind-up read: while charging any attack, the caged core blazes, the halo spins
+    // up, and the shoulder vents gape — then it all settles back between volleys.
+    const charging = this.state.endsWith("Tell") || this.state === "lanceTrack" || this.state === "guard";
+    this.chargeAmt += ((charging ? 1 : 0) - this.chargeAmt) * Math.min(1, dt * 6);
+
     // Living engine: core pulses, halo counter-spins, the hull breathes a hover.
-    this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.5 + Math.sin(this.t * (2 + this.phase * 1.5)) * 0.9;
-    this.haloMat.emissiveIntensity = 1.8 + Math.sin(this.t * 2.4) * 0.5;
-    this.halo.rotation.y -= dt * (1.0 + this.phase * 0.55);
-    this.shardRing.rotation.y += dt * (1.3 + this.phase * 0.5);
+    this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.5 + Math.sin(this.t * (2 + this.phase * 1.5)) * 0.9 + this.chargeAmt * 2.4;
+    this.haloMat.emissiveIntensity = 1.8 + Math.sin(this.t * 2.4) * 0.5 + this.chargeAmt * 1.1;
+    this.halo.rotation.y -= dt * (1.0 + this.phase * 0.55 + this.chargeAmt * 2.5);
+    this.shardRing.rotation.y += dt * (1.3 + this.phase * 0.5 + this.chargeAmt * 2.0);
     this.pos.y = 0.35 + Math.sin(this.t * 1.6) * 0.14;
     this.hull.rotation.y += dt * 0.12;
-    const corePulse = 1 + Math.sin(this.t * (2.4 + this.phase * 0.4)) * 0.06;
+    const corePulse = 1 + Math.sin(this.t * (2.4 + this.phase * 0.4)) * 0.06 + this.chargeAmt * 0.18;
     this.core.scale.setScalar(corePulse);
     for (let i = 0; i < this.cageStruts.length; i++) {
       const strut = this.cageStruts[i];
       strut.rotation.y = Math.sin(this.t * 1.25 + i) * 0.06;
     }
-    // Vents flare while charging an attack
-    const flare = this.state === "novaTell" || this.state === "lanceTell" || this.state === "crossfireTell" || this.state === "slamTell" ? 0.45 : 0.25;
+    // Vents flare smoothly with the charge-up (covers every wind-up state).
+    const flare = 0.25 + this.chargeAmt * 0.22;
     this.shellL.rotation.z = flare;
     this.shellR.rotation.z = -flare;
     this.shellL.position.x = -1.55 - (flare - 0.25) * 0.45;
@@ -561,6 +612,19 @@ export class RiftTyrant extends Enemy {
           this.timer = 0.45;
         }
         break;
+      case "radialTell":
+        this.facePlayer(dt * 0.4);
+        if (this.timer <= 0 && this.lances.length === 0) {
+          this.state = "recover";
+          this.timer = 0.42;
+        }
+        break;
+      case "stormTell":
+        if (this.timer <= 0 && this.slams.length === 0) {
+          this.state = "recover";
+          this.timer = 0.45;
+        }
+        break;
       case "guard":
         this.facePlayer(dt * 0.5);
         if (this.timer <= 0) {
@@ -588,6 +652,10 @@ export class RiftTyrant extends Enemy {
       this.beginCrossfire();
       return;
     }
+    // P2+: a radial lance star fires outward — sweep the safe gaps between the lanes.
+    if (this.phase >= 2 && this.attackPick % 7 === 2) { this.beginRadialBurst(); return; }
+    // P3: a scattered rift storm rains small detonations around the player.
+    if (this.phase >= 3 && this.attackPick % 5 === 3) { this.beginRiftStorm(); return; }
     // A rift bulwark every 4th attack — invulnerable behind a barrier, then a close nova.
     if (this.attackPick % 4 === 3) { this.beginGuard(); return; }
     // Slams enter the pool at phase 2, and only when the player is in range.

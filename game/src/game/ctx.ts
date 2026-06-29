@@ -11,7 +11,6 @@ import type { Rng } from "../core/rng";
 import type { Player } from "./player";
 import type { Controller } from "./controller";
 import type { Tempo } from "./tempo";
-import type { Overdrive } from "./overdrive";
 import type { Combat } from "./combat";
 import type { Projectiles, HostileProjectiles } from "./projectiles";
 import type { EnemyManager } from "./enemies";
@@ -69,7 +68,6 @@ export interface Ctx {
   player: Player;
   controller: Controller;
   tempo: Tempo;
-  overdrive: Overdrive;
   combat: Combat;
   projectiles: Projectiles;
   hostiles: HostileProjectiles;

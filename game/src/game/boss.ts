@@ -11,7 +11,9 @@ interface FirePatch {
   acc: number;
 }
 
-type BossState = "idle" | "dashTell" | "dashing" | "leap" | "slamTell" | "recover" | "phaseShift" | "guard";
+type BossState =
+  | "idle" | "dashTell" | "dashing" | "leap" | "slamTell" | "recover" | "phaseShift" | "guard"
+  | "fanTell" | "fissureTell";
 
 const PHASE_LINES = [
   "THE PIT WARDEN STIRS",
@@ -43,6 +45,15 @@ export class PitWarden extends Enemy {
   private chainLinks: THREE.Mesh[] = [];
   private backFlares: THREE.Object3D[] = [];
   private emberVents: THREE.Object3D[] = [];
+  // Shoulder-pivot arm groups so swings/raises/thrusts read as real blows.
+  private arms: THREE.Group[] = [];
+  private armPose = 0; // 0 = relaxed locomotion → 1 = full attack pose
+  // Ranged ember fan: a spread of magma bolts the player must side-step.
+  private fanAngle = 0;
+  // Ground fissures: radiating cracks of fire with safe wedges between them.
+  private fissures: { angle: number }[] = [];
+  private readonly fissureLen = 13;
+  private readonly fissureHalfW = 1.6;
   private patches: FirePatch[] = [];
   private patchGeo: THREE.CircleGeometry;
   // Per-phase appearance escalation (built once, revealed on transition).
@@ -53,6 +64,10 @@ export class PitWarden extends Enemy {
   // Hip-pivoted leg groups (+ ankle pivots) so the walk reads as steps, not a slide.
   private legs: THREE.Group[] = [];
   private ankles: THREE.Group[] = [];
+  // Hip-pivot height of the legs. Tuned so the thigh plants and the boot rests ON
+  // the arena floor (y≈0) rather than sinking ~0.13 below it — the old base left
+  // the boots mostly buried, a "feet clipping through the ground" look from behind.
+  private readonly legBaseY = 0.7;
   private walkPhase = 0;
   private gait = 0;
   private prevWalkX = 0;
@@ -60,8 +75,8 @@ export class PitWarden extends Enemy {
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 1300;
-    this.speed = 3.7;
+    this.hp = this.maxHp = 1500;
+    this.speed = 3.9;
     this.radius = 1.4;
     this.wardColor = 0xff7a3a;
 
@@ -103,25 +118,31 @@ export class PitWarden extends Enemy {
     hornL.rotation.z = 0.55;
     const hornR = this.addMesh(new THREE.ConeGeometry(0.18, 0.9, 5), horn, 0.55, 2.85, 0.45);
     hornR.rotation.z = -0.55;
-    // Gorilla arms with huge fists
-    this.addMesh(new THREE.BoxGeometry(0.55, 1.6, 0.55), hide, -1.35, 1.3, 0.2);
-    this.addMesh(new THREE.BoxGeometry(0.55, 1.6, 0.55), hide, 1.35, 1.3, 0.2);
-    this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.85), plate, -1.35, 0.35, 0.2);
-    this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.85), plate, 1.35, 0.35, 0.2);
+    // Gorilla arms with huge fists — each hangs from a shoulder-pivot group so the
+    // whole arm swings through the walk and cocks/raises/thrusts on attacks. The
+    // pauldron is shoulder armor and stays on the body; everything below the
+    // shoulder (upper arm, fist, elbow band, wrist chain, claws) rides the group.
     for (const sx of [-1, 1]) {
       const pauldron = this.addMesh(new THREE.BoxGeometry(0.72, 0.28, 0.9), emberPlate, sx * 1.15, 2.05, 0.08);
       pauldron.rotation.z = sx * -0.2;
-      const brace = this.addMesh(new THREE.BoxGeometry(0.72, 0.18, 0.5), chain, sx * 1.35, 0.78, 0.52);
-      brace.rotation.z = sx * -0.12;
-      this.chainLinks.push(brace);
-      const elbowBand = this.addMesh(new THREE.BoxGeometry(0.66, 0.14, 0.64), emberPlate, sx * 1.35, 1.08, 0.2);
+
+      const arm = new THREE.Group();
+      arm.position.set(sx * 1.35, 2.05, 0.2); // shoulder pivot
+      this.root.add(arm);
+      this.addMesh(new THREE.BoxGeometry(0.55, 1.6, 0.55), hide, 0, -0.75, 0, arm);   // upper arm
+      this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.85), plate, 0, -1.7, 0, arm);   // fist
+      const elbowBand = this.addMesh(new THREE.BoxGeometry(0.66, 0.14, 0.64), emberPlate, 0, -0.97, 0, arm);
       elbowBand.rotation.z = sx * -0.16;
       this.emberVents.push(elbowBand);
+      const brace = this.addMesh(new THREE.BoxGeometry(0.72, 0.18, 0.5), chain, 0, -1.27, 0.32, arm);
+      brace.rotation.z = sx * -0.12;
+      this.chainLinks.push(brace);
       for (let i = 0; i < 3; i++) {
-        const claw = this.addMesh(new THREE.ConeGeometry(0.08, 0.42, 4), emberPlate, sx * (1.12 + i * 0.16), 0.2, 0.72);
+        const claw = this.addMesh(new THREE.ConeGeometry(0.08, 0.42, 4), emberPlate, sx * (-0.23 + i * 0.16), -1.85, 0.52, arm);
         claw.rotation.x = Math.PI / 2;
         claw.rotation.z = sx * 0.18;
       }
+      this.arms.push(arm); // [0] = left (sx=-1), [1] = right (sx=1)
     }
     const chainA = this.addMesh(new THREE.BoxGeometry(1.55, 0.12, 0.12), chain, -0.05, 1.95, 0.93);
     chainA.rotation.z = 0.32;
@@ -138,12 +159,13 @@ export class PitWarden extends Enemy {
     // with the boot kept on its own pivot so the ankle can roll for toe-off/heel-strike.
     for (const sx of [-1, 1]) {
       const leg = new THREE.Group();
-      leg.position.set(sx * 0.55, 0.62, -0.15);
+      leg.position.set(sx * 0.55, this.legBaseY, -0.15);
       this.root.add(leg);
       this.addMesh(new THREE.BoxGeometry(0.6, 0.74, 0.7), hide, 0, -0.37, 0, leg);
-      // Ankle pivot near the bottom of the shin; the boot hangs off it.
+      // Ankle pivot near the bottom of the shin; the boot hangs off it. Raised so the
+      // boot lands flush on the floor with the higher hip pivot above.
       const ankle = new THREE.Group();
-      ankle.position.set(0, -0.66, 0.05);
+      ankle.position.set(0, -0.58, 0.05);
       leg.add(ankle);
       const boot = this.addMesh(new THREE.BoxGeometry(0.76, 0.18, 0.85), plate, 0, 0, 0.18, ankle);
       boot.rotation.z = sx * 0.04;
@@ -281,14 +303,26 @@ export class PitWarden extends Enemy {
   }
 
   die(): void {
+    this.disposeExtras();
+    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
+    super.die();
+  }
+
+  // Room teardown for a still-alive Warden (player death / exit) calls dispose(),
+  // not die() — so the scene-added fire patches must be freed here too, else they
+  // orphan in the scene and patchGeo leaks. (Matches Colossus/Tyrant.)
+  dispose(): void {
+    this.disposeExtras();
+    super.dispose();
+  }
+
+  private disposeExtras(): void {
     for (const pt of this.patches) {
       this.ctx.stage.scene.remove(pt.mesh);
       pt.mat.dispose();
     }
     this.patches = [];
     this.patchGeo.dispose();
-    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
-    super.die();
   }
 
   protected tick(dt: number): void {
@@ -337,9 +371,30 @@ export class PitWarden extends Enemy {
         const lift = Math.max(0, s); // 0 on stance, 1 at peak of swing
         // Reach forward while lifting, drive back while planted.
         this.legs[i].rotation.x = s * 0.85 * g;
-        this.legs[i].position.y = 0.62 + lift * 0.26 * g;
+        this.legs[i].position.y = this.legBaseY + lift * 0.26 * g;
         // Ankle: toes down as the foot lifts, flat/heel as it plants.
         this.ankles[i].rotation.x = (lift * 0.7 - (1 - lift) * 0.25) * g;
+      }
+
+      // Arm motion: counter-swing with the legs while walking, then cock back,
+      // raise overhead, or thrust forward depending on the attack. (+rotation.x
+      // swings the fist back/up; −rotation.x drives it forward.)
+      let armX = 0;
+      switch (this.state) {
+        case "dashTell": armX = 0.95; break;     // wind both fists back
+        case "dashing": armX = -1.15; break;     // drive them forward through the charge
+        case "leap": armX = -2.4; break;         // raise overhead for the smash
+        case "guard": armX = -1.95; break;       // braced fists up in front
+        case "fanTell": armX = 1.05; break;      // rear back, gathering embers
+        case "fissureTell": armX = -2.25; break; // both fists raised to crack the ground
+      }
+      const armActive = this.state !== "idle" && this.state !== "recover" &&
+        this.state !== "phaseShift" && this.state !== "slamTell";
+      this.armPose += ((armActive ? 1 : 0) - this.armPose) * Math.min(1, dt * 12);
+      for (let i = 0; i < this.arms.length; i++) {
+        const walkSwing = Math.sin(this.walkPhase + i * Math.PI) * 0.5 * this.gait;
+        this.arms[i].rotation.x = walkSwing * (1 - this.armPose) + armX * this.armPose;
+        this.arms[i].rotation.z = (i === 0 ? 1 : -1) * 0.05;
       }
     }
 
@@ -352,12 +407,20 @@ export class PitWarden extends Enemy {
         this.tryContactDamageBoss();
         this.attackCd -= dt;
         if (this.attackCd <= 0) {
-          // Pick an attack: an armored brace every 3rd swing (can't be bursted down),
-          // slams enter the pool at phase 2.
-          if (this.slamCount % 3 === 2) {
+          const k = this.slamCount;
+          // An armored brace every 4th action (can't be bursted down).
+          if (k % 4 === 3) {
             this.beginGuard();
-          } else if (this.phase >= 2 && (this.slamCount % 2 === 0 || d > 9)) {
+          } else if (d > 8.5) {
+            // The player is kiting — answer from range, or close the gap with a leap.
+            if (this.phase >= 2 && k % 2 === 0) this.beginLeap();
+            else this.beginFan();
+          } else if (this.phase >= 2 && k % 3 === 1) {
+            this.beginFissure();
+          } else if (this.phase >= 2 && k % 5 === 4) {
             this.beginLeap();
+          } else if (this.phase >= 3 && k % 6 === 2) {
+            this.beginFan();
           } else {
             this.beginDashCombo();
           }
@@ -432,13 +495,30 @@ export class PitWarden extends Enemy {
         }
         break;
 
+      case "fanTell":
+        this.facePlayer(dt * 0.5);
+        if (this.timer <= 0) {
+          this.fireFan();
+          this.state = "recover";
+          this.timer = 0.5;
+        }
+        break;
+
+      case "fissureTell":
+        if (this.timer <= 0) {
+          this.eruptFissures();
+          this.state = "recover";
+          this.timer = 0.55;
+        }
+        break;
+
       case "slamTell":
       case "recover":
       case "phaseShift":
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.28, 0.85 - this.phase * 0.18);
+          this.attackCd = Math.max(0.24, 0.78 - this.phase * 0.18);
         }
         break;
     }
@@ -493,6 +573,82 @@ export class PitWarden extends Enemy {
     this.leapTo.set(p.pos.x, 0, p.pos.z);
     this.ctx.tele.circle(p.pos.x, p.pos.z, 4.6, 0.62, 0xff7733);
     this.ctx.sfx.bossLeap();
+  }
+
+  /** Ranged answer to a kiting player: rear back and belch a spreading fan of
+   *  magma bolts. Locked toward the player on wind-up, so dodge sideways. */
+  private beginFan(): void {
+    const p = this.ctx.player;
+    this.state = "fanTell";
+    this.timer = 0.55;
+    this.fanAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 2.4, 0.55, 0xff7733);
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 2.2, color: 0xffaa44, duration: 0.4, startRadius: 0.4 });
+    this.ctx.sfx.beamCharge();
+  }
+
+  private fireFan(): void {
+    const n = this.phase >= 3 ? 9 : this.phase >= 2 ? 7 : 5;
+    const spread = this.phase >= 3 ? 1.25 : 0.95;
+    for (let i = 0; i < n; i++) {
+      const a = this.fanAngle + (i - (n - 1) / 2) * (spread / (n - 1));
+      this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: 8.5, dmg: 10, color: 0xff5522, radius: 0.34 });
+    }
+    this.ctx.fx.burst({
+      x: this.pos.x + Math.sin(this.fanAngle) * 1.2, y: 1.7, z: this.pos.z + Math.cos(this.fanAngle) * 1.2,
+      count: 24, color: [0xff5522, 0xffaa44, 0xffffff],
+      speed: [4, 12], up: 0.4, size: [0.35, 0.9], life: [0.25, 0.6], gravity: -2, drag: 2.8,
+    });
+    this.ctx.cam.addTrauma(0.25);
+    this.ctx.sfx.enemyShoot();
+  }
+
+  /** Slam the ground so fire cracks radiate outward in evenly-spaced spokes —
+   *  the player must read the safe wedges between them. */
+  private beginFissure(): void {
+    this.state = "fissureTell";
+    this.timer = 0.82;
+    const arms = this.phase >= 3 ? 6 : 4;
+    const off = Math.random() * Math.PI;
+    this.fissures = [];
+    for (let i = 0; i < arms; i++) {
+      const angle = off + (i / arms) * Math.PI * 2;
+      this.ctx.tele.line(this.pos.x, this.pos.z, angle, this.fissureLen, this.fissureHalfW * 2, 0.82, 0xff5533);
+      this.fissures.push({ angle });
+    }
+    this.ctx.sfx.bossRoar();
+  }
+
+  private eruptFissures(): void {
+    const p = this.ctx.player;
+    let hit = false;
+    for (const f of this.fissures) {
+      const sx = Math.sin(f.angle);
+      const cz = Math.cos(f.angle);
+      for (let s = 1; s <= 6; s++) {
+        const r = (s / 6) * this.fissureLen;
+        this.ctx.fx.burst({
+          x: this.pos.x + sx * r, y: 0.2, z: this.pos.z + cz * r, count: 2,
+          color: [0xff5522, 0xffaa44], speed: [2, 7], up: 1.4, size: [0.35, 0.8], life: [0.25, 0.6], gravity: -4, drag: 2.5,
+        });
+      }
+      if (!hit) {
+        const px = p.pos.x - this.pos.x;
+        const pz = p.pos.z - this.pos.z;
+        const along = px * sx + pz * cz;
+        if (along > 0 && along < this.fissureLen) {
+          const perp = Math.abs(px * cz - pz * sx);
+          if (perp < this.fissureHalfW + p.radius) {
+            this.ctx.combat.damagePlayer(this.phase >= 3 ? 16 : 13, this.pos.x, this.pos.z);
+            hit = true;
+          }
+        }
+      }
+    }
+    this.fissures = [];
+    this.ctx.cam.addTrauma(0.45);
+    this.ctx.stage.punch(0.3);
+    this.ctx.sfx.bossSlam();
   }
 
   private landSlam(): void {

@@ -33,14 +33,18 @@ await page.waitForTimeout(900);
 const boon = await page.evaluate(() => window.__rh3.relics.owned.some((r) => r.id === "warden-heart"));
 check("Warden boon granted on boss kill", boon);
 
-// --- Jump to the Unmaker, drop to fading, hold [Q] to spare.
+// --- Jump to the Unmaker, drop to fading, hold [Q] (the "mercy" action) to spare.
+// Poll for "playing" rather than fixed waits — the dt-capped clock runs ~3x slower
+// headless, so the unmaker entrance can take >5.5s and a fixed wait flakes.
+const waitPlaying = async () => { for (let i = 0; i < 80; i++) { if (await page.evaluate(() => window.__rh3state && window.__rh3state() === "playing")) return true; await page.waitForTimeout(250); } return false; };
 await page.evaluate(() => window.__rh3.run.debugLoadNode("boss", 5, 424242, 3));
-await page.waitForTimeout(5200); // entrance cutscene resolves → playing
-await page.evaluate(() => { const z = window.__rh3.enemies.living().find((e) => e.kind === "boss"); if (z) z.takeDamage(Math.round(z.maxHp * 0.9)); });
-await page.waitForTimeout(2800); // fading phase cutscene resolves → unmakerFading, playing
-// Hold Q (the spare input) — keydown stays held until keyup.
+await waitPlaying(); // entrance cutscene resolves → playing
+await page.evaluate(() => { const z = window.__rh3.enemies.living().find((e) => e.kind === "boss"); if (z) z.takeDamage(Math.round(z.maxHp * 0.92)); });
+await page.waitForTimeout(500);
+await waitPlaying(); // fading-phase cutscene resolves → unmakerFading + playing
+// Hold Q until keyup; generous so the slow headless clock still clears SPARE_TIME.
 await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyQ" })));
-await page.waitForTimeout(2400); // > SPARE_TIME → doMercy fires → boss dies → ending scheduled
+await page.waitForTimeout(5000); // > SPARE_TIME (game-time) → doMercy fires → ending scheduled
 await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyQ" })));
 await page.waitForTimeout(3400); // collapse/rekindle settle + ending begins
 

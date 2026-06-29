@@ -62,6 +62,13 @@ export class Hud {
   private lastSlotIds: (string | null)[] = [null, null, null];
   private lastUpgraded = [false, false, false];
   private lastCds = [0, 0, 0];
+  // Write-on-change caches for the per-frame HUD update (skip redundant DOM writes).
+  private lastHpText = "";
+  private lastHpFrac = -1;
+  private lastShieldFrac = -1;
+  private lastTempoRound = -1;
+  private lastZoneCss = "";
+  private lastCrashReady = false;
 
   constructor(private ctx: Ctx) {
     this.root = document.getElementById("hud")!;
@@ -394,26 +401,54 @@ export class Hud {
     // Combo decays if you go too long without landing a hit
     if (this.combo > 0 && performance.now() > this.comboExpiry) this.resetCombo();
 
-    // HP
+    // HP. The ghost bar drains smoothly behind the real bar, so it animates every
+    // frame; everything else is written only when its value actually changes
+    // (skipping a redundant identical write is visually identical, just cheaper).
     const frac = Math.max(0, player.hp / player.maxHp);
-    this.hpFill.style.width = `${frac * 100}%`;
     this.hpGhost.style.width = `${Math.max(frac, this.ghostHp) * 100}%`;
     if (this.ghostHp > frac) this.ghostHp = Math.max(frac, this.ghostHp - 0.0045);
     else this.ghostHp = frac;
-    this.hpFill.classList.toggle("plate__hp--low", frac < 0.3);
-    this.hpText.textContent = `${Math.ceil(player.hp)} / ${player.maxHp}${player.shield > 0 ? `  ·  ${Math.ceil(player.shield)} SHIELD` : ""}`;
-    this.hpShield.style.width = `${Math.min(1, player.shield / player.maxHp) * 100}%`;
+    if (frac !== this.lastHpFrac) {
+      this.lastHpFrac = frac;
+      this.hpFill.style.width = `${frac * 100}%`;
+      this.hpFill.classList.toggle("plate__hp--low", frac < 0.3);
+    }
     this.lowHp.classList.toggle("lowhp--on", frac < 0.3 && player.alive);
+    const shieldFrac = Math.min(1, player.shield / player.maxHp);
+    if (shieldFrac !== this.lastShieldFrac) {
+      this.lastShieldFrac = shieldFrac;
+      this.hpShield.style.width = `${shieldFrac * 100}%`;
+    }
+    const hpText = `${Math.ceil(player.hp)} / ${player.maxHp}${player.shield > 0 ? `  ·  ${Math.ceil(player.shield)} SHIELD` : ""}`;
+    if (hpText !== this.lastHpText) {
+      this.lastHpText = hpText;
+      this.hpText.textContent = hpText;
+    }
 
     // Tempo dial: 0–100 maps onto a 280° sweep (77.7% of the conic)
     const zone = tempo.zone;
-    const pct = (tempo.value / 100) * 77.7;
-    this.tempoDial.style.setProperty("--pct", `${pct}%`);
-    this.tempoDial.style.setProperty("--zone", zone.css);
-    this.tempoValue.textContent = String(Math.round(tempo.value));
-    this.tempoValue.parentElement!.style.setProperty("--zone", zone.css);
-    this.tempoZoneName.textContent = zone.zone.toUpperCase();
-    this.tempoCrash.classList.toggle("tempo__crash--ready", tempo.value >= CRASH_THRESHOLD);
+    const tempoRound = Math.round(tempo.value);
+    if (tempoRound !== this.lastTempoRound) {
+      this.lastTempoRound = tempoRound;
+      this.tempoDial.style.setProperty("--pct", `${(tempoRound / 100) * 77.7}%`);
+      this.tempoValue.textContent = String(tempoRound);
+    }
+    const crashReady = tempo.value >= CRASH_THRESHOLD;
+    if (crashReady !== this.lastCrashReady) {
+      this.lastCrashReady = crashReady;
+      this.tempoCrash.classList.toggle("tempo__crash--ready", crashReady);
+    }
+    // Zone color/name + edge glow change only on a zone transition (keyed on css so
+    // a colorblind-palette swap still refreshes). findIndex moves out of the hot path.
+    if (zone.css !== this.lastZoneCss) {
+      this.lastZoneCss = zone.css;
+      this.tempoDial.style.setProperty("--zone", zone.css);
+      this.tempoValue.parentElement!.style.setProperty("--zone", zone.css);
+      this.tempoZoneName.textContent = zone.zone.toUpperCase();
+      const hotIdx = ZONES.findIndex((z) => z.zone === zone.zone);
+      this.edgeGlow.style.setProperty("--zone", zone.css);
+      this.edgeGlow.style.opacity = hotIdx >= 2 ? (hotIdx === 3 ? "0.55" : "0.28") : "0";
+    }
     // Shard counter (pulse on gain)
     const shards = this.ctx.stats.shards;
     if (shards !== this.lastShards) {
@@ -421,11 +456,6 @@ export class Hud {
       this.replay(this.shardsEl, "shards--pulse");
       this.lastShards = shards;
     }
-
-    // Edge glow at hot/critical
-    const hotIdx = ZONES.findIndex((z) => z.zone === zone.zone);
-    this.edgeGlow.style.setProperty("--zone", zone.css);
-    this.edgeGlow.style.opacity = hotIdx >= 2 ? (hotIdx === 3 ? "0.55" : "0.28") : "0";
 
     // Card slots
     for (let i = 0; i < 3; i++) {

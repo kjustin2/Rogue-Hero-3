@@ -50,6 +50,10 @@ export class Player {
   private crashRingMat!: THREE.MeshBasicMaterial;
   private crashFillMat!: THREE.MeshBasicMaterial;
   private wasCrashReady = false;
+  /** True while the armor emissive holds a non-zero flash, so we know to run one final reset frame. */
+  private armorFlashLit = false;
+  /** Last tempo-zone color pushed to the aura/visor materials — skip the per-frame re-set when unchanged. */
+  private lastZoneColor = -1;
   private visualHeroId = "";
   private visualCapeId = "";
   private visualBladeId = "";
@@ -611,16 +615,26 @@ export class Player {
     this.root.position.set(this.pos.x, this.pos.y, this.pos.z);
     this.hitFlash = Math.max(0, this.hitFlash - dt * 6);
 
-    // Hit flash → armor emissive spike
-    for (const m of this.armorMats) {
-      m.emissive.setRGB(this.hitFlash, this.hitFlash * 0.25, this.hitFlash * 0.25);
-      if (m.emissiveIntensity < 0.34) m.emissiveIntensity = Math.max(m.emissiveIntensity, this.hitFlash * 2);
+    // Hit flash → armor emissive spike. Skip the per-material writes on the common
+    // frames where there's no flash and the last write already zeroed them — running
+    // it then just re-dirties ~8 material uniforms for setRGB(0,0,0).
+    if (this.hitFlash > 0 || this.armorFlashLit) {
+      for (const m of this.armorMats) {
+        m.emissive.setRGB(this.hitFlash, this.hitFlash * 0.25, this.hitFlash * 0.25);
+        if (m.emissiveIntensity < 0.34) m.emissiveIntensity = Math.max(m.emissiveIntensity, this.hitFlash * 2);
+      }
+      this.armorFlashLit = this.hitFlash > 0;
     }
 
-    // Tempo aura color + intensity
+    // Tempo aura/visor color — only re-set the three materials when the zone color
+    // actually changes (a handful of times per run), not every frame.
     const zone = this.ctx.tempo.zone;
-    this.auraMat.color.set(zone.color);
-    this.auraLight.color.set(zone.color);
+    if (zone.color !== this.lastZoneColor) {
+      this.lastZoneColor = zone.color;
+      this.auraMat.color.set(zone.color);
+      this.auraLight.color.set(zone.color);
+      this.visorMat.emissive.set(zone.color);
+    }
     const heat = this.ctx.tempo.value / 100;
     this.auraLight.intensity = 3 + heat * 9;
     this.auraMat.opacity = 0.3 + heat * 0.45;
@@ -631,7 +645,6 @@ export class Player {
     this.auraPhase += dt * (2 + heat * 7);
     const pulse = 1 + Math.sin(this.auraPhase) * 0.07;
     this.auraRing.scale.setScalar(pulse + heat * 0.25);
-    this.visorMat.emissive.set(zone.color);
 
     // Crash readiness: announce the rising edge, then keep the blast radius visible
     const crashReady = this.ctx.tempo.crashReady && this.alive;

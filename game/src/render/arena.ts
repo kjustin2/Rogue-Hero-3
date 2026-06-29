@@ -191,6 +191,7 @@ export class Arena {
   private skyMat: THREE.ShaderMaterial;
   private rimMat: THREE.MeshStandardMaterial;
   private floorMat: THREE.MeshStandardMaterial;
+  private rockMat!: THREE.MeshStandardMaterial;
   private floorTextures = new Map<string, THREE.CanvasTexture>();
   private floorTextureTheme = THEMES.rift.name;
   private crystalMats: THREE.MeshStandardMaterial[] = [];
@@ -318,6 +319,8 @@ export class Arena {
         bottomColor: { value: new THREE.Color(THEMES.rift.skyBottom) },
         auroraColor: { value: new THREE.Color(THEMES.rift.ember) },
         uTime: { value: 0 },
+        // Per-act sky: 0 rift-tears, 1 spire storm, 2 molten core, 3 hollow star, 4 sundered abyss.
+        uStyle: { value: 0 },
       },
       vertexShader: /* glsl */ `
         varying vec3 vPos;
@@ -331,6 +334,7 @@ export class Arena {
         uniform vec3 bottomColor;
         uniform vec3 auroraColor;
         uniform float uTime;
+        uniform float uStyle;
         varying vec3 vPos;
         float hash(vec2 p) {
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -359,26 +363,129 @@ export class Arena {
           float h = dir.y * 0.5 + 0.5;
           vec3 col = mix(bottomColor, topColor, pow(h, 0.65));
           vec2 proj = dir.xz / max(0.12, dir.y + 0.25);
+          // The planar projection's max() clamp creates a hard scale change just below
+          // the horizon (dir.y≈-0.13) that reads as a "split" line. Fade every projected
+          // feature (nebula/stars/per-act FX) to nothing BEFORE that seam so the sky
+          // merges smoothly into the plain gradient at the horizon — no visible division.
+          float horizonFade = smoothstep(-0.06, 0.26, dir.y);
 
-          // Drifting nebula clouds, tinted to the act palette — gives the sky depth
-          // and atmosphere instead of a flat gradient. Concentrated in the mid-upper sky.
-          vec2 np = proj * 1.5;
-          float neb = fbm(np + vec2(uTime * 0.012, uTime * 0.006));
-          neb = smoothstep(0.46, 1.0, neb);
-          float nebMask = smoothstep(0.16, 0.55, h) * smoothstep(1.02, 0.66, h);
+          // Two drifting nebula layers at different scales + drift speeds, the base one
+          // domain-warped — parallax depth and a softer, less blotchy cloud than a
+          // single octave gives. Concentrated in the mid-upper sky.
+          vec2 np = proj * 1.4;
+          float warp = vnoise(np * 0.8 + uTime * 0.02) - 0.5;
+          float neb = fbm(np + warp * 0.6 + vec2(uTime * 0.012, uTime * 0.006));
+          float neb2 = fbm(np * 2.05 + vec2(-uTime * 0.017, uTime * 0.009) + 23.0);
+          neb = smoothstep(0.40, 0.96, neb) * 0.72 + smoothstep(0.54, 1.0, neb2) * 0.4;
+          float nebMask = smoothstep(0.14, 0.52, h) * smoothstep(1.05, 0.62, h) * horizonFade;
           vec3 nebCol = mix(auroraColor, topColor * 2.2 + bottomColor, 0.45);
-          col += nebCol * neb * nebMask * 0.45;
+          col += nebCol * neb * nebMask * 0.5;
 
-          // Two star layers (bright sparse + faint dense) for parallax depth.
-          float hmask = smoothstep(0.0, 0.32, h);
-          col += vec3(0.92, 0.96, 1.0) * starLayer(proj, 28.0, 0.974) * hmask * 0.75;
-          col += vec3(0.8, 0.86, 1.0) * starLayer(proj + 3.3, 52.0, 0.95) * hmask * 0.3;
+          // Two star layers (bright sparse + faint dense) for parallax depth. The
+          // Sundered Abyss (style 4) is near-starless — only its rift-cracks light it.
+          float hmask = smoothstep(0.0, 0.32, h) * horizonFade;
+          float starAmt = uStyle > 3.5 ? 0.12 : 1.0;
+          col += vec3(0.92, 0.96, 1.0) * starLayer(proj, 28.0, 0.974) * hmask * 0.75 * starAmt;
+          col += vec3(0.8, 0.86, 1.0) * starLayer(proj + 3.3, 52.0, 0.95) * hmask * 0.3 * starAmt;
 
-          // Aurora bands drifting through the upper sky, act-colored.
+          // --- The depths below the disc ---
+          // The arena floats over a rift. Mirror the upper sky's planar projection
+          // downward so this content fades to nothing exactly at the horizon (no seam),
+          // then fill the lower sky with slowly spiralling abyssal cloud, deep stars and
+          // a luminous well far below — so looking down is never an empty gradient.
+          float belowFade = smoothstep(-0.05, -0.5, dir.y);
+          vec2 fproj = dir.xz / max(0.12, -dir.y + 0.22);
+          float fr = length(fproj);
+          float fa = atan(fproj.y, fproj.x) + uTime * 0.05 + fr * 0.3; // spiral toward the nadir
+          vec2 swp = vec2(cos(fa), sin(fa)) * fr;
+          float depths = smoothstep(0.40, 0.96, fbm(swp * 1.15 + vec2(uTime * 0.012, -uTime * 0.015))) * 0.85;
+          vec3 depthsCol = mix(bottomColor * 1.6 + topColor * 0.3, auroraColor, 0.4);
+          col += depthsCol * depths * belowFade * 0.42;
+          // Deep stars — the cosmos continues beneath the disc.
+          col += vec3(0.72, 0.8, 1.0) * starLayer(fproj * 0.9 + 17.0, 40.0, 0.966) * belowFade * 0.4;
+          col += vec3(0.62, 0.7, 1.0) * starLayer(fproj * 1.7 + 31.0, 66.0, 0.95) * belowFade * 0.18;
+          // A soft luminous well far below — a hint of where the rift leads, gently breathing.
+          float well = smoothstep(-0.25, -0.95, dir.y);
+          col += depthsCol * well * (0.1 + 0.05 * sin(uTime * 0.5));
+
+          // Aurora bands drifting through the upper sky, act-colored. Strongest in
+          // the rift act; dimmed elsewhere so each act's signature effect leads.
           float band = sin(dir.x * 3.2 + uTime * 0.16 + sin(dir.z * 2.4 - uTime * 0.11) * 1.4);
           float band2 = sin(dir.z * 2.7 - uTime * 0.09 + dir.x * 1.6);
           float aur = smoothstep(0.5, 0.72, h) * smoothstep(0.98, 0.78, h);
-          col += auroraColor * aur * (max(0.0, band) * 0.36 + max(0.0, band2) * 0.22);
+          float auroraAmt = uStyle < 0.5 ? 1.0 : uStyle > 3.5 ? 0.0 : 0.32; // abyss: no aurora, only cracks
+          col += auroraColor * aur * (max(0.0, band) * 0.36 + max(0.0, band2) * 0.22) * auroraAmt;
+
+          // --- Per-act signature atmosphere (uStyle is a uniform, so this branch is
+          // coherent across the whole draw — each act pays only for its own effect) ---
+          if (uStyle < 0.5) {
+            // Ember Rift: the torn sky over the fallen kingdom. Bright cyan rift-tears
+            // drift and pulse high overhead — threads of the wound that opened here.
+            float riftN = fbm(np * vec2(0.5, 1.8) + vec2(uTime * 0.025, uTime * 0.01));
+            col += auroraColor * smoothstep(0.05, 0.0, abs(riftN - 0.5)) * nebMask
+                   * (1.1 + 0.5 * sin(uTime * 2.0 + dir.x * 4.0));
+            float riftN2 = fbm(np * vec2(0.8, 2.6) + vec2(-uTime * 0.02, 5.0));
+            col += auroraColor * smoothstep(0.035, 0.0, abs(riftN2 - 0.5)) * nebMask * 0.5;
+          } else if (uStyle < 1.5) {
+            // Shattered Spire: a charged storm — clouds roil and stochastic lightning
+            // forks down a noise ridge to light them from within.
+            float roil = fbm(np * 1.6 + vec2(uTime * 0.06, -uTime * 0.04));
+            col += vec3(0.18, 0.32, 0.6) * smoothstep(0.5, 1.0, roil) * nebMask * 0.55;
+            float seed = hash(vec2(floor(uTime * 1.3), 11.0));
+            float flash = step(0.82, seed) * exp(-fract(uTime * 1.3) * 6.0);
+            float seed2 = hash(vec2(floor(uTime * 0.9) + 5.0, 4.0));
+            flash += step(0.88, seed2) * exp(-fract(uTime * 0.9) * 9.0) * 0.7;
+            float bolt = smoothstep(0.028, 0.0, abs(fbm(np * vec2(0.9, 0.32) + 7.0) - 0.5))
+                       * smoothstep(0.45, 0.96, h);
+            col += vec3(0.7, 0.82, 1.0) * bolt * flash * 3.2;
+            col += vec3(0.55, 0.7, 1.0) * flash * (0.6 + roil * 1.8) * (nebMask + 0.25);
+          } else if (uStyle < 2.5) {
+            // Molten Core: a furnace sky — a hot glowing horizon, slow lava-lit cloud
+            // rolling with the heat, and embers streaming upward.
+            float horizon = smoothstep(0.46, 0.0, h);
+            col += auroraColor * horizon * 0.6;
+            col += vec3(1.0, 0.5, 0.18) * pow(horizon, 3.0) * 0.7;
+            float lava = fbm(np * 1.3 + vec2(uTime * 0.03, -uTime * 0.05));
+            col += vec3(1.0, 0.42, 0.12) * smoothstep(0.55, 1.0, lava) * nebMask
+                   * (0.6 + 0.4 * sin(uTime * 0.7 + lava * 6.0));
+            col += vec3(0.34, 0.14, 0.06) * smoothstep(0.5, 1.0, lava) * nebMask * 0.4;
+            vec2 ep = proj - vec2(uTime * 0.02, uTime * 0.35);
+            float em = starLayer(ep, 34.0, 0.984) + starLayer(ep + 5.0, 48.0, 0.99);
+            col += vec3(1.0, 0.6, 0.25) * em * smoothstep(0.06, 0.5, h) * horizonFade * 0.9;
+          } else if (uStyle < 3.5) {
+            // Hollow Star (the end of all light): a dense violet cosmos, a faint galactic
+            // band, and the dying Hollow Star low on the horizon — collapsing accretion
+            // rings spiral inward to a blinding white core.
+            col += vec3(0.85, 0.85, 1.0) * starLayer(proj + 11.0, 80.0, 0.96) * hmask * 0.28;
+            float galaxy = fbm(proj * 0.85 + 7.0);
+            float gcenter = dir.y - dir.x * 0.3 + 0.06 + (galaxy - 0.5) * 0.5;
+            float gband = smoothstep(0.5, 1.0, galaxy) * smoothstep(0.62, 0.0, abs(gcenter));
+            col += vec3(0.6, 0.5, 0.9) * gband * horizonFade * 0.25;
+            vec3 starDir = normalize(vec3(0.32, 0.18, 1.0));
+            float sd = max(0.0, dot(dir, starDir));
+            float ang = acos(clamp(sd, 0.0, 1.0));
+            float pulse = 0.85 + 0.15 * sin(uTime * 1.1);
+            float rings = (sin(ang * 58.0 - uTime * 2.2) * 0.5 + 0.5)
+                        * smoothstep(0.42, 0.04, ang) * smoothstep(0.015, 0.1, ang);
+            col += vec3(0.8, 0.6, 1.0) * rings * 0.5 * pulse;
+            col += auroraColor * (pow(sd, 11.0) * 0.45 + pow(sd, 48.0) * 0.6) * pulse;
+            col += vec3(1.0, 0.97, 1.0) * (pow(sd, 240.0) * 1.5 + pow(sd, 1100.0) * 1.9) * pulse;
+          } else {
+            // Sundered Abyss: a starless black void shot through with rift-light. Jagged
+            // violet fractures crack across the dark, pulsing with an unstable inner glow —
+            // no stars, only the wound's light leaking through.
+            float crackN = fbm(np * 1.1 + vec2(uTime * 0.015, -uTime * 0.01));
+            float crack = smoothstep(0.045, 0.0, abs(crackN - 0.5));
+            float unstable = 0.6 + 0.4 * sin(uTime * 1.6 + crackN * 12.0);
+            col += vec3(0.55, 0.3, 1.0) * crack * nebMask * 1.4 * unstable;
+            col += vec3(0.72, 0.46, 1.0) * smoothstep(0.03, 0.0, abs(fbm(np * 2.1 + 13.0) - 0.5)) * nebMask * 0.7 * unstable;
+            col += vec3(0.16, 0.08, 0.28) * smoothstep(0.45, 1.0, crackN) * nebMask * 0.5;
+            float burst = step(0.9, hash(vec2(floor(uTime * 0.7), 3.0))) * exp(-fract(uTime * 0.7) * 4.0);
+            col += vec3(0.5, 0.3, 1.0) * burst * (crack + 0.15) * 1.3;
+          }
+
+          // A touch of dither kills gradient banding on the smooth sky bands.
+          col += (hash(gl_FragCoord.xy * 0.5) - 0.5) * 0.012;
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -497,7 +604,14 @@ export class Arena {
 
     // --- Floating rocks drifting in the void
     const rockGeo = new THREE.IcosahedronGeometry(1, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x15151f, roughness: 0.9, flatShading: true });
+    // Faint act-tinted emissive so the drifting rocks pick up the scene's color
+    // (molten warmth in the forge, cold rift light in the void) instead of reading
+    // as flat black silhouettes. Re-tinted per theme in applyBlendColors.
+    this.rockMat = new THREE.MeshStandardMaterial({
+      color: 0x15151f, emissive: new THREE.Color(THEMES.rift.crystal), emissiveIntensity: 0.16,
+      roughness: 0.9, flatShading: true,
+    });
+    const rockMat = this.rockMat;
     for (let i = 0; i < 22; i++) {
       const m = new THREE.Mesh(rockGeo, rockMat);
       const a = Math.random() * Math.PI * 2;
@@ -772,6 +886,14 @@ export class Arena {
     this.applyFloorTexture(theme);
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
     this.setDressing(theme.dressing);
+    // Sky style is per-act, not per-dressing: abyss + hollow share the "void" dressing
+    // (silhouettes) but get distinct skies (4 vs 3) so no two acts look the same.
+    const n = theme.name;
+    this.skyMat.uniforms.uStyle.value =
+      n === "spire" || n === "tempest" ? 1 :
+      n === "forge" || n === "core" ? 2 :
+      n === "hollow" || n === "starfall" ? 3 :
+      n === "abyss" || n === "voidcrown" ? 4 : 0;
   }
 
   private currentBlend(): ArenaTheme {
@@ -834,6 +956,7 @@ export class Arena {
         this.crystalMats[i].emissive.copy(this.crystalMats[0].emissive);
       }
     }
+    this.mixTo(this.rockMat.emissive, f.crystal, t.crystal, k);
   }
 
   update(dt: number): void {
@@ -849,9 +972,10 @@ export class Arena {
       this.blendSettled = true;
     }
 
-    // Breathing rim + crystals
+    // Breathing rim + crystals + a slow grid pulse so the floor never reads as static
     const breathe = 1.9 + Math.sin(this.t * 1.4) * 0.5;
     this.rimMat.emissiveIntensity = breathe;
+    this.floorMat.emissiveIntensity = 1.5 + Math.sin(this.t * 0.8) * 0.22;
     for (let i = 0; i < this.crystalMats.length; i++) {
       this.crystalMats[i].emissiveIntensity = 1.1 + Math.sin(this.t * 1.1 + i * 1.7) * 0.45;
     }

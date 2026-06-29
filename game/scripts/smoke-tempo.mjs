@@ -1,5 +1,5 @@
-// Tempo active-system smoke: removed Overdrive stays neutral, Crescendo stacks
-// at Critical, and the perfect-crash refund still works. Needs dev server :5174.
+// Tempo active-system smoke: Crescendo stacks at Critical, and the perfect-crash
+// refund still works. Needs dev server :5174.
 import { chromium } from "playwright-core";
 import { join } from "node:path";
 
@@ -28,27 +28,11 @@ await page.waitForTimeout(700);
 if (await page.locator(".story-skip").count()) { await page.locator(".story-skip").click(); }
 await page.waitForTimeout(2400);
 
-// --- Removed Overdrive: the compatibility shim must stay neutral.
-const od = await page.evaluate(() => {
-  const c = window.__rh3;
-  c.tempo.reset();
-  const readyCold = c.overdrive.ready;
-  c.tempo.gain(100);
-  const readyHot = c.overdrive.ready;
-  c.overdrive.tryActivate();
-  return { readyCold, readyHot, active: c.overdrive.active, dmgMult: c.overdrive.damageMult, spent: c.tempo.value };
-});
-check("Overdrive is never ready", od.readyCold === false && od.readyHot === false);
-check("Overdrive does not activate", od.active === false);
-check("Overdrive damage multiplier is neutral", od.dmgMult === 1, `${od.dmgMult.toFixed(2)}x`);
-check("Overdrive does not spend tempo", od.spent >= 99, `tempo→${Math.round(od.spent)}`);
-
 // --- Crescendo: holding Critical builds stacks (the live loop ticks it)
 // Crescendo builds while held at Critical. Drive tempo.update directly with a big
 // dt so the check is deterministic (no dependence on wall-clock frame pacing).
 const cres = await page.evaluate(() => {
   const c = window.__rh3;
-  c.overdrive.reset();
   c.tempo.reset();
   c.tempo.gain(100);          // into Critical
   c.tempo.update(1.5);        // 1.5s held...
@@ -63,7 +47,6 @@ check("Crescendo raises damage mult", cresMult > 1, `${cresMult.toFixed(2)}x`);
 // --- Perfect crash bonus at >=95
 const pc = await page.evaluate(() => {
   const c = window.__rh3;
-  c.overdrive.reset();
   c.tempo.reset(); c.tempo.gain(100); // value 100 -> perfect
   const before = c.stats.crashes;
   c.combat.crashNova();

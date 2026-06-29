@@ -21,14 +21,13 @@ import { Music } from "./audio/music";
 import { Player } from "./game/player";
 import { Controller } from "./game/controller";
 import { Tempo } from "./game/tempo";
-import { Overdrive } from "./game/overdrive";
 import { Combat } from "./game/combat";
 import { Projectiles, HostileProjectiles } from "./game/projectiles";
 import { EnemyManager } from "./game/enemies";
 import "./game/enemies2"; // registers the Act II/III roster
 import { ROMAN } from "./game/run";
 import { Relics } from "./game/relics";
-import { Profile, loadRunSave, writeRunSave, clearRunSave, recordDailyBest, dailySeed, type RunSave, type UnlockedItem } from "./game/profile";
+import { Profile, loadRunSave, writeRunSave, clearRunSave, type RunSave, type UnlockedItem } from "./game/profile";
 import { heroById, HEROES, type HeroDef } from "./game/heroes";
 import { cardById, CARDS } from "./game/cards";
 import { Deck } from "./game/deck";
@@ -142,7 +141,6 @@ ctx.music = new Music();
 ctx.stats = freshStats();
 ctx.playing = false;
 ctx.tempo = new Tempo(ctx.events);
-ctx.overdrive = new Overdrive(ctx);
 ctx.player = new Player(ctx);
 ctx.controller = new Controller(ctx);
 ctx.combat = new Combat(ctx);
@@ -164,25 +162,21 @@ const tutorial = new Tutorial(ctx, hud);
 let state: GameState = "menu";
 let inTutorial = false;
 
-// Run seeding: daily/seeded runs reproduce; normal runs reseed randomly each start.
-let nextRunSeed: number | null = null;
-let nextRunDaily = false;
+// Run seeding: each run gets a fresh random stream (resume reproduces via the saved seed).
 let nextRunDepth = 0;
 let nextBlessing: string | null = null;
-let currentRunDaily = false;
 let currentSeed = 0;
 let currentDepth = 0;
 
 const menus = new Menus(ctx, {
   onStartRun: (hero, depth, blessing) => { nextRunDepth = depth; nextBlessing = blessing || null; startRun(hero); },
-  onNewRun: () => { nextRunSeed = null; nextRunDaily = false; menus.showHeroSelect(); },
-  onDaily: () => { const seed = dailySeed(); nextRunSeed = seed; nextRunDaily = true; menus.showHeroSelect({ dailySeed: seed }); },
+  onNewRun: () => { menus.showHeroSelect(); },
   onTutorial: startTutorial,
   onContinueRun: continueRun,
   onResume: resume,
   onAbandon: abandonRun,
   onExitRun: () => { if (!inTutorial) checkpoint(); toMenu(); },
-  onRetry: () => { nextRunSeed = null; nextRunDaily = false; nextRunDepth = currentDepth; startRun(ctx.player.hero); },
+  onRetry: () => { nextRunDepth = currentDepth; startRun(ctx.player.hero); },
   onMenu: toMenu,
   onQuit: quitToDesktop,
   hasSave: () => loadRunSave() !== null,
@@ -247,7 +241,6 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   ctx.player.root.visible = true;
   ctx.tempo.reset();
   ctx.tempo.heroDecayMult = hero.tempoDecayMult;
-  ctx.overdrive.reset();
   ctx.deck.resetForRun();
   ctx.relics.resetForRun();
   ctx.profile.beginRun();
@@ -261,7 +254,6 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   ctx.combat.runRankMult = 1;
 
   if (resume) {
-    currentRunDaily = false; // resumed runs aren't tracked as daily attempts
     currentSeed = resume.seed;
     currentDepth = resume.depth;
     ctx.stats.depth = resume.depth;
@@ -284,10 +276,9 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   }
 
   clearRunSave();
-  // Seed + depth: daily/seeded reproduces, normal runs get a fresh random stream
-  currentSeed = nextRunSeed ?? (Date.now() >>> 0);
+  // Seed + depth: a fresh random stream each run (the saved seed reproduces on resume).
+  currentSeed = Date.now() >>> 0;
   currentDepth = Math.min(nextRunDepth, ctx.profile.data.maxDepth);
-  currentRunDaily = nextRunDaily;
   ctx.stats.depth = currentDepth;
   ctx.difficulty = difficultyFor(currentDepth);
   ctx.tempo.drainMult = ctx.difficulty.tempoDrainMult;
@@ -374,13 +365,17 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
     });
   }, 200);
   const lines = [`ACT ${ROMAN[node.act - 1] ?? node.act} · ${node.actName}`, ...(ACT_STORY[node.act] ?? [])];
+  // Each act's transition lingers 0.5s longer than the one before (act 2 → +0.5s, …),
+  // and each paragraph shown holds an extra 1.5s on top of the last — so the later,
+  // weightier beats of an act's story stay readable well after they appear.
+  const extraHold = Math.max(0, (node.act - 1) * 500);
   menus.storyIntro(lines, () => {
     window.clearInterval(emberFx);
     menus.clear();
     ctx.cam.mode = "follow";
     ctx.fx.ambientRate = 7;
     onDone();
-  });
+  }, extraHold, 1500);
 }
 
 /** Present the current fork: a forced node auto-enters; a choice fork opens the map. */
@@ -507,7 +502,6 @@ function startTutorial(): void {
   ctx.sfx.stopAmbient();
   warmCombatShaders();
   inTutorial = true;
-  currentRunDaily = false;
   ctx.stats = freshStats();
   const hero = heroById(ctx.profile.data.lastHero);
   ctx.player.applyHero(hero, ctx.profile.data.equipped.cape, ctx.profile.data.equipped.blade);
@@ -516,7 +510,6 @@ function startTutorial(): void {
   ctx.player.root.visible = true;
   ctx.tempo.reset();
   ctx.tempo.heroDecayMult = hero.tempoDecayMult;
-  ctx.overdrive.reset();
   ctx.deck.resetForRun();
   ctx.relics.resetForRun();
   ctx.enemies.clear();
@@ -545,6 +538,8 @@ function startTutorial(): void {
 /** Quit to desktop. The run save persists (written at the last chamber), so Continue Run still works. */
 function quitToDesktop(): void {
   try {
+    // Desktop: ask the main process to quit cleanly; browser: best-effort close.
+    if (window.rh3native) { void window.rh3native.quit(); return; }
     window.close();
   } catch { /* browser may block — fall through */ }
   // If the window didn't close (browser), at least return to the menu.
@@ -756,8 +751,8 @@ ctx.events.on("ROOM_CLEARED", ({ reward }) => {
   awardShards(6);
   playRoomClearFloorBeat();
   // After a boss, hold so the epitaph banner ("THE WARDEN FALLS") can be read —
-  // long enough to read, short enough that it never feels like the game hung.
-  const rewardDelay = ctx.run.currentNode?.bossKind ? 4600 : 1500;
+  // a generous window so the line lands before the reward draft covers it.
+  const rewardDelay = ctx.run.currentNode?.bossKind ? 7200 : 1500;
   window.setTimeout(() => {
     resolveRoomReward(reward);
   }, rewardDelay);
@@ -788,7 +783,7 @@ ctx.events.on("BOSS_DEFEATED", ({ x, z }) => {
   if (kind && BOSS_EPITAPHS[kind] && ctx.run.position < ctx.run.totalForks - 1) {
     const [title, sub] = BOSS_EPITAPHS[kind];
     window.setTimeout(() => {
-      if (state === "playing") hud.banner(title, sub, "banner--clear banner--long");
+      if (state === "playing") hud.banner(title, sub, "banner--clear banner--epitaph");
     }, 1100);
   }
 });
@@ -839,7 +834,6 @@ ctx.events.on("ACT_START", ({ act, name }) => {
 
 ctx.events.on("ROOM_START", ({ isBoss, act, elite }) => {
   // Transient combat state never carries across a room boundary.
-  ctx.overdrive.reset();
   ctx.combat.clearTransient();
   if (isBoss) {
     ctx.sfx.bossIntroSting();
@@ -1257,10 +1251,16 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
     });
   }, cfg.quiet ? 180 : 140);
 
-  for (const beat of buildBossIntroBeats(kind, cfg, name, title)) {
+  const introBeats = buildBossIntroBeats(kind, cfg, name, title);
+  for (const beat of introBeats) {
     queueBeat(beat.at, () => runBossBeat(beat, cfg, bx, bz));
   }
-  queueBeat(cfg.quiet ? 6200 : 5800, () => finishCutscene());
+  // Hand control back a short breath after the FINAL beat instead of dwelling on a
+  // hardcoded later time — the old fixed delay left ~0.5s of input-locked dead air
+  // after the choreography had visibly settled. The last shock ring keeps fading
+  // into live gameplay (particle FX outlive the cutscene), so nothing is cut short.
+  const lastIntroBeat = introBeats.reduce((m, b) => Math.max(m, b.at), 0);
+  queueBeat(lastIntroBeat + (cfg.quiet ? 380 : 200), () => finishCutscene());
   window.addEventListener("pointerdown", skipCutscene);
   window.addEventListener("keydown", skipCutscene);
 }
@@ -1297,7 +1297,8 @@ function playBossPhaseCutscene(phase: number, line: string): void {
     addBossOmen(cfg.quiet ? "star" : cfg.omen, cfg, boss.pos.x, boss.pos.z, phase);
     ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 6, color: cfg.quiet ? cfg.c2 : 0x8a9ad0, duration: 1.4 });
     bossBurst(cfg.quiet ? "starfall" : "tear", cfg, boss.pos.x, boss.pos.z);
-    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 5400));
+    // The star's last words linger — hold the quiet long enough to read them in full.
+    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 7600));
   } else {
     ctx.music.duckTo(0.5);
     const bx = boss.pos.x, bz = boss.pos.z;
@@ -1325,7 +1326,8 @@ function playBossPhaseCutscene(phase: number, line: string): void {
       hud.flash(cfg.phaseHex || "#ffffff", 0.3);
       ctx.cam.pulseFov(0.5);
     }, 1050));
-    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 4300));
+    // Hold the phase banner up a beat or two longer so the line reads cleanly.
+    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 5800));
   }
   window.addEventListener("pointerdown", skipCutscene);
   window.addEventListener("keydown", skipCutscene);
@@ -1349,7 +1351,6 @@ ctx.events.on("RUN_VICTORY", () => {
     hud.banner(`RIFT DEPTH ${currentDepth} CLEARED`, "A DEEPER DESCENT UNLOCKS", "banner--clear");
   }
   clearRunSave();
-  if (currentRunDaily) recordDailyBest(currentSeed, ctx.stats.kills, ctx.stats.time, true);
   const unlocks = ctx.profile.recordRun("victory", ctx.stats);
   // Let the collapse settle, then the bittersweet ending plays into the end screen.
   window.setTimeout(() => playEnding(unlocks), 2800);
@@ -1397,12 +1398,15 @@ ctx.events.on("PLAYER_DIED", () => {
     ctx.player.root.visible = true;
     return;
   }
+  // If death lands during a boss phase cutscene, tear the cutscene down first so
+  // its skip listeners / letterbox / world-freeze don't stay armed over the death
+  // screen (guarded no-op otherwise; mirrors BOSS_DEFEATED).
+  finishCutscene();
   ctx.music.silence();
   ctx.cam.addTrauma(0.7);
   ctx.stage.punch(1);
   ctx.sfx.defeat();
   clearRunSave();
-  if (currentRunDaily) recordDailyBest(currentSeed, ctx.stats.kills, ctx.stats.time, false);
   const unlocks = ctx.profile.recordRun("death", ctx.stats);
   window.setTimeout(() => {
     state = "dead";
@@ -1440,13 +1444,26 @@ const trailBase = new THREE.Vector3();
 // the harness (window.__rh3perf) and an optional on-screen overlay. `?perf` auto-
 // shows it; F8 toggles it live. See src/debug/perfMonitor.ts.
 const perf = new PerfMonitor(ctx, () => state);
+/** Latches once the frame loop has thrown so the recovery log fires only on the first hit. */
+let loopErrorLogged = false;
 
 ctx.stage.renderer.setAnimationLoop(() => {
   const now = performance.now();
+  // Frame-rate limit: on a high-refresh display, skip vsync ticks that arrive
+  // sooner than the chosen interval (the 1ms tolerance keeps a 60-cap from
+  // collapsing to 30 on a 60Hz panel under jitter). Input/sim/render all run on
+  // the ticks we keep, so latency tracks the cap — not vsync. Never gate boot.
+  const fpsCap = menus.settings.fpsCap;
+  if (fpsCap > 0 && !booting && now - last < 1000 / fpsCap - 1) return;
   perf.begin(now);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
 
+  // The entire frame body is guarded. Three's setAnimationLoop never re-requests once
+  // its callback throws, so a single unhandled exception anywhere below would freeze
+  // the game permanently — what reads to a player as a "crash" (e.g. mid boss-cutscene).
+  // Contain it: log the first failure with the state it struck in, keep the loop alive.
+  try {
   // Gamepad: poll every frame; Start toggles pause (works while paused, unlike the action layer)
   ctx.input.pollGamepad();
   if (ctx.input.pauseEdgeRaw()) {
@@ -1465,7 +1482,6 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.controller.update(dt);
     ctx.combat.update(dt);
     ctx.tempo.update(dt);
-    ctx.overdrive.update(dt);
     ctx.deck.update(dt);
     ctx.caster.update(dt);
     ctx.enemies.update(dt);
@@ -1481,7 +1497,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     if (inTutorial) tutorial.update(dt);
     // Mercy: while the Hollow Star fades, holding the mercy input spares it instead of killing it.
     if (unmakerFading && !chosenMercy) {
-      if (ctx.input.actionDown("overdrive")) {
+      if (ctx.input.actionDown("mercy")) {
         spareHold += dt;
         hud.setSparePrompt(true, spareHold / SPARE_TIME);
         if (spareHold >= SPARE_TIME) doMercy();
@@ -1544,6 +1560,14 @@ ctx.stage.renderer.setAnimationLoop(() => {
     }
   }
   ctx.input.endFrame();
+  } catch (err) {
+    if (!loopErrorLogged) {
+      loopErrorLogged = true;
+      console.error(`[rh3] frame loop error (state=${state}) — recovered, loop kept alive:`, err);
+    }
+    // Clear per-frame input edges even on a bad frame so a stuck press can't latch.
+    try { ctx.input.endFrame(); } catch { /* ignore */ }
+  }
   perf.end(dt);
 });
 
@@ -1589,8 +1613,10 @@ async function boot(): Promise<void> {
     step(0.42, "Forging the arena…");
     await paint();
 
-    // 3. Compile the menu render path (in-scene materials + lean menuComposer).
+    // 3. Compile the menu render path (in-scene materials + lean menuComposer), and
+    //    pre-paint the heavy hero-select DOM so its first open doesn't stall.
     ctx.stage.warmMenu();
+    menus.warmHeroSelect();
     step(0.62, "Lighting the embers…");
     await paint();
 
@@ -1619,6 +1645,9 @@ async function boot(): Promise<void> {
   } catch { /* never trap the player behind the loader */ }
 
   booting = false;
+  // Apply the saved display mode + window resolution now that the window is live
+  // (deferred to here so it runs once, after warm-up, not on every settings tweak).
+  menus.applyInitialDisplay();
   if (loader) {
     loader.classList.add("rl-done");
     window.setTimeout(() => loader.remove(), 700);
@@ -1730,8 +1759,14 @@ void boot();
     follow(): void { ctx.cam.mode = "follow"; },
     /** Drop the active boss to a HP fraction (triggers its phase cutscene). */
     setBossPhase(frac: number): boolean { const b = livingBoss(); if (b) b.takeDamage(Math.max(1, Math.round(b.hp - b.maxHp * frac))); return !!b; },
-    /** Refill player HP (keep the test subject alive). */
-    godmode(): void { ctx.player.hp = ctx.player.maxHp; },
+    /** Infinite HP: all incoming player damage is ignored. Defaults ON (and idempotent,
+     *  so repeated calls keep it on); pass `false` to turn it off. Also tops you off.
+     *  Returns the new state. */
+    godmode(on = true): boolean {
+      ctx.combat.god = on;
+      ctx.player.hp = ctx.player.maxHp;
+      return ctx.combat.god;
+    },
     /** Clear all non-boss enemies. */
     killEnemies(): void { for (const e of ctx.enemies.living()) if (e.kind !== "boss") e.takeDamage(99999); },
     /** Skip an active intro/phase cutscene. */

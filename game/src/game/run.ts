@@ -266,7 +266,11 @@ export class RunManager {
   debugLoadNode(kind: NodeKind, act: number, seed = 424242, depth = 5): boolean {
     this.begin(generatePlan(seed, depth));
     for (let i = 0; i < this.plan.forks.length; i++) {
-      const idx = this.plan.forks[i].findIndex((n) => n.kind === kind && n.act === act);
+      // Skip the optional Rift Echo superboss node — "load act N's boss" means the act's
+      // real boss; the echo lives in an earlier fork and would otherwise shadow it.
+      const idx = this.plan.forks[i].findIndex(
+        (n) => n.kind === kind && n.act === act && (kind !== "boss" || n.bossKind !== "echo"),
+      );
       if (idx >= 0) {
         this.position = i;
         this.currentNode = this.plan.forks[i][idx];

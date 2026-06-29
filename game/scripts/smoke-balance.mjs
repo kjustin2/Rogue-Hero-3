@@ -64,13 +64,6 @@ check("Boss HP raised (Warden ≥ 600)", wardenHp >= 600, `maxHp=${wardenHp}`);
 // --- Gamepad layout documented in How to Play.
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.waitForTimeout(1200);
-await page.locator("button", { hasText: /Daily Challenge/i }).click();
-await page.waitForTimeout(300);
-const dailyTitle = (await page.locator(".draft-title").textContent().catch(() => "")) || "";
-const dailySub = (await page.locator(".draft-sub").textContent().catch(() => "")) || "";
-check("Daily challenge labels the hero select", /DAILY CHALLENGE/i.test(dailyTitle) && /SEED\s+\d+/i.test(dailySub), `${dailyTitle} / ${dailySub.slice(0, 80)}`);
-await page.locator(".draft-skip").click();
-await page.waitForTimeout(250);
 await page.locator("button", { hasText: "How to Play" }).click();
 await page.waitForTimeout(400);
 const howto = (await page.locator(".panel").textContent().catch(() => "")) || "";

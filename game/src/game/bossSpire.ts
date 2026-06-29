@@ -71,6 +71,8 @@ export class SpireCaster extends Enemy {
   private playerVel = new THREE.Vector2();
   private lastPlayer = new THREE.Vector2();
   private channelsSinceShift = 0;
+  /** 0→1 wind-up read: orbs pull inward and the core surges while charging an attack. */
+  private chargeAmt = 0;
   // Per-phase appearance escalation (built once, revealed on transition).
   private shardRing: THREE.Group;
   private p2Shards: THREE.Object3D[] = [];
@@ -419,12 +421,13 @@ export class SpireCaster extends Enemy {
         this.channelTimer = 0.4;
       } else {
         for (const a of this.fanAngles) {
-          this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: 9, dmg: 7, color: 0x55ffcc, radius: 0.28 });
+          this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: this.phase >= 3 ? 11 : 9, dmg: 7, color: 0x55ffcc, radius: 0.28 });
         }
         this.ctx.sfx.enemyShoot();
         this.channelFired = false;
         this.channelStep++;
-        this.channelTimer = 0.7;
+        // The frenzied third-phase channel reloads faster, leaning on the bolt-fan.
+        this.channelTimer = this.phase >= 3 ? 0.42 : 0.7;
       }
     }
     if (this.channelStep >= 3) {
@@ -440,11 +443,16 @@ export class SpireCaster extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     this.blinkCd -= dt;
-    this.orbGroup.rotation.y += dt * (1.2 + this.phase * 0.5);
-    this.shardRing.rotation.y -= dt * (0.8 + this.phase * 0.4);
-    this.coreMat.emissiveIntensity = 2.4 + Math.sin(this.t * (2 + this.phase)) * 0.8;
+    // Wind-up read: while charging a lance/channel/ward, the orbs spin up and pull
+    // inward and the whole crown brightens — then it all snaps loose on the fire.
+    const charging = this.state === "track" || this.state === "channel" || this.state === "guard";
+    this.chargeAmt += ((charging ? 1 : 0) - this.chargeAmt) * Math.min(1, dt * 6);
+    this.orbGroup.rotation.y += dt * (1.2 + this.phase * 0.5 + this.chargeAmt * 3);
+    this.orbGroup.scale.setScalar(1 - this.chargeAmt * 0.22);
+    this.shardRing.rotation.y -= dt * (0.8 + this.phase * 0.4 + this.chargeAmt * 2);
+    this.coreMat.emissiveIntensity = 2.4 + Math.sin(this.t * (2 + this.phase)) * 0.8 + this.chargeAmt * 2.6;
     this.pos.y = Math.sin(this.t * 1.8) * 0.12;
-    this.crownOrb.scale.setScalar(1 + Math.sin(this.t * 2.4) * 0.045);
+    this.crownOrb.scale.setScalar(1 + Math.sin(this.t * 2.4) * 0.045 + this.chargeAmt * 0.32);
     for (let i = 0; i < this.haloRings.length; i++) {
       const ring = this.haloRings[i];
       ring.rotation.z += dt * (0.22 + i * 0.09) * (i % 2 === 0 ? 1 : -1);
@@ -452,7 +460,8 @@ export class SpireCaster extends Enemy {
     for (let i = 0; i < this.finPanels.length; i++) {
       const panel = this.finPanels[i];
       panel.rotation.x = Math.sin(this.t * 1.7 + i) * 0.045;
-      panel.scale.y = 1 + Math.sin(this.t * 2.2 + i * 0.8) * 0.035;
+      // Fins flare open as the artillerist charges, a clear "about to fire" tell.
+      panel.scale.y = 1 + Math.sin(this.t * 2.2 + i * 0.8) * 0.035 + this.chargeAmt * 0.16;
     }
     for (let i = 0; i < this.robeStrips.length; i++) {
       const strip = this.robeStrips[i];
@@ -525,7 +534,7 @@ export class SpireCaster extends Enemy {
         if (this.timer <= 0) {
           this.beginLanceVolley();
           this.state = "recover";
-          this.timer = 0.5;
+          this.timer = this.phase >= 3 ? 0.32 : 0.5;
         }
         break;
       case "channel":
@@ -549,7 +558,8 @@ export class SpireCaster extends Enemy {
       case "phaseShift":
         if (this.timer <= 0) {
           this.state = "idle";
-          const base = this.phase >= 3 ? 0.7 : this.phase === 2 ? 0.9 : 1.1;
+          // Phase 3 (the Spire's frenzy) fires markedly faster between volleys.
+          const base = this.phase >= 3 ? 0.42 : this.phase === 2 ? 0.9 : 1.1;
           // Roughly every 4th attack in P2+ is a channel
           if (this.phase >= 2 && this.lanceCount % 4 === 3) this.channelsSinceShift = 0;
           this.attackCd = base;

@@ -1230,7 +1230,11 @@ body.rh-no-anim .menu-sigil {
 .banner--show { animation: banner-in 2.2s ease forwards; }
 /* Boss / act / epitaph text lingers longer so it can actually be read. */
 .banner--long.banner--show { animation-duration: 5.6s; }
-.banner--cutscene.banner--show { animation-duration: 4.35s; }
+/* A boss epitaph lingers the longest — it's the last word on a fallen warden. */
+.banner--epitaph.banner--show { animation-duration: 8s; }
+.banner--cutscene.banner--show { animation-duration: 5.9s; }
+/* The boss's fading last words hold longest of all, so they can be read in full. */
+.banner--lament.banner--show { animation-duration: 8.2s; }
 .banner__title {
   font-family: var(--font-display);
   font-size: 44px;
@@ -1689,6 +1693,59 @@ body.rh-no-anim .menu-sigil {
   border-color: var(--ui-cyan);
   box-shadow: 0 0 10px rgba(95, 224, 255, 0.25);
 }
+
+/* --- settings: grouped sections + dropdowns --- */
+/* The settings panel grows tall; cap it to the viewport and scroll inside the
+   slab so every section stays reachable on short screens. */
+.panel--settings {
+  width: min(640px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(95, 224, 255, 0.35) transparent;
+}
+.panel--settings::-webkit-scrollbar { width: 9px; }
+.panel--settings::-webkit-scrollbar-thumb {
+  background: rgba(95, 224, 255, 0.28);
+  border-radius: 5px;
+}
+/* Section captions group related rows so the screen reads like a real options menu. */
+.settings-section {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 5px;
+  color: var(--ui-cyan);
+  text-align: left;
+  margin: 22px 0 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(95, 224, 255, 0.22);
+  text-shadow: 0 0 14px rgba(95, 224, 255, 0.25);
+}
+.settings-section:first-of-type { margin-top: 8px; }
+/* Dark-themed dropdowns matching the qbtn styling. */
+.setting-select {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--ui-text);
+  background: rgba(8, 12, 22, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  padding: 7px 12px;
+  min-width: 168px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.setting-select:hover { border-color: rgba(95, 224, 255, 0.6); }
+.setting-select:focus {
+  outline: none;
+  border-color: var(--ui-cyan);
+  box-shadow: 0 0 10px rgba(95, 224, 255, 0.25);
+}
+.setting-select:disabled { opacity: 0.4; cursor: not-allowed; }
+.setting-select option { background: #0a0e18; color: var(--ui-text); }
+
 .panel .btn { margin-top: 30px; width: 100%; }
 
 /* --- draft --- */
@@ -2276,6 +2333,8 @@ body.rh-no-anim .menu-sigil {
   color: var(--ui-dim);
 }
 .armory-shards b { color: var(--ui-gold); font-size: 17px; }
+/* On the Hone screens the subtitle sat right on the card tops — lift it clear of the row. */
+.armory-shards:has(+ .draft-row) { margin-bottom: 26px; }
 .shop-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -2760,6 +2819,9 @@ body.rh-no-anim .menu-sigil {
 }
 .menu-link:hover { background: rgba(120, 200, 255, 0.2); border-color: rgba(120, 200, 255, 0.65); transform: translateY(-1px); }
 .menu-link__sep { display: none; }
+/* Desktop-only "Exit Game" — tinted apart from the cyan info links so it reads as a leave action. */
+.menu-link--exit { color: #ffb4b4; background: rgba(255, 110, 110, 0.08); border-color: rgba(255, 110, 110, 0.32); }
+.menu-link--exit:hover { background: rgba(255, 110, 110, 0.2); border-color: rgba(255, 110, 110, 0.7); }
 
 /* ---- honed (upgraded) card slot ---- */
 .slot--honed { box-shadow: 0 0 0 1px rgba(255, 210, 122, 0.9), 0 0 16px rgba(255, 200, 90, 0.35); }

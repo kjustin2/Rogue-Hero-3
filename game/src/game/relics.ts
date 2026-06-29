@@ -33,15 +33,15 @@ export const RELICS: RelicDef[] = [
   { id: "bulwark-idol", name: "Bulwark Idol", desc: "Begin each chamber with a 10-point shield.", icon: "⛨", color: "#7fc8ff", rarity: "common" },
   // Expansion II
   { id: "glass-cannon", name: "Glass Cannon", desc: "Deal 25% more damage. Take 25% more damage.", icon: "◇", color: "#ffd8e8", rarity: "rare" },
-  { id: "second-wind", name: "Second Wind", desc: "Once per run, survive a lethal hit at 1 HP.", icon: "♥", color: "#7dffb0", rarity: "rare" },
+  { id: "second-wind", name: "Second Wind", desc: "Once per run, survive a lethal hit — restored to 40% HP.", icon: "♥", color: "#7dffb0", rarity: "rare" },
   { id: "lucky-coin", name: "Lucky Coin", desc: "Earn 50% more rift shards.", icon: "◆", color: "#ffc266", rarity: "common" },
   { id: "resonant-bell", name: "Resonant Bell", desc: "Crashing also resets every card cooldown.", icon: "♪", color: "#c9a8ff", rarity: "rare" },
-  { id: "thorn-plate", name: "Thorn Plate", desc: "Enemies that hurt you up close take 6 damage back.", icon: "✶", color: "#ff9a5f", rarity: "common" },
+  { id: "thorn-plate", name: "Thorn Plate", desc: "Enemies that hurt you up close take 12 damage back.", icon: "✶", color: "#ff9a5f", rarity: "common" },
   // Expansion III
   { id: "siphon-sigil", name: "Siphon Sigil", desc: "Every kill shaves 0.6s off all card cooldowns.", icon: "⌛", color: "#9fd8ff", rarity: "rare" },
-  { id: "molten-heart", name: "Molten Heart", desc: "Deal 18% more damage while Hot or Critical.", icon: "♨", color: "#ff8a4d", rarity: "rare" },
+  { id: "molten-heart", name: "Molten Heart", desc: "Deal 30% more damage while Hot or Critical.", icon: "♨", color: "#ff8a4d", rarity: "legendary" },
   { id: "tempo-capacitor", name: "Tempo Capacitor", desc: "Perfect dodges surge an extra 8 tempo.", icon: "↯", color: "#66ffee", rarity: "common" },
-  { id: "executioner", name: "Executioner", desc: "Deal 30% more damage to enemies below 35% HP.", icon: "☠", color: "#d0d0d8", rarity: "rare" },
+  { id: "executioner", name: "Executioner", desc: "Deal 45% more damage to enemies below 40% HP.", icon: "☠", color: "#d0d0d8", rarity: "legendary" },
   { id: "rampart", name: "Rampart", desc: "While you hold a shield, take 30% less damage.", icon: "⊞", color: "#7fc8ff", rarity: "common" },
   // --- Expansion V: status combos, tiers, curses
   { id: "shatterglass", name: "Shatterglass", desc: "Striking a frozen enemy shatters it for a frost burst.", icon: "✦", color: "#bfeaff", rarity: "rare" },
@@ -133,10 +133,30 @@ export class Relics {
     return true;
   }
 
-  /** Un-owned (and, once the profile lands, unlocked) relics — up to 3. May be fewer. */
+  /** Per-rarity draft weight — legendaries are deliberately a rare thrill, commons
+   *  the everyday backbone. Cursed relics ride their base rarity (rare). */
+  private static readonly DRAFT_WEIGHT: Record<RelicDef["rarity"], number> = {
+    common: 30, rare: 20, legendary: 6,
+  };
+
+  /** Un-owned, unlocked relics — up to 3, drawn rarity-weighted (no duplicates) so a
+   *  legendary is a rare, exciting offer rather than a coin-flip. May be fewer if the
+   *  pool is thin. */
   draftChoices(): RelicDef[] {
     const pool = RELICS.filter((r) => !r.boon && !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
-    return this.ctx.rng.shuffle([...pool]).slice(0, 3);
+    const out: RelicDef[] = [];
+    while (out.length < 3 && pool.length > 0) {
+      let total = 0;
+      for (const r of pool) total += Relics.DRAFT_WEIGHT[r.rarity];
+      let roll = this.ctx.rng.next() * total;
+      let idx = 0;
+      for (let i = 0; i < pool.length; i++) {
+        roll -= Relics.DRAFT_WEIGHT[pool[i].rarity];
+        if (roll <= 0) { idx = i; break; }
+      }
+      out.push(pool.splice(idx, 1)[0]);
+    }
+    return out;
   }
 
   /** Carry away a fallen warden's boon (auto-granted, with its one-time effect). */
@@ -158,10 +178,10 @@ export class Relics {
     if (this.has("glass-cannon")) m *= 1.25;
     if (this.has("featherbone")) m *= 1.3;
     if (this.has("colossus-might")) m *= 1.1;
-    if (this.has("executioner") && e.hp <= e.maxHp * 0.35) m *= 1.3;
+    if (this.has("executioner") && e.hp <= e.maxHp * 0.40) m *= 1.45;
     if (this.has("molten-heart")) {
       const z = this.ctx.tempo.zone.zone;
-      if (z === "hot" || z === "critical") m *= 1.18;
+      if (z === "hot" || z === "critical") m *= 1.30;
     }
     return m;
   }
@@ -191,7 +211,7 @@ export class Relics {
       }
     }
     if (best) {
-      this.ctx.combat.dealDamage(best, 6, { kbX: best.pos.x - p.pos.x, kbZ: best.pos.z - p.pos.z, kb: 2 });
+      this.ctx.combat.dealDamage(best, 12, { kbX: best.pos.x - p.pos.x, kbZ: best.pos.z - p.pos.z, kb: 2 });
     }
   }
 

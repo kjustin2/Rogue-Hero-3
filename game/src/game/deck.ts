@@ -98,7 +98,7 @@ export class Deck {
     if (this.ctx.caster.cast(card, this.upgraded[slot])) {
       this.castCount++;
       const honed = this.upgraded[slot] ? 0.7 : 1;
-      const free = this.ctx.overdrive.freeCasts || this.ctx.relics.freeCastReady(this.castCount);
+      const free = this.ctx.relics.freeCastReady(this.castCount);
       this.cooldowns[slot] = free
         ? 0
         : card.cooldown * honed * this.ctx.relics.cooldownMult(card) * this.ctx.player.hero.cooldownMult * this.ctx.difficulty.cardCooldownMult;

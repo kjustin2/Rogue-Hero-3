@@ -73,11 +73,42 @@ check("sweeper beam spawns", sweep.count === 1);
 check("sweeper is compact", sweep.len < 8, `len=${sweep.len}`);
 check("the sweep clips a standing target", sweep.dropped);
 
+// Fire geysers — telegraph then roar a flame column; standing in it during the
+// live window burns. Needs > 1 cycle to catch an eruption.
+const vents = await page.evaluate(() => {
+  const c = window.__rh3, f = c.features;
+  f.setup({ feature: "flamevent" });
+  const count = f.vents.length;
+  const v0 = f.vents[0];
+  c.player.alive = true; c.player.hp = c.player.maxHp;
+  c.player.pos.x = v0.x; c.player.pos.z = v0.z;
+  const before = c.player.hp;
+  for (let i = 0; i < 130; i++) f.update(0.05);
+  return { count, dropped: c.player.hp < before };
+});
+check("fire geysers spawn", vents.count >= 3, `${vents.count}`);
+check("standing in an erupting geyser burns", vents.dropped);
+
+// Fire pits — burning rift patches that bite while you stand in them.
+const haz = await page.evaluate(() => {
+  const c = window.__rh3, f = c.features;
+  f.setup({ feature: "hazard" });
+  const count = f.hazards.length;
+  const h0 = f.hazards[0];
+  c.player.alive = true; c.player.hp = c.player.maxHp;
+  c.player.pos.x = h0.x; c.player.pos.z = h0.z;
+  const before = c.player.hp;
+  for (let i = 0; i < 40; i++) f.update(0.05);
+  return { count, dropped: c.player.hp < before };
+});
+check("fire pits spawn", haz.count >= 2, `${haz.count}`);
+check("standing in a fire pit burns", haz.dropped);
+
 // Dispose: clear() empties everything (no leaks).
 const cleared = await page.evaluate(() => {
   const f = window.__rh3.features;
   f.clear();
-  return f.spikes.length + f.drifters.length + f.sweepers.length + f.hazards.length + f.pads.length;
+  return f.spikes.length + f.drifters.length + f.sweepers.length + f.hazards.length + f.pads.length + f.vents.length;
 });
 check("clear() disposes every feature", cleared === 0, `${cleared} left`);
 

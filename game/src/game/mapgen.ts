@@ -24,7 +24,7 @@ export interface MapNode {
   elite?: boolean;
   obstacles?: { x: number; z: number; r: number }[];
   /** Optional arena mechanic on combat/elite nodes — see MapFeatures. */
-  feature?: "hazard" | "teleport" | "spikes" | "drifters" | "sweeper";
+  feature?: "hazard" | "teleport" | "spikes" | "drifters" | "sweeper" | "flamevent";
 }
 
 export interface RunPlan {
@@ -105,14 +105,16 @@ function generateWaves(a: ActDef, rng: Rng, elite: boolean, diff: Difficulty): S
 
 function combatNode(a: ActDef, rng: Rng, diff: Difficulty, id: number): MapNode {
   const hasObstacles = rng.chance(0.3);
+  // A rare combat chamber pays a relic draft instead of a card — an unexpected boon.
+  const reward: "card" | "relic" = rng.chance(0.13) ? "relic" : "card";
   return {
     id, kind: "combat", act: a.act, actName: a.name,
-    name: rng.pick(COMBAT_NAMES), theme: a.theme, reward: "card",
+    name: rng.pick(COMBAT_NAMES), theme: a.theme, reward,
     waves: generateWaves(a, rng, false, diff),
     obstacles: hasObstacles ? rng.pick(OBSTACLE_PRESETS) : undefined,
     // Some chambers carry a mechanic (skip if pillars already crowd the floor).
     feature: !hasObstacles && rng.chance(0.52)
-      ? rng.pick(["hazard", "teleport", "spikes", "drifters", "sweeper"] as const)
+      ? rng.pick(["hazard", "teleport", "spikes", "drifters", "sweeper", "flamevent"] as const)
       : undefined,
   };
 }
@@ -122,7 +124,7 @@ function eliteNode(a: ActDef, rng: Rng, diff: Difficulty, id: number): MapNode {
     id, kind: "elite", act: a.act, actName: a.name,
     name: "Elite Hunt", theme: a.altTheme, reward: "relic", elite: true,
     waves: generateWaves(a, rng, true, diff),
-    feature: rng.chance(0.58) ? rng.pick(["hazard", "spikes", "drifters", "sweeper"] as const) : undefined,
+    feature: rng.chance(0.58) ? rng.pick(["hazard", "spikes", "drifters", "sweeper", "flamevent"] as const) : undefined,
   };
 }
 
@@ -155,9 +157,10 @@ function riftTearNode(a: ActDef, id: number): MapNode {
 }
 
 /** Build one choice fork: 2–3 options, always with ≥1 combat/elite.
- *  `combatOnly` makes every option a fight (so non-combat nodes can't replace
- *  a real battle on the way to the boss). */
-function choiceFork(a: ActDef, rng: Rng, diff: Difficulty, stepIdx: number, state: { shopLeft: number }, nextId: () => number, opts?: { forceRest?: boolean; combatOnly?: boolean }): MapNode[] {
+ *  `combatOnly` makes every option a fight (so non-combat nodes can't replace a real
+ *  battle on the way to the boss). `forceRest` guarantees a Quiet Hollow (heal + hone)
+ *  is one of the options — a CHOICE the player picks, never an auto-entered step. */
+function choiceFork(a: ActDef, rng: Rng, diff: Difficulty, stepIdx: number, state: { shopLeft: number }, nextId: () => number, opts?: { combatOnly?: boolean; forceRest?: boolean }): MapNode[] {
   const count = a.act <= 1 ? 2 : rng.chance(0.55) ? 3 : 2;
   const out: MapNode[] = [];
   const usedSimple = new Set<NodeKind>();
@@ -167,9 +170,11 @@ function choiceFork(a: ActDef, rng: Rng, diff: Difficulty, stepIdx: number, stat
   out.push(wantElite ? eliteNode(a, rng, diff, nextId()) : combatNode(a, rng, diff, nextId()));
 
   while (out.length < count) {
+    // Rest is never in the random bag — it's added only as a deliberate, guaranteed
+    // option in the pre-boss fork (forceRest), so it's offered exactly once per act.
     const bag: NodeKind[] = opts?.combatOnly
       ? (a.act >= 2 ? ["combat", "combat", "elite"] : ["combat"])
-      : ["combat", "combat", "treasure", "treasure", "rest", "rest", "event", "event"];
+      : ["combat", "combat", "treasure", "treasure", "event", "event"];
     if (!opts?.combatOnly && a.act >= 2) bag.push("elite", "gamble");
     if (!opts?.combatOnly && a.act >= 2) bag.push("shrine"); // the altar wants blood — mid-run onward
     if (!opts?.combatOnly && state.shopLeft > 0) bag.push("shop", "shop");
@@ -184,15 +189,17 @@ function choiceFork(a: ActDef, rng: Rng, diff: Difficulty, stepIdx: number, stat
       out.push(simpleNode(kind, a, nextId()));
     }
   }
-  // Guarantee a Quiet Hollow (heal + card hone) somewhere this act — keeps the
-  // honing path discoverable. The anchor (index 0) stays combat/elite.
-  if (opts?.forceRest && !out.some((n) => n.kind === "rest")) {
-    out[out.length - 1] = simpleNode("rest", a, nextId());
-  }
-  // A rare Rift Tear (optional superboss) tempts you in the late acts — replaces a
-  // non-anchor option, so the combat/elite anchor at index 0 is preserved.
-  else if (a.act >= 4 && !opts?.forceRest && rng.chance(0.16)) {
-    out[out.length - 1] = riftTearNode(a, nextId());
+  // The pre-boss fork always OFFERS a Quiet Hollow (heal + card hone) — a choice, so the
+  // player elects to rest rather than being railroaded into it. Replaces a non-anchor
+  // option, preserving the combat/elite anchor at index 0.
+  if (opts?.forceRest) {
+    if (!out.some((n) => n.kind === "rest")) out[out.length - 1] = simpleNode("rest", a, nextId());
+    // …and rarely a Rift Tear (optional superboss) tempts in the late acts, replacing a
+    // different non-anchor, non-rest option (so the anchor AND the rest both survive).
+    if (a.act >= 4 && out.length >= 3 && rng.chance(0.16)) {
+      const idx = out.findIndex((n, i) => i > 0 && n.kind !== "rest");
+      if (idx > 0) out[idx] = riftTearNode(a, nextId());
+    }
   }
   rng.shuffle(out);
   return out;
@@ -209,9 +216,11 @@ export function generatePlan(seed: number, depth: number): RunPlan {
     forks.push([combatNode(a, rng, diff, nextId())]); // act entry (forced)
     const state = { shopLeft: 1 };
     // First choice fork is combat-only so you always fight ≥2 battles before the boss
-    // (non-combat nodes — rest/shop/heal — can't replace a real fight on the way down).
+    // (non-combat nodes can't replace a real fight on the way down).
     forks.push(choiceFork(a, rng, diff, 0, state, nextId, { combatOnly: true }));
-    // The pre-boss fork always offers a Quiet Hollow so honing is reachable each act.
+    // The pre-boss fork always OFFERS a Quiet Hollow (heal + hone) as one choice among
+    // a combat anchor + shop/treasure/event — never auto-entered, so picking the shop
+    // or an event can't dump you into a rest you didn't choose.
     forks.push(choiceFork(a, rng, diff, 1, state, nextId, { forceRest: true }));
     forks.push([bossNode(a, nextId())]); // act boss (forced)
   }

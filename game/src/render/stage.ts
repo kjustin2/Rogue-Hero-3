@@ -32,6 +32,13 @@ export class Stage {
   readonly hemiLight: THREE.HemisphereLight;
   readonly fog: THREE.FogExp2;
   quality: Quality = "high";
+  /**
+   * Resolution scale (render-target multiplier on the quality-capped device pixel
+   * ratio). 1 = native; <1 renders fewer pixels and upscales (perf); >1 supersamples
+   * (sharper, heavier). This is the "Resolution Scale" Display setting and is the
+   * meaningful render-resolution lever for a full-window canvas game.
+   */
+  private renderScale = 1;
 
   /** Full chain used in combat/cutscenes (bloom, CA, grade, grain, SMAA per preset). */
   private composer!: EffectComposer;
@@ -161,11 +168,22 @@ export class Stage {
     this.menuComposer.setSize(w, h);
   }
 
+  /**
+   * Effective device pixel ratio: the quality preset caps it (high ≤2, medium ≤1.5,
+   * low 1) and the resolution-scale setting multiplies it. This is the single source
+   * of truth for render-target resolution — both applyQuality and setRenderScale
+   * route through it.
+   */
+  private effectiveDpr(): number {
+    const dpr = window.devicePixelRatio || 1;
+    const cap = this.quality === "high" ? 2 : this.quality === "medium" ? 1.5 : 1;
+    return Math.max(0.1, Math.min(dpr, cap) * this.renderScale);
+  }
+
   applyQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
-    const dpr = window.devicePixelRatio;
-    this.renderer.setPixelRatio(q === "high" ? Math.min(dpr, 2) : q === "medium" ? Math.min(dpr, 1.5) : 1);
+    this.renderer.setPixelRatio(this.effectiveDpr());
     this.renderer.setSize(window.innerWidth, window.innerHeight);
 
     // Shadows: high 2048, medium 1024, low off — but never while a menu is up
@@ -178,6 +196,19 @@ export class Stage {
       this.keyLight.shadow.map = null;
     }
     this.buildPost();
+  }
+
+  /**
+   * Resolution-scale Display setting. Re-applies the effective pixel ratio and
+   * resizes the renderer + both composers (postprocessing's setSize reads the
+   * renderer's drawing-buffer size, so the new ratio propagates to every pass).
+   */
+  setRenderScale(scale: number): void {
+    const s = Math.max(0.5, Math.min(2, scale || 1));
+    if (s === this.renderScale) return;
+    this.renderScale = s;
+    this.renderer.setPixelRatio(this.effectiveDpr());
+    this.onResize();
   }
 
   /**

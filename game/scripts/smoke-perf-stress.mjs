@@ -70,11 +70,13 @@ await page.evaluate(() => {
   let tick = 0;
 
   w.__perfFrames = [];
+  w.__perfHeap = [];
   w.__perfLast = performance.now();
   const probe = () => {
     const now = performance.now();
     w.__perfFrames.push(now - w.__perfLast);
     w.__perfLast = now;
+    if (performance.memory) w.__perfHeap.push(performance.memory.usedJSHeapSize / 1048576);
     w.__perfRaf = requestAnimationFrame(probe);
   };
   w.__perfRaf = requestAnimationFrame(probe);
@@ -123,6 +125,9 @@ const stats = await page.evaluate(() => {
   const p99 = sorted[Math.floor(sorted.length * 0.99)] ?? 0;
   const over100 = ft.filter((d) => d > 100).length;
   const over200 = ft.filter((d) => d > 200).length;
+  const heap = w.__perfHeap || [];
+  const heapMin = heap.length ? Math.min(...heap) : 0;
+  const heapMax = heap.length ? Math.max(...heap) : 0;
   return {
     count: ft.length,
     max: Math.round(max),
@@ -131,15 +136,20 @@ const stats = await page.evaluate(() => {
     p99: Math.round(p99),
     over100,
     over200,
+    heapChurn: Math.round(heapMax - heapMin),
+    heapMax: Math.round(heapMax),
     enemies: window.__rh3.enemies.living().length,
   };
 });
 
-console.log(`  frames: ${stats.count}, enemies ${stats.enemies}, mean ${stats.mean}ms, p95 ${stats.p95}ms, p99 ${stats.p99}ms, max ${stats.max}ms, >100ms ${stats.over100}, >200ms ${stats.over200}`);
+console.log(`  frames: ${stats.count}, enemies ${stats.enemies}, mean ${stats.mean}ms, p95 ${stats.p95}ms, p99 ${stats.p99}ms, max ${stats.max}ms, >100ms ${stats.over100}, >200ms ${stats.over200}, heap churn ${stats.heapChurn}mb (peak ${stats.heapMax}mb)`);
 check("stress test produced enough frame samples", stats.count > 300, `frames ${stats.count}`);
 check("no full-stop frame over 240ms", stats.max < 240, `max ${stats.max}ms`);
 check("no severe stutter cluster over 200ms", stats.over200 === 0, `${stats.over200} frames`);
 check("stress p99 stays under 90ms", stats.p99 < 90, `p99 ${stats.p99}ms`);
+// Heap-churn tripwire: a per-frame allocation regression inflates the GC sawtooth.
+// Loose by design (headless GC timing is noisy) — only a gross leak/regression trips it.
+check("heap churn under 250mb (per-frame alloc regression guard)", stats.heapChurn < 250, `churn ${stats.heapChurn}mb`);
 
 if (errors.length) {
   console.log(`CONSOLE ERRORS (${errors.length}):\n${errors.slice(0, 12).join("\n")}`);

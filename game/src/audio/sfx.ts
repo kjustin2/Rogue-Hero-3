@@ -45,9 +45,42 @@ export class Sfx {
   constructor(events: EventBus) {
     try {
       this.ac = new AudioContext();
+      // Volume knob feeds a professional master bus, not the raw output:
+      //   master → compressor/limiter (glue + clip protection) → high-shelf (tame
+      //   digital fizz) → makeup gain → destination, with a parallel convolver-reverb
+      //   send for arena space. Every sound benefits without per-sound changes.
       this.master = this.ac.createGain();
       this.master.gain.value = this.volume;
-      this.master.connect(this.ac.destination);
+
+      const comp = this.ac.createDynamicsCompressor();
+      comp.threshold.value = -14;
+      comp.knee.value = 22;
+      comp.ratio.value = 3.2;
+      comp.attack.value = 0.003;
+      comp.release.value = 0.16;
+
+      const shelf = this.ac.createBiquadFilter();
+      shelf.type = "highshelf";
+      shelf.frequency.value = 7200;
+      shelf.gain.value = -4; // soften harsh upper fizz for a warmer, less brittle mix
+
+      const makeup = this.ac.createGain();
+      makeup.gain.value = 1.3; // restore loudness lost to the compressor
+
+      this.master.connect(comp);
+      comp.connect(shelf);
+      shelf.connect(makeup);
+      makeup.connect(this.ac.destination); // dry path
+
+      // Parallel reverb send — a short, dark plate gives the arena a sense of space.
+      const convolver = this.ac.createConvolver();
+      convolver.buffer = this.makeImpulse(1.1, 2.6);
+      const wet = this.ac.createGain();
+      wet.gain.value = 0.16;
+      makeup.connect(convolver);
+      convolver.connect(wet);
+      wet.connect(this.ac.destination); // wet path
+
       // Shared 2s white-noise buffer
       const len = this.ac.sampleRate * 2;
       this.noiseBuf = this.ac.createBuffer(1, len, this.ac.sampleRate);
@@ -120,6 +153,19 @@ export class Sfx {
     src.connect(filter).connect(g).connect(this.master);
     src.start(t0, Math.random());
     src.stop(t0 + o.dur + 0.05);
+  }
+
+  /** A stereo decaying-noise impulse response for the reverb send (procedural — no asset). */
+  private makeImpulse(seconds: number, decay: number): AudioBuffer | null {
+    if (!this.ac) return null;
+    const rate = this.ac.sampleRate;
+    const len = Math.floor(rate * seconds);
+    const buf = this.ac.createBuffer(2, len, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+    return buf;
   }
 
   // ---------------------------------------------------------------- combat
@@ -375,7 +421,10 @@ export class Sfx {
   }
 
   enemyShoot(): void {
-    this.tone({ f: 600, f2: 280, dur: 0.12, type: "square", gain: 0.07 });
+    // Warm "pew" (triangle, not a beepy square) + a tiny transient for punch — fires
+    // by the dozen in boss novas, so it stays soft to avoid fatigue.
+    this.tone({ f: 560, f2: 240, dur: 0.1, type: "triangle", gain: 0.06 });
+    this.noise({ dur: 0.04, freq: 2200, q: 2, gain: 0.03 });
   }
 
   fuse(): void {

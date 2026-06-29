@@ -15,16 +15,16 @@ import * as THREE from "three";
 
 export type Action =
   | "up" | "down" | "left" | "right"
-  | "attack" | "dodge" | "card1" | "card2" | "card3" | "crash" | "overdrive" | "target" | "pause";
+  | "attack" | "dodge" | "card1" | "card2" | "card3" | "crash" | "mercy" | "target" | "pause";
 
 export const ACTIONS: Action[] = [
-  "up", "down", "left", "right", "attack", "dodge", "card1", "card2", "card3", "crash", "overdrive", "target", "pause",
+  "up", "down", "left", "right", "attack", "dodge", "card1", "card2", "card3", "crash", "mercy", "target", "pause",
 ];
 
 export const ACTION_LABELS: Record<Action, string> = {
   up: "Move Up", down: "Move Down", left: "Move Left", right: "Move Right",
   attack: "Attack", dodge: "Dodge", card1: "Card 1", card2: "Card 2", card3: "Card 3",
-  crash: "Crash", overdrive: "Mercy", target: "Switch Target", pause: "Pause",
+  crash: "Crash", mercy: "Mercy", target: "Switch Target", pause: "Pause",
 };
 
 export type Bindings = Record<Action, string[]>;
@@ -40,7 +40,7 @@ const DEFAULT_BINDINGS: Bindings = {
   card2: ["Digit2"],
   card3: ["Digit3"],
   crash: ["KeyF"],
-  overdrive: ["KeyQ"],
+  mercy: ["KeyQ"],
   target: ["KeyT"],
   pause: ["Escape"],
 };
@@ -59,7 +59,7 @@ const PAD_ACTION: Partial<Record<Action, number[]>> = {
   dodge: [0],      // A
   crash: [1],      // B
   target: [3],     // Y
-  overdrive: [2],  // X, final-boss mercy hold
+  mercy: [2],      // X, final-boss mercy hold
   pause: [9],      // Start
 };
 

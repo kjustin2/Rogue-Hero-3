@@ -194,6 +194,10 @@ export class Particles {
       this.gravity[i] = gravity;
       this.drag[i] = drag;
     }
+    // aColor/aSize only change when particles spawn — flag them here, not every
+    // frame in update(), so quiet-but-alive frames skip these two full re-uploads.
+    this.geometry.attributes.aColor.needsUpdate = true;
+    this.geometry.attributes.aSize.needsUpdate = true;
   }
 
   /** Expanding ground shockwave ring. */
@@ -261,11 +265,10 @@ export class Particles {
       }
       this.fades[i] = Math.min(1, this.life[i] / (this.lifeTotal[i] * 0.55));
     }
-    // Skip the (large) buffer re-uploads on quiet frames
+    // Skip the (large) buffer re-uploads on quiet frames. Only position + aFade
+    // are mutated here; aColor/aSize are flagged in burst() (they change on spawn).
     if (anyAlive) {
       this.geometry.attributes.position.needsUpdate = true;
-      this.geometry.attributes.aColor.needsUpdate = true;
-      this.geometry.attributes.aSize.needsUpdate = true;
       this.geometry.attributes.aFade.needsUpdate = true;
     }
 

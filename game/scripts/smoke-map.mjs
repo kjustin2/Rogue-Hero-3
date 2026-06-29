@@ -23,24 +23,30 @@ if (await page.locator(".story-skip").count()) { await page.locator(".story-skip
 await page.waitForTimeout(2500);
 
 const has = async (loc) => (await loc.count()) > 0;
-const click = async (loc) => { if (await loc.count()) { await loc.first().click(); await page.waitForTimeout(420); return true; } return false; };
+const click = async (loc) => { if (await loc.count()) { await loc.first().click(); await page.waitForTimeout(300); return true; } return false; };
 const kinds = new Set();
 let mapShot = false, victory = false;
 
-for (let step = 0; step < 320 && !victory; step++) {
+for (let step = 0; step < 520 && !victory; step++) {
   const st = await page.evaluate(() => {
     const c = window.__rh3;
     if (c.run.state === "fighting") for (const e of c.enemies.living()) e.takeDamage(99999);
     return c.run.state;
   });
   if (st === "victory") { victory = true; break; }
-  await page.waitForTimeout(330);
+  await page.waitForTimeout(190);
+
+  // Skip story / act-transition cutscenes the instant they're skippable (a player can too).
+  if (await has(page.locator(".story-skip"))) { await click(page.locator(".story-skip")); continue; }
 
   if (await has(page.locator(".mapnode"))) {
     if (!mapShot) { await page.screenshot({ path: "shots/x-map.png" }); mapShot = true; }
-    // Prefer an interstitial to exercise it; else take a fight to keep progressing.
-    const inter = page.locator(".mapnode--shop, .mapnode--treasure, .mapnode--rest, .mapnode--event");
-    if (!(await click(inter))) await click(page.locator(".mapnode--combat, .mapnode--elite, .mapnode"));
+    // The pre-boss fork always offers rest, so a blind .first() pick would only ever
+    // resolve rest. Prefer a NON-rest interstitial (shop/treasure/event) to exercise
+    // those kinds; fall back to rest, then to a fight to keep progressing.
+    const interNonRest = page.locator(".mapnode--shop, .mapnode--treasure, .mapnode--event");
+    if (!(await click(interNonRest)) && !(await click(page.locator(".mapnode--rest"))))
+      await click(page.locator(".mapnode--combat, .mapnode--elite, .mapnode"));
   } else if (await has(page.locator("button", { hasText: "Leave the Shop" }))) {
     kinds.add("shop"); await click(page.locator("button", { hasText: "Leave the Shop" }));
   } else if (await has(page.locator(".draft-title", { hasText: "HIDDEN CACHE" }))) {

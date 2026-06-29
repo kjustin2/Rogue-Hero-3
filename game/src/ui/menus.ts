@@ -6,7 +6,7 @@ import { RELICS } from "../game/relics";
 import { HEROES, type HeroDef } from "../game/heroes";
 import { COSMETICS } from "../game/cosmetics";
 import { ROMAN } from "../game/run";
-import { MILESTONES, getDailyBest, dailySeed, type UnlockedItem } from "../game/profile";
+import { MILESTONES, type UnlockedItem } from "../game/profile";
 import { ACTIONS, ACTION_LABELS, codeLabel, type Action } from "../core/input";
 import { setTempoPalette } from "../game/tempo";
 import { difficultyFor, MAX_DEPTH } from "../game/difficulty";
@@ -53,13 +53,46 @@ export interface Settings {
   fov: number;
   /** Gamepad auto-aim: face & lock onto the nearest enemy when the right stick is idle. */
   autoAim: boolean;
+  /** Display mode — Fullscreen uses the OS window (Electron) or the Fullscreen API (browser). */
+  displayMode: "windowed" | "fullscreen";
+  /** Render-resolution scale (multiplier on the quality-capped pixel ratio). 1 = native. */
+  renderScale: number;
+  /** Desktop window size: "auto" (launcher default), "WxH" exact pixels, or "max". Electron only. */
+  windowSize: string;
+  /** Frame-rate cap in FPS; 0 = unlimited (every vsync). */
+  fpsCap: number;
 }
 
 const SETTINGS_KEY = "rh3v2-settings";
 const SETTINGS_DEFAULTS: Settings = {
   volume: 0.7, music: 0.55, shake: 1, quality: "high",
   reduceMotion: false, colorblind: false, brightness: 1, fov: 50, autoAim: true,
+  displayMode: "windowed", renderScale: 1, windowSize: "auto", fpsCap: 0,
 };
+
+/** Resolution-scale choices (render-target multiplier) offered in Display settings. */
+const RENDER_SCALES: { v: number; label: string }[] = [
+  { v: 0.5, label: "50%" },
+  { v: 0.75, label: "75%" },
+  { v: 1, label: "100% (Native)" },
+  { v: 1.25, label: "125%" },
+  { v: 1.5, label: "150%" },
+];
+/** Frame-rate cap choices (FPS); 0 = unlimited. */
+const FPS_CAPS: { v: number; label: string }[] = [
+  { v: 0, label: "Unlimited" },
+  { v: 30, label: "30 FPS" },
+  { v: 60, label: "60 FPS" },
+  { v: 120, label: "120 FPS" },
+  { v: 144, label: "144 FPS" },
+];
+/** Candidate desktop window resolutions (filtered to those that fit the work area). */
+const WINDOW_SIZES: { w: number; h: number }[] = [
+  { w: 1280, h: 720 },
+  { w: 1600, h: 900 },
+  { w: 1920, h: 1080 },
+  { w: 2560, h: 1440 },
+];
 
 /**
  * Best-guess starting quality for a *fresh* profile. Integrated GPUs and low
@@ -100,7 +133,6 @@ export function loadSettings(): Settings {
 export interface MenuCallbacks {
   onStartRun(hero: HeroDef, depth: number, blessing?: string): void;
   onNewRun(): void;
-  onDaily(): void;
   onTutorial(): void;
   onContinueRun(): void;
   onResume(): void;
@@ -123,14 +155,40 @@ export class Menus {
   /** Depth chosen on the hero-select screen, carried into the run. */
   private heroDepth = 0;
   private heroBlessing = "";
-  private heroDailySeed: number | null = null;
   private heroPreviewTimer = 0;
   private heroPreviewFrame = 0;
   private heroPreviewId = "";
+  /** Live fullscreen state (kept in sync with native + the Fullscreen API). */
+  private fsState = false;
+  /** Cached primary-display metrics (Electron only); null in the browser. */
+  private displayInfo: RH3DisplayInfo | null = null;
 
   constructor(private ctx: Ctx, private cb: MenuCallbacks) {
     this.root = document.getElementById("overlay")!;
     this.settings = loadSettings();
+
+    // Track fullscreen from every source so the Display toggle always reflects
+    // reality (our button, F11, or the OS window chrome) and the saved pref stays
+    // aligned — the game "remembers" the display mode however it was changed.
+    const nat = window.rh3native;
+    if (nat) {
+      nat.onFullscreenChange((on) => this.onFsChange(on));
+      nat.getDisplay().then((d) => {
+        this.displayInfo = d;
+        this.fsState = d.fullscreen;
+        this.syncDisplayButtons();
+      }).catch(() => { /* headless / no window */ });
+    } else if (typeof document !== "undefined") {
+      document.addEventListener("fullscreenchange", () => this.onFsChange(!!document.fullscreenElement));
+    }
+  }
+
+  /** Fullscreen state changed (from any source): track it + persist the pref. */
+  private onFsChange(on: boolean): void {
+    this.fsState = on;
+    this.settings.displayMode = on ? "fullscreen" : "windowed";
+    this.persist();
+    this.syncDisplayButtons();
   }
 
   applySettings(): void {
@@ -139,6 +197,7 @@ export class Menus {
     // Reduce Motion overrides shake to zero (also dims screen flashes, which key off shakeScale)
     this.ctx.cam.shakeScale = this.settings.reduceMotion ? 0 : this.settings.shake;
     this.ctx.stage.applyQuality(this.settings.quality);
+    this.ctx.stage.setRenderScale(this.settings.renderScale);
     this.ctx.stage.setExposure(this.settings.brightness);
     this.ctx.cam.setBaseFov(this.settings.fov);
     setTempoPalette(this.settings.colorblind);
@@ -149,6 +208,70 @@ export class Menus {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
     } catch { /* private mode */ }
+    // NOTE: display MODE (fullscreen) and window size are intentionally NOT applied
+    // here — re-asserting fullscreen on every volume/FOV tweak would (in the browser)
+    // try to enter fullscreen off a non-toggle gesture. They apply on explicit toggle
+    // (setDisplayMode/setWindowSize) and once at boot (applyInitialDisplay).
+  }
+
+  /**
+   * Apply the saved display mode + window size once, at boot. Native (Electron)
+   * honors fullscreen/window-size with no user gesture; the browser can't enter
+   * fullscreen without one, so a saved "fullscreen" there simply applies on the
+   * player's next toggle.
+   */
+  applyInitialDisplay(): void {
+    const nat = window.rh3native;
+    if (nat) {
+      if (this.settings.windowSize !== "auto" && this.settings.displayMode !== "fullscreen") {
+        this.applyWindowSize(this.settings.windowSize);
+      }
+      if (this.settings.displayMode === "fullscreen") nat.setFullscreen(true);
+    } else if (this.settings.displayMode === "fullscreen") {
+      this.requestBrowserFullscreen(true);
+    }
+  }
+
+  /** Toggle display mode (Windowed/Fullscreen) and persist it. */
+  private setDisplayMode(mode: Settings["displayMode"]): void {
+    this.settings.displayMode = mode;
+    this.persist();
+    const on = mode === "fullscreen";
+    const nat = window.rh3native;
+    if (nat) nat.setFullscreen(on); // fsState updates via onFullscreenChange
+    else { this.requestBrowserFullscreen(on); }
+  }
+
+  private requestBrowserFullscreen(on: boolean): void {
+    try {
+      if (on) void document.documentElement.requestFullscreen?.();
+      else if (document.fullscreenElement) void document.exitFullscreen?.();
+    } catch { /* blocked without a gesture */ }
+  }
+
+  /** Resize the desktop window (Electron). value is "WxH" exact pixels or "max". */
+  private applyWindowSize(value: string): void {
+    const nat = window.rh3native;
+    if (!nat) return;
+    if (value === "max") { nat.maximize(); return; }
+    const m = /^(\d+)x(\d+)$/.exec(value);
+    if (m) nat.setWindowSize(Number(m[1]), Number(m[2]));
+  }
+
+  private persist(): void {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings)); } catch { /* private mode */ }
+  }
+
+  /** Refresh the Display section's live toggles if the settings panel is open. */
+  private syncDisplayButtons(): void {
+    const scope = this.root.querySelector<HTMLElement>(".settings-panel");
+    if (!scope) return;
+    const want = this.fsState ? "fullscreen" : "windowed";
+    scope.querySelectorAll<HTMLButtonElement>(".qbtn[data-dm]").forEach((b) =>
+      b.classList.toggle("qbtn--on", b.dataset.dm === want));
+    // Window-size picker is meaningless in fullscreen — dim it.
+    const ws = scope.querySelector<HTMLSelectElement>("select[data-set='windowSize']");
+    if (ws) ws.disabled = this.fsState;
   }
 
   clear(): void {
@@ -234,10 +357,9 @@ export class Menus {
       ? `WINS ${p.wins} &nbsp;·&nbsp; RUNS ${p.runs} &nbsp;·&nbsp; FURTHEST: ACT ${ROMAN[Math.max(0, p.furthestAct - 1)]} &nbsp;·&nbsp; ARSENAL ${unlockedCount}/${totalCount} &nbsp;·&nbsp; ◆ ${p.shards}`
       : `THE RIFT AWAITS ITS FIRST CHALLENGER`;
     const hasSave = this.cb.hasSave();
-    const dbest = getDailyBest(dailySeed());
-    const dailyLabel = dbest
-      ? `Daily Challenge · best ${dbest.kills} kills${dbest.won ? " · sealed ✦" : ""}`
-      : "Daily Challenge";
+    // "Exit Game" only makes sense in the desktop build — a browser tab can't be
+    // closed by script. Native (Electron) exits cleanly via window.rh3native.quit.
+    const native = !!window.rh3native;
     s.innerHTML = `
       <div class="menu-scene" aria-hidden="true">
         <span class="menu-sigil menu-sigil--one"></span>
@@ -251,7 +373,6 @@ export class Menus {
       <div class="menu-buttons">
         ${hasSave ? '<button class="btn btn--primary" data-act="continue">Continue Run</button>' : ""}
         <button class="btn${hasSave ? "" : " btn--primary"}" data-act="start">${hasSave ? "New Run" : "Begin Run"}</button>
-        <button class="btn" data-act="daily">${dailyLabel}</button>
       </div>
       <div class="menu-sub">
         <button class="btn btn--sm" data-act="armory">Armory</button>
@@ -264,12 +385,14 @@ export class Menus {
         <button class="menu-link" data-act="tutorial">Tutorial</button>
         <span class="menu-link__sep">·</span>
         <button class="menu-link" data-act="credits">Credits</button>
+        ${native ? '<span class="menu-link__sep">·</span><button class="menu-link menu-link--exit" data-act="exit-game">Exit Game</button>' : ""}
       </div>
     `;
     this.wireButtons(s);
+    s.querySelector('[data-act="exit-game"]')?.addEventListener("click", () =>
+      this.confirm("Exit Rogue Hero III?", "Your run is saved — Continue Run will resume it.", () => this.cb.onQuit(), () => this.showMain()));
     s.querySelector('[data-act="continue"]')?.addEventListener("click", () => this.cb.onContinueRun());
     s.querySelector('[data-act="start"]')!.addEventListener("click", () => this.cb.onNewRun());
-    s.querySelector('[data-act="daily"]')!.addEventListener("click", () => this.cb.onDaily());
     s.querySelector('[data-act="armory"]')!.addEventListener("click", () => this.showArmory(() => this.showMain()));
     s.querySelector('[data-act="progress"]')!.addEventListener("click", () => this.showProgress(() => this.showMain()));
     s.querySelector('[data-act="settings"]')!.addEventListener("click", () => this.showSettings(() => this.showMain()));
@@ -279,9 +402,21 @@ export class Menus {
   }
 
   // ---------------------------------------------------------------- hero select
-  showHeroSelect(opts: { dailySeed?: number } = {}): void {
+  /**
+   * Build the (paint-heavy) hero-select DOM once under the boot loader, then restore
+   * the menu. Resolving + laying out the 6 elaborate `.hero-card` figures the first
+   * time costs a one-off ~150ms style/raster stall; doing it while hidden behind the
+   * loader means the player's first real "New Run" opens instantly. No flicker — boot
+   * skips the visible render while `booting` holds.
+   */
+  warmHeroSelect(): void {
+    this.renderHeroSelect();
+    void document.body.offsetHeight; // force the layout/paint now, while hidden
+    this.showMain();
+  }
+
+  showHeroSelect(): void {
     this.heroPreviewId = "";
-    this.heroDailySeed = opts.dailySeed ?? null;
     const maxD = this.ctx.profile.data.maxDepth;
     this.heroDepth = Math.max(0, Math.min(this.heroDepth || maxD, maxD));
     this.renderHeroSelect();
@@ -300,13 +435,9 @@ export class Menus {
     };
     const mods = modsForDepth();
     const atCeiling = this.heroDepth === maxD && maxD < MAX_DEPTH;
-    const dailyBest = this.heroDailySeed !== null ? getDailyBest(this.heroDailySeed) : null;
-    const dailyLine = this.heroDailySeed !== null
-      ? `DAILY CHALLENGE &nbsp;·&nbsp; ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }).toUpperCase()} &nbsp;·&nbsp; SEED ${this.heroDailySeed}${dailyBest ? ` &nbsp;·&nbsp; BEST ${dailyBest.kills} KILLS${dailyBest.won ? " · SEALED" : ""}` : ""}`
-      : "EACH FIGHTS THE RIFT THEIR OWN WAY";
     s.innerHTML = `
-      <div class="draft-title">${this.heroDailySeed !== null ? "DAILY CHALLENGE" : "CHOOSE YOUR HERO"}</div>
-      <div class="draft-sub">${dailyLine}</div>
+      <div class="draft-title">CHOOSE YOUR HERO</div>
+      <div class="draft-sub">EACH FIGHTS THE RIFT THEIR OWN WAY</div>
       <div class="depth-pick">
         <button class="depth-btn" data-d="dn"${this.heroDepth <= 0 ? " disabled" : ""}>◂</button>
         <div class="depth-pick__mid">
@@ -675,29 +806,51 @@ export class Menus {
 
   showSettings(back: () => void): void {
     const s = this.screen();
+    const native = !!window.rh3native;
+    const area = this.displayInfo;
+    const opt = (val: string, label: string, on: boolean): string =>
+      `<option value="${val}"${on ? " selected" : ""}>${label}</option>`;
+
+    // Display-mode is keyed off the LIVE fullscreen state (fsState), not the saved
+    // pref, so F11 / OS toggles are reflected correctly.
+    const mode = this.fsState ? "fullscreen" : "windowed";
+    const scaleOpts = RENDER_SCALES
+      .map((r) => opt(String(r.v), r.label, Math.abs(this.settings.renderScale - r.v) < 1e-6)).join("");
+    const fpsOpts = FPS_CAPS.map((f) => opt(String(f.v), f.label, this.settings.fpsCap === f.v)).join("");
+    const fits = (sz: { w: number; h: number }): boolean => !area || (sz.w <= area.width && sz.h <= area.height);
+    const winOpts = [
+      opt("auto", "Auto", this.settings.windowSize === "auto"),
+      ...WINDOW_SIZES.filter(fits).map((sz) => opt(`${sz.w}x${sz.h}`, `${sz.w} × ${sz.h}`, this.settings.windowSize === `${sz.w}x${sz.h}`)),
+      opt("max", "Maximize", this.settings.windowSize === "max"),
+    ].join("");
+
     s.innerHTML = `
-      <div class="panel">
+      <div class="panel panel--settings settings-panel">
         <h2>SETTINGS</h2>
+
+        <div class="settings-section">DISPLAY</div>
         <div class="setting-row">
-          <span>SFX VOLUME</span>
-          <input type="range" min="0" max="1" step="0.05" value="${this.settings.volume}" data-set="volume">
+          <span>DISPLAY MODE</span>
+          <div class="quality-row">
+            <button class="qbtn${mode === "windowed" ? " qbtn--on" : ""}" data-dm="windowed">WINDOWED</button>
+            <button class="qbtn${mode === "fullscreen" ? " qbtn--on" : ""}" data-dm="fullscreen">FULLSCREEN</button>
+          </div>
+        </div>
+        ${native ? `
+        <div class="setting-row">
+          <span>WINDOW RESOLUTION</span>
+          <select class="setting-select" data-set="windowSize"${this.fsState ? " disabled" : ""}>${winOpts}</select>
+        </div>` : ""}
+        <div class="setting-row">
+          <span>RESOLUTION SCALE</span>
+          <select class="setting-select" data-set="renderScale">${scaleOpts}</select>
         </div>
         <div class="setting-row">
-          <span>MUSIC VOLUME</span>
-          <input type="range" min="0" max="1" step="0.05" value="${this.settings.music}" data-set="music">
+          <span>FRAME RATE LIMIT</span>
+          <select class="setting-select" data-set="fpsCap">${fpsOpts}</select>
         </div>
-        <div class="setting-row">
-          <span>SCREEN SHAKE</span>
-          <input type="range" min="0" max="1.5" step="0.1" value="${this.settings.shake}" data-set="shake">
-        </div>
-        <div class="setting-row">
-          <span>BRIGHTNESS</span>
-          <input type="range" min="0.6" max="1.5" step="0.05" value="${this.settings.brightness}" data-set="brightness">
-        </div>
-        <div class="setting-row">
-          <span>FIELD OF VIEW</span>
-          <input type="range" min="44" max="62" step="1" value="${this.settings.fov}" data-set="fov">
-        </div>
+
+        <div class="settings-section">GRAPHICS</div>
         <div class="setting-row">
           <span>GRAPHICS QUALITY</span>
           <div class="quality-row">
@@ -705,6 +858,10 @@ export class Menus {
               `<button class="qbtn${this.settings.quality === q ? " qbtn--on" : ""}" data-q="${q}">${q.toUpperCase()}</button>`
             ).join("")}
           </div>
+        </div>
+        <div class="setting-row">
+          <span>BRIGHTNESS</span>
+          <input type="range" min="0.6" max="1.5" step="0.05" value="${this.settings.brightness}" data-set="brightness">
         </div>
         <div class="setting-row">
           <span>REDUCE MOTION</span>
@@ -720,6 +877,26 @@ export class Menus {
             <button class="qbtn${!this.settings.colorblind ? " qbtn--on" : ""}" data-cb="off">OFF</button>
           </div>
         </div>
+
+        <div class="settings-section">AUDIO</div>
+        <div class="setting-row">
+          <span>SFX VOLUME</span>
+          <input type="range" min="0" max="1" step="0.05" value="${this.settings.volume}" data-set="volume">
+        </div>
+        <div class="setting-row">
+          <span>MUSIC VOLUME</span>
+          <input type="range" min="0" max="1" step="0.05" value="${this.settings.music}" data-set="music">
+        </div>
+
+        <div class="settings-section">GAMEPLAY</div>
+        <div class="setting-row">
+          <span>SCREEN SHAKE</span>
+          <input type="range" min="0" max="1.5" step="0.1" value="${this.settings.shake}" data-set="shake">
+        </div>
+        <div class="setting-row">
+          <span>FIELD OF VIEW</span>
+          <input type="range" min="44" max="62" step="1" value="${this.settings.fov}" data-set="fov">
+        </div>
         <div class="setting-row">
           <span>GAMEPAD AUTO-AIM</span>
           <div class="quality-row">
@@ -727,6 +904,7 @@ export class Menus {
             <button class="qbtn${!this.settings.autoAim ? " qbtn--on" : ""}" data-aa="off">OFF</button>
           </div>
         </div>
+
         <div class="menu-buttons" style="margin:6px auto 0">
           <button class="btn" data-act="controls">Rebind Controls</button>
           <button class="btn btn--primary" data-act="back">Back</button>
@@ -734,6 +912,15 @@ export class Menus {
       </div>
     `;
     this.wireButtons(s);
+    // Dropdowns: render scale (applies live), window resolution (Electron), fps cap.
+    s.querySelectorAll<HTMLSelectElement>("select[data-set]").forEach((sel) => {
+      sel.addEventListener("change", () => {
+        if (sel.dataset.set === "renderScale") { this.settings.renderScale = parseFloat(sel.value); this.applySettings(); }
+        else if (sel.dataset.set === "fpsCap") { this.settings.fpsCap = parseInt(sel.value, 10) || 0; this.persist(); }
+        else if (sel.dataset.set === "windowSize") { this.settings.windowSize = sel.value; this.persist(); this.applyWindowSize(sel.value); }
+        sel.blur();
+      });
+    });
     s.querySelectorAll<HTMLInputElement>("input[data-set]").forEach((inp) => {
       inp.addEventListener("input", () => {
         if (inp.dataset.set === "volume") this.settings.volume = parseFloat(inp.value);
@@ -749,6 +936,15 @@ export class Menus {
     const flipGroup = (attr: string, active: HTMLButtonElement): void => {
       s.querySelectorAll<HTMLButtonElement>(`.qbtn[${attr}]`).forEach((x) => x.classList.toggle("qbtn--on", x === active));
     };
+    s.querySelectorAll<HTMLButtonElement>(".qbtn[data-dm]").forEach((b) => {
+      b.addEventListener("click", () => {
+        this.setDisplayMode(b.dataset.dm as Settings["displayMode"]);
+        flipGroup("data-dm", b);
+        // Window-resolution picker only applies while windowed.
+        const ws = s.querySelector<HTMLSelectElement>("select[data-set='windowSize']");
+        if (ws) ws.disabled = b.dataset.dm === "fullscreen";
+      });
+    });
     s.querySelectorAll<HTMLButtonElement>(".qbtn[data-q]").forEach((b) => {
       b.addEventListener("click", () => {
         this.settings.quality = b.dataset.q as Settings["quality"];
@@ -1465,7 +1661,7 @@ export class Menus {
    * Opening story crawl: lines advance on click (or auto), SKIP bails out.
    * Plays over the live arena before the first chamber loads.
    */
-  storyIntro(lines: string[], onDone: () => void): void {
+  storyIntro(lines: string[], onDone: () => void, extraHoldMs = 0, perParagraphMs = 0): void {
     const s = this.screen("");
     s.classList.add("story");
     let idx = 0;
@@ -1496,7 +1692,11 @@ export class Menus {
       window.clearTimeout(autoTimer);
       // Hold long enough to read comfortably (reading speed + a small buffer) but
       // not so long it feels like the game stalled — and a click always skips ahead.
-      const readMs = Math.min(6000, Math.max(3400, 1400 + line.replace(/<[^>]*>/g, "").length * 42));
+      // +2s per line over the prior pacing: players felt the story flicked past too fast.
+      // `extraHoldMs` lets act transitions linger longer act-over-act; `perParagraphMs`
+      // adds that much for EACH paragraph shown (idx is 1-based here, post-increment), so
+      // later beats of an act's story hold progressively longer on screen.
+      const readMs = Math.min(6000, Math.max(3400, 1400 + line.replace(/<[^>]*>/g, "").length * 42)) + 2000 + extraHoldMs + idx * perParagraphMs;
       autoTimer = window.setTimeout(show, readMs);
     };
     s.addEventListener("click", show);

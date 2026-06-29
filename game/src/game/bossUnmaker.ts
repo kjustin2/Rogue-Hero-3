@@ -18,11 +18,14 @@ const VOID_CORE = 0xf4ecff;
 type UnmakerState =
   | "idle"
   | "beamTrack" | "beamTell"
+  | "beamStarTell" // a radial star of beams fired outward
   | "novaTell"
+  | "barrageTell" // a collapsing barrage of staggered novas
   | "pullTell"
   | "starRainTell"
   | "crushTell" // close-range singularity slam — punishes hugging the star
   | "pulseAura" // sustained close-range void pulses — denies melee camping
+  | "sweepTell" | "sweeping" // a rotating star-lance that scythes the arena
   | "guard"
   | "recover" | "phaseShift"
   | "fading"; // final, defenceless phase — the star gives up
@@ -80,7 +83,8 @@ const STAR_TELL = 0.68;
  * cloud of orbiting void debris. It does not chase; it dictates space and pulls
  * the world inward.
  *
- * Phase 1: a sweeping star-beam and radial collapse novas of void-bolts.
+ * Phase 1: tracking star-beams, radial collapse novas, falling star-rain, a sweeping
+ *   star-lance, reaching crushes, and an unmaking ward — a varied opener.
  * Phase 2: faster cadence, twin-fan beams, denser spinning novas, summons voidlings.
  * Phase 3: an implosion pull + core slam layered with everything else, summons warpers.
  * Every attack telegraphs — the fairness contract holds even at the end of all things.
@@ -100,6 +104,19 @@ export class Unmaker extends Enemy {
   private fxBeams: Beam[] = [];
   private lockAngle = 0;
   private crushRadius = 0;
+  /** 0→1 wind-up read: the core swells white-hot and the rings spin up while charging. */
+  private chargeAmt = 0;
+  /** Transient white core-flare, spiked on every heavy action; decays each tick. */
+  private flash = 0;
+  /** Cadence accumulator for the inward energy-gather rings shown while charging. */
+  private gatherAcc = 0;
+  // Rotating sweep-lance state.
+  private sweepAngle = 0;
+  private sweepDir = 1;
+  private sweepRemaining = 0;
+  private sweepHitCd = 0;
+  private sweepMesh: THREE.Mesh | null = null;
+  private sweepMat: THREE.MeshBasicMaterial | null = null;
 
   private coreMat: THREE.MeshStandardMaterial;
   private ringMat: THREE.MeshStandardMaterial;
@@ -119,7 +136,8 @@ export class Unmaker extends Enemy {
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 4800;
+    // The Hollow Star is the last and hardest watch — a deeper well of health.
+    this.hp = this.maxHp = 7000;
     this.speed = 3.0;
     this.radius = 1.7;
     this.wardColor = VOID_VIOLET;
@@ -280,13 +298,18 @@ export class Unmaker extends Enemy {
         this.timer = 1.3;
         this.applyPhaseLook(this.phase);
         this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
-        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 10, color: VOID_VIOLET, duration: 0.8 });
-        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 5, color: VOID_WHITE, duration: 0.6 });
+        // A collapse-then-detonate the instant the star tears to its next tier: the void
+        // implodes into the core, a pillar of star-light erupts, then it blasts outward.
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 1.6, color: VOID_WHITE, duration: 0.3, startRadius: 15, y: 1.8 });
+        this.ctx.fx.beam(this.pos.x, this.pos.z, VOID_WHITE);
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 12, color: VOID_VIOLET, duration: 0.85 });
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 6, color: VOID_WHITE, duration: 0.6 });
         this.ctx.fx.burst({
           x: this.pos.x, y: 2.4, z: this.pos.z,
-          count: 56, color: [VOID_WHITE, VOID_VIOLET, 0xffffff],
-          speed: [4, 15], up: 0.9, size: [0.4, 1.1], life: [0.4, 1.0], gravity: -4, drag: 2.5,
+          count: 72, color: [VOID_WHITE, VOID_VIOLET, 0xffffff],
+          speed: [4, 17], up: 0.9, size: [0.4, 1.2], life: [0.4, 1.05], gravity: -4, drag: 2.5,
         });
+        this.detonate(2.4);
         this.ctx.cam.addTrauma(0.55);
         this.ctx.stage.punch(0.35);
         this.ctx.sfx.bossRoar();
@@ -324,11 +347,18 @@ export class Unmaker extends Enemy {
       b.mat.dispose(); // geometry is shared (BEAM_GEO) — never disposed
     }
     this.fxBeams = [];
+    this.endSweep();
     this.beams = [];
     this.novas = [];
     this.pulls = [];
     this.stars = [];
     this.pulses = [];
+  }
+
+  /** Flare the core white — call on every heavy action so the star visibly recoils
+   *  with its own power. Decays in tick(); larger amt = brighter, longer flare. */
+  private detonate(amt: number): void {
+    this.flash = Math.max(this.flash, amt);
   }
 
   // ---------------------------------------------------------------- fading (the end)
@@ -342,6 +372,7 @@ export class Unmaker extends Enemy {
     this.pulls = [];
     this.stars = [];
     this.pulses = [];
+    this.endSweep();
     this.applyPhaseLook(4);
     // Its minions wink out with it — the end is meant to be just you and the dying star.
     this.ctx.enemies.clearNonBosses();
@@ -419,6 +450,9 @@ export class Unmaker extends Enemy {
     this.fxBeams.push({ mesh, mat, fade: 0.95 });
     this.ctx.sfx.beamFire();
     this.ctx.cam.addTrauma(0.18);
+    this.detonate(1.5);
+    // Muzzle flare at the core where the lance tears out.
+    this.ctx.fx.burst({ x: b.x, y: 1.9, z: b.z, count: 8, color: [VOID_WHITE, VOID_CORE], speed: [3, 9], up: 0.4, size: [0.3, 0.7], life: [0.18, 0.4], gravity: 0, drag: 3, jitter: 0.4 });
 
     // Hitscan: perpendicular distance from the player to the lane segment.
     const px = p.pos.x - b.x;
@@ -428,6 +462,38 @@ export class Unmaker extends Enemy {
       const perp = Math.abs(px * cz - pz * sx);
       if (perp < BEAM_WIDTH * 0.5 + p.radius) this.ctx.combat.damagePlayer(19, b.x, b.z);
     }
+  }
+
+  // ---------------------------------------------------------------- radial beam star
+  /** A star of beams fired outward from the core — thread the gaps between lances. */
+  private beginBeamStar(): void {
+    this.state = "beamStarTell";
+    const tell = BEAM_TELL + 0.12;
+    this.timer = tell;
+    const n = this.phase >= 3 ? 7 : 6;
+    const base = Math.random() * Math.PI * 2;
+    for (let i = 0; i < n; i++) {
+      const angle = base + (i / n) * Math.PI * 2;
+      this.ctx.tele.line(this.pos.x, this.pos.z, angle, BEAM_LEN, BEAM_WIDTH * 0.8, tell, VOID_WHITE);
+      this.beams.push({ x: this.pos.x, z: this.pos.z, angle, timer: tell });
+    }
+    this.ctx.sfx.beamCharge();
+  }
+
+  // ---------------------------------------------------------------- collapse barrage
+  /** A staggered triple-nova — three collapse rings squeeze the safe ground in turn. */
+  private beginBarrage(): void {
+    this.state = "barrageTell";
+    const count = this.phase >= 3 ? 16 : 13;
+    let maxT = 0;
+    for (let i = 0; i < 3; i++) {
+      const t = 0.55 + i * 0.3;
+      maxT = Math.max(maxT, t);
+      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, t, i % 2 ? VOID_VIOLET : VOID_WHITE);
+      this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin: (i - 1) * 0.24, timer: t });
+    }
+    this.timer = maxT + 0.1;
+    this.ctx.sfx.beamCharge();
   }
 
   // ---------------------------------------------------------------- collapse nova
@@ -453,6 +519,7 @@ export class Unmaker extends Enemy {
       count: 26, color: [VOID_VIOLET, VOID_WHITE], speed: [4, 12], up: 0.5, size: [0.3, 0.8], life: [0.25, 0.55], gravity: -2, drag: 3,
     });
     this.ctx.cam.addTrauma(0.22);
+    this.detonate(1.2);
     this.ctx.sfx.enemyShoot();
   }
 
@@ -495,6 +562,7 @@ export class Unmaker extends Enemy {
     });
     this.ctx.cam.addTrauma(0.6);
     this.ctx.stage.punch(0.4);
+    this.detonate(2.0);
     this.ctx.sfx.bossSlam();
     const d = Math.hypot(p.pos.x - pl.x, p.pos.z - pl.z);
     if (d < pl.radius + p.radius) {
@@ -569,6 +637,7 @@ export class Unmaker extends Enemy {
     });
     this.ctx.cam.addTrauma(0.5);
     this.ctx.stage.punch(0.34);
+    this.detonate(1.8);
     this.ctx.sfx.bossSlam();
     const d = Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
     if (d < R + p.radius) {
@@ -610,19 +679,110 @@ export class Unmaker extends Enemy {
     }
   }
 
+  // ---------------------------------------------------------------- rotating sweep lance
+  /** Charge a star-lance, then sweep it through a wide arc — the player must run
+   *  with the rotation or dive through the lane after it passes. */
+  private beginSweep(): void {
+    this.state = "sweepTell";
+    this.timer = 0.55;
+    const p = this.ctx.player;
+    this.sweepDir = Math.random() < 0.5 ? 1 : -1;
+    // Start just behind the player on the chosen side so it rotates INTO them.
+    const toP = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+    this.sweepAngle = toP - this.sweepDir * 0.6;
+    this.sweepRemaining = this.phase >= 3 ? Math.PI * 1.7 : Math.PI * 1.2;
+    this.ctx.tele.line(this.pos.x, this.pos.z, this.sweepAngle, BEAM_LEN, BEAM_WIDTH, 0.55, VOID_WHITE);
+    this.ctx.sfx.beamCharge();
+  }
+
+  private startSweep(): void {
+    this.state = "sweeping";
+    this.sweepHitCd = 0;
+    const mat = new THREE.MeshBasicMaterial({
+      color: VOID_WHITE, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(BEAM_GEO, mat);
+    this.ctx.stage.scene.add(mesh);
+    this.sweepMesh = mesh;
+    this.sweepMat = mat;
+    this.ctx.sfx.beamFire();
+    this.ctx.cam.addTrauma(0.2);
+    this.detonate(1.4);
+  }
+
+  private updateSweep(dt: number): void {
+    const speed = this.phase >= 3 ? 2.0 : 1.55;
+    const step = speed * dt;
+    this.sweepAngle += this.sweepDir * step;
+    this.sweepRemaining -= step;
+    this.sweepHitCd -= dt;
+    const sx = Math.sin(this.sweepAngle);
+    const cz = Math.cos(this.sweepAngle);
+    if (this.sweepMesh) {
+      this.sweepMesh.position.set(this.pos.x + sx * BEAM_LEN * 0.5, 1.6, this.pos.z + cz * BEAM_LEN * 0.5);
+      this.sweepMesh.rotation.y = this.sweepAngle;
+      if (this.sweepMat) this.sweepMat.opacity = 0.8 + Math.sin(this.t * 30) * 0.12;
+    }
+    // Hitscan along the current lane (throttled so it can't multi-hit per frame).
+    if (this.sweepHitCd <= 0) {
+      const p = this.ctx.player;
+      const px = p.pos.x - this.pos.x;
+      const pz = p.pos.z - this.pos.z;
+      const along = px * sx + pz * cz;
+      if (along > 0 && along < BEAM_LEN && Math.abs(px * cz - pz * sx) < BEAM_WIDTH * 0.5 + p.radius) {
+        this.ctx.combat.damagePlayer(this.phase >= 3 ? 16 : 14, this.pos.x, this.pos.z);
+        this.sweepHitCd = 0.45;
+      }
+    }
+    // Sparks stream off the swinging tip.
+    if (Math.random() < dt * 34) {
+      const r = 6 + Math.random() * 14;
+      this.ctx.fx.burst({
+        x: this.pos.x + sx * r, y: 1.4, z: this.pos.z + cz * r, count: 1,
+        color: [VOID_WHITE, VOID_VIOLET], speed: [1, 4], up: 0.6, size: [0.25, 0.6], life: [0.2, 0.5], gravity: -1, drag: 3,
+      });
+    }
+  }
+
+  private endSweep(): void {
+    if (this.sweepMesh) {
+      this.ctx.stage.scene.remove(this.sweepMesh);
+      this.sweepMat?.dispose(); // shared geometry (BEAM_GEO) is not disposed
+      this.sweepMesh = null;
+      this.sweepMat = null;
+    }
+    this.sweepRemaining = 0;
+  }
+
   // ---------------------------------------------------------------- tick
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
 
+    // Wind-up read: the core swells white-hot and the rings/debris spin up while charging.
+    const charging = this.phase < 4 && (this.state.endsWith("Tell") || this.state === "beamTrack" || this.state === "guard" || this.state === "sweeping" || this.state === "pulseAura");
+    this.chargeAmt += ((charging ? 1 : 0) - this.chargeAmt) * Math.min(1, dt * 6);
+    this.flash = Math.max(0, this.flash - dt * 3.8);
+
+    // While charging, the star drags the void inward: collapsing rings of light and a
+    // shimmer of motes fold into the core, reading the coming attack as gathered power.
+    if (charging) {
+      this.gatherAcc -= dt;
+      if (this.gatherAcc <= 0) {
+        this.gatherAcc = 0.2;
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 1.3, color: VOID_VIOLET, duration: 0.32, startRadius: 5.5 + this.phase, y: 1.7 });
+        this.ctx.fx.burst({ x: this.pos.x, y: 2.2, z: this.pos.z, count: 2, color: [VOID_WHITE, VOID_VIOLET], speed: [0.4, 1.4], up: 0.7, size: [0.2, 0.5], life: [0.3, 0.6], gravity: 0, drag: 1.4, jitter: 1.4 });
+      }
+    }
+
     // Living star: core pulses, rings counter-spin, the body breathes a hover.
     if (this.phase < 4) {
-      this.coreMat.emissiveIntensity = 3.0 + this.phase * 0.6 + Math.sin(this.t * (2.5 + this.phase * 1.5)) * 1.0;
-      this.rings.rotation.y -= dt * (0.8 + this.phase * 0.5);
-      this.debris.rotation.y += dt * (1.1 + this.phase * 0.45);
+      this.coreMat.emissiveIntensity = 3.0 + this.phase * 0.6 + Math.sin(this.t * (2.5 + this.phase * 1.5)) * 1.0 + this.chargeAmt * 2.6 + this.flash * 4.5;
+      this.rings.rotation.y -= dt * (0.8 + this.phase * 0.5 + this.chargeAmt * 2.4 + this.flash * 3.0);
+      this.debris.rotation.y += dt * (1.1 + this.phase * 0.45 + this.chargeAmt * 2.0);
     } else {
       // Fading: a dim, guttering core; rings slow almost to a stop; debris settles.
-      this.coreMat.emissiveIntensity = 0.55 + Math.sin(this.t * 1.1) * 0.22;
+      this.coreMat.emissiveIntensity = 0.55 + Math.sin(this.t * 1.1) * 0.22 + this.flash * 2.0;
       this.rings.rotation.y -= dt * 0.15;
       this.debris.rotation.y += dt * 0.18;
     }
@@ -630,7 +790,7 @@ export class Unmaker extends Enemy {
     this.pos.y = 0.4 + Math.sin(this.t * 1.4) * 0.16;
     this.core.rotation.y += dt * (this.phase >= 4 ? 0.08 : 0.22 + this.phase * 0.04);
     this.innerCore.rotation.y -= dt * (this.phase >= 4 ? 0.12 : 0.55 + this.phase * 0.1);
-    this.innerCore.scale.setScalar(this.phase >= 4 ? 0.82 + Math.sin(this.t * 1.2) * 0.035 : 1 + Math.sin(this.t * 3.6) * 0.07);
+    this.innerCore.scale.setScalar(this.phase >= 4 ? 0.82 + Math.sin(this.t * 1.2) * 0.035 : 1 + Math.sin(this.t * 3.6) * 0.07 + this.chargeAmt * 0.22 + this.flash * 0.5);
     for (let i = 0; i < this.cageStruts.length; i++) {
       const strut = this.cageStruts[i];
       strut.rotation.y = Math.sin(this.t * 0.85 + i) * (this.phase >= 4 ? 0.025 : 0.08);
@@ -728,6 +888,20 @@ export class Unmaker extends Enemy {
           this.timer = 0.35;
         }
         break;
+      case "beamStarTell":
+        this.facePlayer(dt * 0.3);
+        if (this.timer <= 0 && this.beams.length === 0) {
+          this.state = "recover";
+          this.timer = 0.4;
+        }
+        break;
+      case "barrageTell":
+        this.facePlayer(dt * 0.4);
+        if (this.timer <= 0 && this.novas.length === 0) {
+          this.state = "recover";
+          this.timer = 0.42;
+        }
+        break;
       case "pullTell":
         if (this.timer <= 0 && this.pulls.length === 0) {
           this.state = "recover";
@@ -756,10 +930,23 @@ export class Unmaker extends Enemy {
           this.timer = 0.4;
         }
         break;
+      case "sweepTell":
+        this.facePlayer(dt * 0.3);
+        if (this.timer <= 0) this.startSweep();
+        break;
+      case "sweeping":
+        this.updateSweep(dt);
+        if (this.sweepRemaining <= 0) {
+          this.endSweep();
+          this.state = "recover";
+          this.timer = 0.42;
+        }
+        break;
       case "guard":
         this.facePlayer(dt * 0.5);
         if (this.timer <= 0) {
           this.wardShock(4.8, 20, VOID_WHITE);
+          this.detonate(1.6);
           this.state = "recover";
           this.timer = 0.45;
         }
@@ -769,7 +956,7 @@ export class Unmaker extends Enemy {
         this.facePlayer(dt);
         if (this.timer <= 0) {
           this.state = "idle";
-          this.attackCd = Math.max(0.3, 0.85 - this.phase * 0.18);
+          this.attackCd = Math.max(0.26, 0.78 - this.phase * 0.18);
           this.timer = this.attackCd;
         }
         break;
@@ -789,10 +976,17 @@ export class Unmaker extends Enemy {
       this.beginCrush();
       return;
     }
-    if (this.phase >= 2 && (this.attackPick % 5 === 0 || (this.phase >= 3 && this.attackPick % 6 === 1))) {
+    // P2+: a radial star of beams; P3: a collapsing triple-nova barrage. New variety
+    // beyond the existing beam/nova/pull/rain/sweep set.
+    if (this.phase >= 2 && this.attackPick % 8 === 6) { this.beginBeamStar(); return; }
+    if (this.phase >= 3 && this.attackPick % 8 === 2) { this.beginBarrage(); return; }
+    // Star rain rains from phase 1 — a fair, readable AoE that varies the opening fight.
+    if (this.attackPick % 5 === 0 || (this.phase >= 3 && this.attackPick % 6 === 1)) {
       this.beginStarRain();
       return;
     }
+    // A rotating star-lance — present from phase 1 now, so the opener has a moving threat too.
+    if (this.attackPick % 5 === 2) { this.beginSweep(); return; }
     // An unmaking ward every 4th attack (phases 1–3 only — never in the fading end).
     if (this.phase < 4 && this.attackPick % 4 === 3) { this.beginGuard(); return; }
     // A reaching crush now and then denies the mid band, not just point-blank.
@@ -805,7 +999,7 @@ export class Unmaker extends Enemy {
     } else {
       this.beginNova();
     }
-    // P2+ periodically seeds adds between attacks.
-    if (this.phase >= 2 && this.attackPick % 4 === 0) this.summonAdds(this.phase >= 3 ? 2 : 1);
+    // P2+ periodically seeds adds between attacks — more, and more often, late.
+    if (this.phase >= 2 && this.attackPick % 3 === 0) this.summonAdds(this.phase >= 3 ? 3 : 2);
   }
 }

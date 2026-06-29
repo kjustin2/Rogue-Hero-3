@@ -40,7 +40,7 @@ check("in combat with enemies present", enemyCount >= 1, `${enemyCount} living`)
 // --- New default mapping (in gameplay, so actionDown reads the pad directly).
 const MAP = [
   ["attack", 7], ["card1", 6], ["card2", 4], ["card3", 5],
-  ["dodge", 0], ["crash", 1], ["target", 3], ["overdrive", 2],
+  ["dodge", 0], ["crash", 1], ["target", 3], ["mercy", 2],
 ];
 for (const [action, btn] of MAP) {
   await page.evaluate((b) => window.__press(b, true), btn);

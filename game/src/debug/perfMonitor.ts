@@ -44,6 +44,28 @@ export interface PerfStats {
   over250: number;
 }
 
+/** One captured frame spike, with the deltas that classify it + the activity tag. */
+export interface SpikeRecord {
+  /** ms since page start (performance.now). */
+  t: number;
+  /** The slow frame interval in ms. */
+  dt: number;
+  /** Classification: a shader compile (programs grew) vs a GC pause / external stall. */
+  klass: "compile" | "gc/stall";
+  /** Top-level game state when it struck. */
+  state: string;
+  /** Harness-set activity label (which scenario/event was running). */
+  label: string;
+  enemies: number;
+  draws: number;
+  programs: number;
+  /** Programs added on the slow frame (>0 ⇒ first-use compile). */
+  dProg: number;
+  /** Heap change on the slow frame in MB (a drop suggests a GC collection). */
+  dHeapMB: number;
+  heapMB: number;
+}
+
 /** A point-in-time snapshot of GPU load + scene size. */
 export interface PerfSnapshot {
   calls: number;
@@ -100,6 +122,7 @@ function computeStats(samples: readonly number[]): PerfStats {
 }
 
 const RING = 240; // ~4s of rolling history at 60fps — enough for report() + sparkline
+const SPIKE_CAP = 600; // structured spike records kept (soak harness clears per phase)
 
 export class PerfMonitor {
   /** Rolling ring of recent frame intervals (ms) — always recording, cheap. */
@@ -126,6 +149,22 @@ export class PerfMonitor {
   private hudOn = false;
   private hudAcc = 0;
 
+  // Frame-spike auto-diagnostics. The perf harness can't reproduce the player's
+  // "random lag spots" headless (SwiftShader + V8 GC behave unlike a real GPU), so
+  // each real hitch classifies itself: a jump in shader programs ⇒ first-use compile;
+  // a heap move with no new programs ⇒ GC pause / external stall. Near-free (one
+  // compare/frame). Structured records (perf.spikes()) feed the real-GPU soak harness;
+  // a rate-limited console line covers live F8 play. Threshold + label are settable.
+  private frameCount = 0;
+  private spikeCooldownUntil = 0;
+  private spikeThresholdMs = 120;
+  private spikeLabel = "";
+  private spikeLog: SpikeRecord[] = [];
+  private prevPrograms = 0;
+  private prevHeapMB = 0;
+  private lastProgramsDelta = 0;
+  private lastHeapDelta = 0;
+
   constructor(private ctx: Ctx, private getState: () => string) {
     // Take ownership of the render-info counters so we report true per-frame load.
     this.ctx.stage.renderer.info.autoReset = false;
@@ -139,10 +178,63 @@ export class PerfMonitor {
       this.ringIdx = (this.ringIdx + 1) % RING;
       if (this.ringLen < RING) this.ringLen++;
       if (this.recording) this.rec.push(dt);
+      this.frameCount++;
+      // A real hitch (not boot warm-up, not a multi-second pause/breakpoint). The
+      // structured record is always kept (capped); the console line is rate-limited.
+      if (dt > this.spikeThresholdMs && dt < 5000 && this.frameCount > 150) {
+        this.recordSpike(dt);
+        if (now > this.spikeCooldownUntil) { this.spikeCooldownUntil = now + 400; this.logSpike(dt); }
+      }
     }
     this.lastNow = now;
     this.ctx.stage.renderer.info.reset();
   }
+
+  /** Append a structured, classified spike record (capped ring; newest kept). */
+  private recordSpike(dt: number): void {
+    const s = this.snap;
+    this.spikeLog.push({
+      t: Math.round(performance.now()),
+      dt: Math.round(dt),
+      klass: this.lastProgramsDelta > 0 ? "compile" : "gc/stall",
+      state: s.state,
+      label: this.spikeLabel,
+      enemies: s.enemies,
+      draws: s.calls,
+      programs: s.programs,
+      dProg: this.lastProgramsDelta,
+      dHeapMB: this.lastHeapDelta,
+      heapMB: s.heapMB,
+    });
+    if (this.spikeLog.length > SPIKE_CAP) this.spikeLog.shift();
+  }
+
+  /** Classify a frame spike in the console: shader compile vs GC/stall (see fields). */
+  private logSpike(dt: number): void {
+    const s = this.snap;
+    const compiled = this.lastProgramsDelta > 0;
+    const heapSign = this.lastHeapDelta >= 0 ? "+" : "";
+    console.warn(
+      `[rh3perf] frame spike ${dt.toFixed(0)}ms — ` +
+      (compiled
+        ? `first-use SHADER COMPILE (Δprograms +${this.lastProgramsDelta})`
+        : `likely GC pause / external stall (no new programs)`) +
+      ` | state=${s.state}${this.spikeLabel ? ` @${this.spikeLabel}` : ""} enemies=${s.enemies}` +
+      ` draws=${s.calls} programs=${s.programs} heap=${s.heapMB}mb(Δ${heapSign}${this.lastHeapDelta})`,
+    );
+  }
+
+  /** Tag the activity the soak harness is currently driving, attached to each spike. */
+  setSpikeLabel(label: string): void { this.spikeLabel = label; }
+
+  /** Lower the spike threshold (ms) for a soak so micro-stalls are captured too. */
+  setSpikeThreshold(ms: number): void { this.spikeThresholdMs = Math.max(16, ms); }
+
+  /** All captured spike records (newest last). */
+  spikes(): SpikeRecord[] { return this.spikeLog.slice(); }
+
+  /** Drop all captured spikes (call between soak phases). */
+  clearSpikes(): void { this.spikeLog = []; }
 
   /** End of the frame loop (after render): snapshot GPU load + refresh overlay. */
   end(dt: number): void {
@@ -163,6 +255,12 @@ export class PerfMonitor {
     this.snap.heapMB = mem ? Math.round(mem.usedJSHeapSize / 1048576) : 0;
     this.snap.enemies = this.ctx.enemies.living().length;
     this.snap.state = this.getState();
+
+    // Per-frame deltas feed the spike classifier read in the NEXT begin().
+    this.lastProgramsDelta = this.snap.programs - this.prevPrograms;
+    this.prevPrograms = this.snap.programs;
+    this.lastHeapDelta = this.snap.heapMB - this.prevHeapMB;
+    this.prevHeapMB = this.snap.heapMB;
 
     if (this.hudOn) {
       this.hudAcc += dt;

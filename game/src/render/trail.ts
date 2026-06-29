@@ -15,7 +15,12 @@ interface Seg {
  * (≈80 verts, trivial) into a single additive mesh.
  */
 export class SwordTrail {
-  private segs: Seg[] = [];
+  // Fixed ring of pre-allocated segments (oldest-first via head/count). An active
+  // blade allocates nothing per frame: tip/base are copied into pooled Vector3s
+  // rather than cloned, and the strip is built through a method, not a fresh closure.
+  private pool: Seg[] = Array.from({ length: MAX_SEGS }, () => ({ tip: new THREE.Vector3(), base: new THREE.Vector3(), age: 0 }));
+  private head = 0;
+  private count = 0;
   private mesh: THREE.Mesh;
   private mat: THREE.ShaderMaterial;
   private positions: Float32Array;
@@ -61,39 +66,44 @@ export class SwordTrail {
     (this.mat.uniforms.uColor.value as THREE.Color).set(c);
   }
 
+  /** The i-th live segment, oldest-first (i in 0..count-1). */
+  private segAt(i: number): Seg { return this.pool[(this.head + i) % MAX_SEGS]; }
+
+  private writeVert(v: number, p: THREE.Vector3, a: number): void {
+    this.positions[v * 3] = p.x;
+    this.positions[v * 3 + 1] = p.y;
+    this.positions[v * 3 + 2] = p.z;
+    this.alphas[v] = a;
+  }
+
   update(dt: number, tip: THREE.Vector3, base: THREE.Vector3, active: boolean): void {
-    // Age out old segments. They age monotonically and are stored oldest-first,
-    // so the expired ones are always at the front — shift them off in place
-    // instead of allocating a new array via filter() every single frame.
-    for (const s of this.segs) s.age += dt;
-    while (this.segs.length && this.segs[0].age >= SEG_LIFE) this.segs.shift();
+    // Age out old segments. They age monotonically and are stored oldest-first, so
+    // the expired ones are always at the front — drop them by advancing the ring head.
+    for (let i = 0; i < this.count; i++) this.segAt(i).age += dt;
+    while (this.count > 0 && this.segAt(0).age >= SEG_LIFE) { this.head = (this.head + 1) % MAX_SEGS; this.count--; }
 
     if (active) {
-      this.segs.push({ tip: tip.clone(), base: base.clone(), age: 0 });
-      if (this.segs.length > MAX_SEGS) this.segs.shift();
+      // Reuse a pooled slot at the back; if the ring is full, overwrite the oldest.
+      let slot: Seg;
+      if (this.count < MAX_SEGS) { slot = this.pool[(this.head + this.count) % MAX_SEGS]; this.count++; }
+      else { slot = this.pool[this.head]; this.head = (this.head + 1) % MAX_SEGS; }
+      slot.tip.copy(tip); slot.base.copy(base); slot.age = 0;
     }
 
-    if (this.segs.length < 2) {
+    if (this.count < 2) {
       this.mesh.visible = false;
       return;
     }
     this.mesh.visible = true;
 
     let v = 0;
-    const put = (p: THREE.Vector3, a: number) => {
-      this.positions[v * 3] = p.x;
-      this.positions[v * 3 + 1] = p.y;
-      this.positions[v * 3 + 2] = p.z;
-      this.alphas[v] = a;
-      v++;
-    };
-    for (let i = 0; i < this.segs.length - 1; i++) {
-      const s0 = this.segs[i];
-      const s1 = this.segs[i + 1];
+    for (let i = 0; i < this.count - 1; i++) {
+      const s0 = this.segAt(i);
+      const s1 = this.segAt(i + 1);
       const a0 = 1 - s0.age / SEG_LIFE;
       const a1 = 1 - s1.age / SEG_LIFE;
-      put(s0.base, a0); put(s0.tip, a0); put(s1.tip, a1);
-      put(s0.base, a0); put(s1.tip, a1); put(s1.base, a1);
+      this.writeVert(v++, s0.base, a0); this.writeVert(v++, s0.tip, a0); this.writeVert(v++, s1.tip, a1);
+      this.writeVert(v++, s0.base, a0); this.writeVert(v++, s1.tip, a1); this.writeVert(v++, s1.base, a1);
     }
     this.geometry.setDrawRange(0, v);
     this.geometry.attributes.position.needsUpdate = true;

@@ -60,6 +60,8 @@ export class Combat {
   private coldCrashLatch = false;
   /** Brief invulnerability after crashing. */
   private crashIframes = 0;
+  /** Debug god-mode: when on, all player damage is ignored (toggled via __rh3debug.godmode). */
+  god = false;
   /** Enemies hit by the current swing (for combo tempo). */
   private swingHits = 0;
   /** In-run passive growth (Ascendant ranks) — a damage multiplier that climbs with kills. */
@@ -116,6 +118,7 @@ export class Combat {
   damagePlayer(dmg: number, srcX: number, srcZ: number, opts: PlayerDamageOpts = {}): PlayerDamageResult {
     const { player, controller, tempo, events, stats } = this.ctx;
     if (!player.alive) return "invulnerable";
+    if (this.god) return "invulnerable";
     if (this.crashIframes > 0) return "invulnerable";
 
     // Parry: only enemy projectile bodies can be deflected in the opening beat.
@@ -146,7 +149,7 @@ export class Combat {
       return "dodged";
     }
 
-    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult() * player.hero.dmgTakenMult * this.ctx.difficulty.enemyDmgMult * this.ctx.overdrive.damageTakenMult));
+    dmg = Math.max(1, Math.round(dmg * this.ctx.relics.damageTakenMult() * player.hero.dmgTakenMult * this.ctx.difficulty.enemyDmgMult));
 
     // Riposte stance: negate the hit and answer with a nova
     if (this.ctx.caster.riposteActive) {
@@ -189,9 +192,9 @@ export class Combat {
       return "shielded";
     }
 
-    // Second Wind: a lethal hit leaves you at 1 HP, once per run
+    // Second Wind: a lethal hit is survived, restoring to 40% HP, once per run
     if (player.hp - dmg <= 0 && this.ctx.relics.consumeSecondWind()) {
-      player.hp = 1;
+      player.hp = Math.max(1, Math.round(player.maxHp * 0.4));
       stats.damageTaken += dmg;
       this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 5, color: 0x7dffb0, duration: 0.7 });
       this.ctx.fx.burst({
@@ -286,10 +289,9 @@ export class Combat {
     const zone = tempo.zone;
     const wasFrozen = e.frozen > 0;
     const dmg = Math.max(1, Math.round(
-      baseDmg * zone.damageMult * tempo.crescendoMult * this.ctx.overdrive.damageMult * this.runRankMult * e.vulnerableMult * this.ctx.relics.damageDealtMult(e)
+      baseDmg * zone.damageMult * tempo.crescendoMult * this.runRankMult * e.vulnerableMult * this.ctx.relics.damageDealtMult(e)
     ));
     const killed = e.takeDamage(dmg, opts);
-    this.ctx.overdrive.onDamageDealt(e.lastHitShielded ? e.lastBodyDamage : dmg);
     // Shatterglass: a blow on a frozen foe shatters the ice for a frost burst.
     if (!opts.noDetonate && wasFrozen && this.ctx.relics.has("shatterglass")) {
       this.shatter(e);

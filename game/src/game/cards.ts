@@ -3,6 +3,16 @@ import { angleDelta } from "../core/math";
 import type { Ctx } from "./ctx";
 import type { Enemy } from "./enemies";
 
+/** Release the GPU geometry + material of every mesh under a group (after scene.remove). */
+function disposeGroup(group: THREE.Object3D): void {
+  group.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.geometry.dispose();
+      (o.material as THREE.Material).dispose();
+    }
+  });
+}
+
 export interface CardDef {
   id: string;
   name: string;
@@ -61,6 +71,11 @@ export const CARDS: CardDef[] = [
   { id: "shield-bash", name: "Shield Bash", desc: "Charge forward, slam a wall of force, and stun all you hit.", upDesc: "Farther charge, heavier slam, longer stun + a barrier.", cooldown: 8, color: "#7fd0ff", glow: 0x7fd0ff, icon: "⛊", rarity: "uncommon", tempo: 8, hero: "bulwark" },
   { id: "rend-boomerang", name: "Rend Blade", desc: "Hurl a blade that carves out and rips back, bleeding all it crosses.", upDesc: "Flies farther, hits harder, leaves deeper wounds.", cooldown: 7, color: "#ff5555", glow: 0xff5555, icon: "↺", rarity: "uncommon", tempo: 7, hero: "reaver" },
   { id: "tempo-edge", name: "Tempo Edge", desc: "A flurry of sweeping cuts — the hotter your Tempo, the more strikes land.", upDesc: "More strikes and a tempo-fed finishing burst.", cooldown: 7, color: "#5fe0ff", glow: 0x5fe0ff, icon: "≈", rarity: "rare", tempo: 6, hero: "blade" },
+  // --- Expansion V: more cards + a signature for the Revenant
+  { id: "grave-harvest", name: "Grave Harvest", desc: "Reap everything near you — every foe cut bleeds and feeds your wounds.", upDesc: "Wider reap, deeper bleed, more life per soul.", cooldown: 9, color: "#ff6ba0", glow: 0xff6ba0, icon: "⚰", rarity: "rare", tempo: 7, hero: "revenant" },
+  { id: "bulwark-breaker", name: "Bulwark Breaker", desc: "Slam the ground — a heavy shock hurls the pack back and raises a barrier per foe hit.", upDesc: "Bigger shock, harder shove, a much stouter barrier.", cooldown: 9, color: "#7fd0ff", glow: 0x7fd0ff, icon: "⬢", rarity: "uncommon", tempo: 8, hero: "bulwark" },
+  { id: "thunderclap", name: "Thunderclap", desc: "A point-blank shock that hammers and stuns everything around you.", upDesc: "Bigger blast, harder hit, a longer stun.", cooldown: 7, color: "#ffe066", glow: 0xffe066, icon: "↯", rarity: "uncommon", tempo: 7 },
+  { id: "frost-lattice", name: "Frost Lattice", desc: "Spears of frost lance out in four directions, freezing all they cross.", upDesc: "An eight-point star with a deeper freeze.", cooldown: 8, color: "#bfeaff", glow: 0xbfeaff, icon: "❅", rarity: "uncommon", tempo: 6 },
 ];
 
 /** Build-archetype tags per card — assigned once below so the literals stay readable. */
@@ -77,6 +92,8 @@ const CARD_TAGS: Record<string, string[]> = {
   "tempest-storm": ["lightning"], "flame-channel": ["fire"], "decoy-totem": ["summon"],
   "leech-orb": ["bleed", "heal"], "shield-bash": ["guard", "force"], "rend-boomerang": ["bleed"],
   "tempo-edge": ["force"],
+  "grave-harvest": ["bleed", "heal"], "bulwark-breaker": ["guard", "force"],
+  "thunderclap": ["lightning", "force"], "frost-lattice": ["frost"],
 };
 for (const c of CARDS) c.tags = CARD_TAGS[c.id] ?? [];
 
@@ -1163,6 +1180,115 @@ export class CardCaster {
         this.ctx.cam.kick(nx, nz, 2.4);
         return true;
       }
+
+      case "grave-harvest": {
+        // Revenant signature: reap + bleed everything near you, leeching life per soul —
+        // bleeds finishing foes also stoke the Revenant's kill-heal passive.
+        const R = upgraded ? 6.5 : 5;
+        let reaped = 0;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < R + e.radius) {
+            combat.dealDamage(e, upgraded ? 30 : 22, { kbX: dx, kbZ: dz, kb: 2, countCombo: true });
+            this.addBleed(e, upgraded ? 6 : 4, upgraded ? 5 : 3, 0xff6ba0);
+            reaped++;
+          }
+        }
+        const heal = Math.min(player.maxHp - player.hp, reaped * (upgraded ? 7 : 5));
+        if (heal > 0) { player.hp += heal; this.ctx.events.emit("HEAL", { amount: heal }); }
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0xff6ba0, duration: 0.55 });
+        fx.burst({
+          x: player.pos.x, y: 1.0, z: player.pos.z,
+          count: 32, color: [0xff6ba0, 0xb83a6a, 0xffffff], speed: [3, 9], up: 0.6, size: [0.4, 0.85], life: [0.3, 0.65], gravity: -2, drag: 3,
+        });
+        this.ctx.stage.punch(0.16);
+        return true;
+      }
+
+      case "bulwark-breaker": {
+        // Bulwark signature: a stationary shock that hurls the pack out and converts
+        // each foe struck into barrier — the more you're swarmed, the stouter you stand.
+        const R = upgraded ? 6 : 4.6;
+        let struck = 0;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < R + e.radius) {
+            combat.dealDamage(e, upgraded ? 30 : 22, { kbX: dx, kbZ: dz, kb: 12, heavy: true, countCombo: true });
+            struck++;
+          }
+        }
+        const barrier = Math.min(upgraded ? 50 : 32, (upgraded ? 12 : 8) + struck * (upgraded ? 9 : 6));
+        player.shield = Math.max(player.shield, barrier);
+        this.ctx.events.emit("SHIELD_GAINED", { amount: barrier });
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0x7fd0ff, duration: 0.45 });
+        fx.ring(player.pos.x, player.pos.z, { radius: R * 0.55, color: 0xffffff, duration: 0.32 });
+        fx.burst({
+          x: player.pos.x, y: 0.6, z: player.pos.z,
+          count: 32, color: [0x7fd0ff, 0xffffff], speed: [4, 12], up: 0.7, size: [0.45, 1.0], life: [0.25, 0.6], gravity: -4, drag: 2.6,
+        });
+        this.ctx.cam.addTrauma(0.34);
+        this.ctx.stage.punch(0.32);
+        return true;
+      }
+
+      case "thunderclap": {
+        // A point-blank shock that hammers and briefly stuns (freeze) everything around you.
+        const R = upgraded ? 6 : 4.6;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < R + e.radius) {
+            combat.dealDamage(e, upgraded ? 26 : 18, { kbX: dx, kbZ: dz, kb: 6, heavy: true, countCombo: true });
+            e.freeze(upgraded ? 1.4 : 0.9);
+          }
+        }
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0xffe066, duration: 0.4 });
+        fx.ring(player.pos.x, player.pos.z, { radius: R * 0.5, color: 0xffffff, duration: 0.28 });
+        fx.burst({
+          x: player.pos.x, y: 1.0, z: player.pos.z,
+          count: 28, color: [0xffe066, 0xffffff], speed: [4, 13], up: 0.5, size: [0.35, 0.8], life: [0.2, 0.5], gravity: -2, drag: 3,
+        });
+        this.ctx.cam.addTrauma(0.32);
+        this.ctx.stage.punch(0.3);
+        return true;
+      }
+
+      case "frost-lattice": {
+        // Spears of frost lance out in a cross (honed: an 8-point star), freezing all
+        // they cross. A foe at an intersection is only struck once (dedup by id).
+        const range = upgraded ? 14 : 11;
+        const width = upgraded ? 1.5 : 1.1;
+        const dirs = upgraded ? 8 : 4;
+        const hit = new Set<number>();
+        for (let d = 0; d < dirs; d++) {
+          const ang = player.facing + (d / dirs) * Math.PI * 2;
+          const nx = Math.sin(ang), nz = Math.cos(ang);
+          for (const e of enemies.living()) {
+            if (hit.has(e.id)) continue;
+            const ex = e.pos.x - player.pos.x;
+            const ez = e.pos.z - player.pos.z;
+            const along = ex * nx + ez * nz;
+            if (along < -0.5 || along > range) continue;
+            if (Math.abs(ex * nz - ez * nx) < width + e.radius) {
+              combat.dealDamage(e, upgraded ? 22 : 16, { kbX: nx, kbZ: nz, kb: 2, countCombo: true });
+              e.freeze(upgraded ? 2.6 : 1.8);
+              hit.add(e.id);
+            }
+          }
+          for (let i = 1; i <= 5; i++) {
+            const dd = (range / 5) * i;
+            fx.burst({
+              x: player.pos.x + nx * dd, y: 0.8, z: player.pos.z + nz * dd,
+              count: 3, color: [0xbfeaff, 0xffffff], speed: [1, 3], up: 0.5, size: [0.3, 0.6], life: [0.2, 0.45], gravity: -2, drag: 3,
+            });
+          }
+        }
+        fx.ring(player.pos.x, player.pos.z, { radius: 2.2, color: 0xbfeaff, duration: 0.4 });
+        this.ctx.stage.punch(0.12);
+        return true;
+      }
     }
     return false;
   }
@@ -1251,8 +1377,8 @@ export class CardCaster {
   }
 
   clear(): void {
-    for (const m of this.mines) this.ctx.stage.scene.remove(m.mesh);
-    for (const p of this.phantoms) this.ctx.stage.scene.remove(p.group);
+    for (const m of this.mines) { this.ctx.stage.scene.remove(m.mesh); m.mat.dispose(); }
+    for (const p of this.phantoms) { this.ctx.stage.scene.remove(p.group); disposeGroup(p.group); }
     for (const w of this.wells) {
       this.ctx.stage.scene.remove(w.mesh);
       w.mat.dispose();
@@ -1624,12 +1750,7 @@ export class CardCaster {
       if (tm.timer > 0) continue;
       this.totems.splice(i, 1);
       this.ctx.stage.scene.remove(tm.group);
-      tm.group.traverse((o) => {
-        if (o instanceof THREE.Mesh) {
-          o.geometry.dispose();
-          (o.material as THREE.Material).dispose();
-        }
-      });
+      disposeGroup(tm.group);
       this.ctx.fx.ring(tm.x, tm.z, { radius: tm.blastR, color: 0xffd24d, duration: 0.45 });
       this.ctx.fx.burst({
         x: tm.x, y: 0.8, z: tm.z,
@@ -1760,6 +1881,7 @@ export class CardCaster {
       if (boom) {
         this.mines.splice(i, 1);
         this.ctx.stage.scene.remove(m.mesh);
+        m.mat.dispose();
         if (victim || m.life <= 0) {
           const R = 2.4;
           for (const e of this.ctx.enemies.living()) {
@@ -1789,6 +1911,7 @@ export class CardCaster {
       if (p.timer <= 0) {
         this.phantoms.splice(i, 1);
         this.ctx.stage.scene.remove(p.group);
+        disposeGroup(p.group);
         const R = 2.5;
         for (const e of this.ctx.enemies.living()) {
           const dx = e.pos.x - p.x;

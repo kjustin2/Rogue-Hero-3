@@ -1,2 +1,0 @@
-Found a bug: if you hit pause right when all enemies die then it doesn't continue to next screen.
-Also we should work on updating animations, specifically movement animations to be more professional and look better. For example the movement animation of our character when they move around their legs just kind of waddle right now.

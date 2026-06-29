@@ -8,7 +8,7 @@ const PHASE_LINES = [
   "THE CORE GOES CRITICAL",
 ];
 
-type ColossusState = "idle" | "poundSeq" | "mines" | "tectonicTell" | "recover" | "phaseShift" | "guard";
+type ColossusState = "idle" | "poundSeq" | "mines" | "tectonicTell" | "novaTell" | "recover" | "phaseShift" | "guard";
 
 interface FirePatch {
   x: number;
@@ -70,17 +70,23 @@ export class Colossus extends Enemy {
   private core: THREE.Mesh;
   private fistL: THREE.Mesh;
   private fistR: THREE.Mesh;
+  private armL!: THREE.Mesh;
+  private armR!: THREE.Mesh;
   private crownBand: THREE.Mesh;
+  /** Spin offset locked at a radial nova's wind-up so tell and fire agree. */
+  private novaSpin = 0;
   private heatVents: THREE.Object3D[] = [];
   private armorBands: THREE.Object3D[] = [];
   private fistAnim = 0;
+  /** 0→1 wind-up read: the core blazes and the heat vents gape while charging. */
+  private chargeAmt = 0;
   // Per-phase appearance escalation (built once, revealed on transition).
   private p2Plates: THREE.Object3D[] = [];
   private p3Crown: THREE.Object3D[] = [];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    this.hp = this.maxHp = 3000;
+    this.hp = this.maxHp = 3300;
     this.speed = 0; // rooted — it pivots, the arena moves instead
     this.radius = 2.2;
     this.wardColor = 0xff5522;
@@ -123,8 +129,10 @@ export class Colossus extends Enemy {
     // Fists on heavy arms. Warmer than pitch-black so the arms read as connected
     // slag rather than disconnected voids floating beside the body.
     const armMat = this.stdMat(0x33231a, 0x5a2408, 0.5);
-    this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, -2.6, 2.6, 0.3).rotation.z = 0.25;
-    this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, 2.6, 2.6, 0.3).rotation.z = -0.25;
+    this.armL = this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, -2.6, 2.6, 0.3);
+    this.armL.rotation.z = 0.25;
+    this.armR = this.addMesh(new THREE.BoxGeometry(0.9, 2.6, 0.9), armMat, 2.6, 2.6, 0.3);
+    this.armR.rotation.z = -0.25;
     this.fistL = this.addMesh(new THREE.BoxGeometry(1.5, 1.2, 1.5), plateMat, -3.1, 1.0, 0.5);
     this.fistR = this.addMesh(new THREE.BoxGeometry(1.5, 1.2, 1.5), plateMat, 3.1, 1.0, 0.5);
     for (const sx of [-1, 1]) {
@@ -288,31 +296,62 @@ export class Colossus extends Enemy {
   private beginGuard(): void {
     this.setInvuln(1.6);
     this.state = "guard";
-    this.timer = 0.85; // wind-up = telegraph duration
+    this.timer = 0.72; // wind-up = telegraph duration
     this.fistAnim = 1;
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 5.5, 0.85, 0xff5522);
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 6.4, 0.72, 0xff5522);
     this.ctx.sfx.beamCharge();
   }
 
   private beginPoundSeq(): void {
     this.state = "poundSeq";
-    this.poundsLeft = this.phase >= 3 ? 3 : 2;
+    // A heavier barrage — the mountain commits more fists each cycle.
+    this.poundsLeft = this.phase >= 3 ? 5 : this.phase >= 2 ? 4 : 3;
     this.poundGap = 0;
+  }
+
+  /** A radial burst of magma bolts — the mountain spits fire in every direction,
+   *  so even at range there is always something to side-step. */
+  private beginNova(): void {
+    this.state = "novaTell";
+    this.timer = 0.6;
+    this.novaSpin = this.phase >= 2 ? (Math.random() < 0.5 ? -1 : 1) * (0.2 + this.phase * 0.1) : 0;
+    this.fistAnim = 1;
+    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.4, 0.6, 0xff7733);
+    this.ctx.sfx.beamCharge();
+  }
+
+  private fireNova(): void {
+    const count = this.phase >= 3 ? 26 : this.phase >= 2 ? 20 : 15;
+    const p = this.ctx.player;
+    const base = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z) + this.novaSpin;
+    for (let i = 0; i < count; i++) {
+      const a = base + (i / count) * Math.PI * 2;
+      this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: 8.5, dmg: 10, color: 0xff7733, radius: 0.34 });
+    }
+    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 4.4, color: 0xff7733, duration: 0.45 });
+    this.ctx.fx.burst({
+      x: this.pos.x, y: 2.4, z: this.pos.z,
+      count: 28, color: [0xff5522, 0xffaa44, 0xffffff],
+      speed: [4, 13], up: 0.6, size: [0.4, 0.9], life: [0.3, 0.6], gravity: -3, drag: 2.8,
+    });
+    this.ctx.cam.addTrauma(0.3);
+    this.ctx.sfx.enemyShoot();
   }
 
   private aimPound(): void {
     const p = this.ctx.player;
-    this.ctx.tele.circle(p.pos.x, p.pos.z, 3.0, 0.9, 0xff7733);
-    this.pounds.push({ x: p.pos.x, z: p.pos.z, timer: 0.9 });
+    // Bigger, faster-chained slams — the fists fall harder and cover more ground.
+    this.ctx.tele.circle(p.pos.x, p.pos.z, 3.9, 0.82, 0xff7733);
+    this.pounds.push({ x: p.pos.x, z: p.pos.z, timer: 0.82 });
     this.poundsLeft--;
-    this.poundGap = 0.5;
+    this.poundGap = 0.4;
     this.fistAnim = 1;
     this.ctx.sfx.bossLeap();
   }
 
   private landPound(pd: PendingPound): void {
     const p = this.ctx.player;
-    this.ctx.fx.ring(pd.x, pd.z, { radius: 3.0, color: 0xff7733, duration: 0.45 });
+    this.ctx.fx.ring(pd.x, pd.z, { radius: 3.9, color: 0xff7733, duration: 0.45 });
     this.ctx.fx.burst({
       x: pd.x, y: 0.5, z: pd.z,
       count: 34, color: [0xff7733, 0xffcc66, 0x885544],
@@ -322,10 +361,10 @@ export class Colossus extends Enemy {
     this.ctx.stage.punch(0.2);
     this.ctx.sfx.bossSlam();
     const d = Math.hypot(p.pos.x - pd.x, p.pos.z - pd.z);
-    if (d < 3.0 + p.radius) {
-      this.ctx.combat.damagePlayer(20, pd.x, pd.z);
+    if (d < 3.9 + p.radius) {
+      this.ctx.combat.damagePlayer(22, pd.x, pd.z);
       const len = Math.max(0.001, d);
-      this.ctx.controller.push(((p.pos.x - pd.x) / len) * 7, ((p.pos.z - pd.z) / len) * 7);
+      this.ctx.controller.push(((p.pos.x - pd.x) / len) * 8, ((p.pos.z - pd.z) / len) * 8);
     }
   }
 
@@ -333,14 +372,14 @@ export class Colossus extends Enemy {
     this.state = "mines";
     this.timer = 0.6;
     const p = this.ctx.player;
-    const n = this.phase >= 3 ? 7 : 5;
+    const n = this.phase >= 3 ? 8 : 6;
     for (let i = 0; i < n; i++) {
       const a = this.ctx.rng.range(0, Math.PI * 2);
-      const r = this.ctx.rng.range(0, 4.5);
+      const r = this.ctx.rng.range(0, 5.0);
       const x = p.pos.x + Math.sin(a) * r;
       const z = p.pos.z + Math.cos(a) * r;
-      const fuse = 1.2 + i * 0.18;
-      this.ctx.tele.circle(x, z, 1.6, fuse, 0xff5522);
+      const fuse = 1.05 + i * 0.15;
+      this.ctx.tele.circle(x, z, 2.1, fuse, 0xff5522);
       this.mines.push({ x, z, timer: fuse });
     }
     this.ctx.sfx.fuse();
@@ -348,27 +387,28 @@ export class Colossus extends Enemy {
 
   private eruptMine(m: PendingMine): void {
     const p = this.ctx.player;
-    this.ctx.fx.ring(m.x, m.z, { radius: 1.6, color: 0xff5522, duration: 0.35 });
+    this.ctx.fx.ring(m.x, m.z, { radius: 2.1, color: 0xff5522, duration: 0.35 });
     this.ctx.fx.burst({
       x: m.x, y: 0.4, z: m.z,
       count: 18, color: [0xff5522, 0xffaa44],
       speed: [3, 9], up: 1.2, size: [0.4, 0.8], life: [0.25, 0.55], gravity: -6, drag: 2.5,
     });
     this.ctx.sfx.explosion();
-    if (Math.hypot(p.pos.x - m.x, p.pos.z - m.z) < 1.6 + p.radius) {
-      this.ctx.combat.damagePlayer(13, m.x, m.z);
+    if (Math.hypot(p.pos.x - m.x, p.pos.z - m.z) < 2.1 + p.radius) {
+      this.ctx.combat.damagePlayer(14, m.x, m.z);
     }
-    this.dropPatch(m.x, m.z, 2.0);
+    this.dropPatch(m.x, m.z, 2.4);
   }
 
   private beginTectonic(): void {
     this.state = "tectonicTell";
-    this.timer = 1.8;
+    this.timer = 1.6;
     this.fistAnim = 1;
+    // Wider annulus bands with narrower safe lanes — harder to thread.
     const bands: [number, number, number][] = [
-      [4.0, 5.6, 0.7],
-      [8.0, 9.6, 1.1],
-      [12.0, 13.6, 1.5],
+      [3.6, 5.7, 0.6],
+      [7.6, 9.8, 1.0],
+      [11.6, 14.0, 1.4],
     ];
     for (const [inner, outer, delay] of bands) {
       this.ctx.tele.ring(this.pos.x, this.pos.z, inner, outer, delay, 0xff5522);
@@ -394,7 +434,7 @@ export class Colossus extends Enemy {
     this.ctx.sfx.bossSlam();
     const d = Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
     if (d > r.inner - p.radius && d < r.outer + p.radius) {
-      this.ctx.combat.damagePlayer(16, this.pos.x, this.pos.z);
+      this.ctx.combat.damagePlayer(18, this.pos.x, this.pos.z);
     }
     // Phase 3: the outermost slam launches a travelling fire wave
     if (this.phase >= 3 && r.inner > 11) this.launchWave();
@@ -428,27 +468,36 @@ export class Colossus extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     this.facePlayer(dt * 0.7);
-    this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.6 + Math.sin(this.t * (1.5 + this.phase)) * 0.8;
-    this.veinMat.emissiveIntensity = 1.6 + Math.sin(this.t * 2.3) * 0.5;
+    // Wind-up read: the core blazes white-hot and the vents gape as it loads a blow.
+    const charging = this.state === "novaTell" || this.state === "tectonicTell" || this.state === "guard";
+    this.chargeAmt += ((charging ? 1 : 0) - this.chargeAmt) * Math.min(1, dt * 5);
+    this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.6 + Math.sin(this.t * (1.5 + this.phase)) * 0.8 + this.chargeAmt * 2.6;
+    this.veinMat.emissiveIntensity = 1.6 + Math.sin(this.t * 2.3) * 0.5 + this.chargeAmt * 1.4;
     const corePulse = 1 + Math.sin(this.t * (1.7 + this.phase * 0.35)) * 0.055;
     this.core.scale.set(corePulse, corePulse, 1 + (corePulse - 1) * 1.35);
     this.crownBand.rotation.z += dt * (0.12 + this.phase * 0.04);
     for (let i = 0; i < this.heatVents.length; i++) {
       const vent = this.heatVents[i];
-      vent.scale.z = 1 + Math.sin(this.t * 3.1 + i) * 0.12;
-      vent.scale.y = 1 + Math.sin(this.t * 2.2 + i * 0.5) * 0.05;
+      vent.scale.z = 1 + Math.sin(this.t * 3.1 + i) * 0.12 + this.chargeAmt * 0.45;
+      vent.scale.y = 1 + Math.sin(this.t * 2.2 + i * 0.5) * 0.05 + this.chargeAmt * 0.2;
     }
     for (let i = 0; i < this.armorBands.length; i++) {
       const band = this.armorBands[i];
       band.rotation.x += Math.sin(this.t * 0.9 + i) * dt * 0.015;
     }
 
-    // Fist slam animation
+    // Fist slam animation — the whole arm rises with the fist so they stay joined,
+    // then drives down on the commit. Idle, the arms breathe a slow heave.
     this.fistAnim = Math.max(0, this.fistAnim - dt * 2.2);
-    const fistY = 1.0 + Math.sin(this.fistAnim * Math.PI) * 1.6;
-    this.fistL.position.y = fistY;
-    this.fistR.position.y = fistY;
-    const fistSquash = Math.sin(this.fistAnim * Math.PI);
+    const raise = Math.sin(this.fistAnim * Math.PI);
+    const idleHeave = Math.sin(this.t * 1.3) * 0.12;
+    this.fistL.position.y = 1.0 + raise * 1.6 + idleHeave;
+    this.fistR.position.y = this.fistL.position.y;
+    this.armL.position.y = 2.6 + raise * 0.85 + idleHeave * 0.6;
+    this.armR.position.y = this.armL.position.y;
+    this.armL.rotation.z = 0.25 + raise * 0.18;
+    this.armR.rotation.z = -0.25 - raise * 0.18;
+    const fistSquash = raise;
     this.fistL.scale.set(1 + fistSquash * 0.08, 1 - fistSquash * 0.05, 1 + fistSquash * 0.08);
     this.fistR.scale.copy(this.fistL.scale);
 
@@ -527,18 +576,21 @@ export class Colossus extends Enemy {
       case "idle":
         if (this.timer <= 0) {
           this.attackPick++;
-          // Seal the carapace (invulnerable) for a close ring slam every 4th action.
-          if (this.attackPick % 4 === 3) this.beginGuard();
-          else if (this.phase >= 2 && this.attackPick % 3 === 0) this.beginTectonic();
-          else if (this.phase >= 2 && this.attackPick % 3 === 2) this.beginMines();
+          const k = this.attackPick;
+          // Seal the carapace (invulnerable) for a close ring slam every 5th action.
+          if (k % 5 === 4) this.beginGuard();
+          // A radial magma nova every ~3rd action keeps bolts in the air to weave.
+          else if (k % 3 === 1) this.beginNova();
+          else if (this.phase >= 2 && k % 4 === 2) this.beginTectonic();
+          else if (this.phase >= 2 && k % 4 === 0) this.beginMines();
           else this.beginPoundSeq();
         }
         break;
       case "guard":
         if (this.timer <= 0) {
-          this.wardShock(5.5, 20, 0xff5522);
+          this.wardShock(6.4, 22, 0xff5522);
           this.state = "recover";
-          this.timer = 0.7;
+          this.timer = 0.58;
         }
         break;
       case "poundSeq":
@@ -561,11 +613,19 @@ export class Colossus extends Enemy {
           this.timer = 0.72;
         }
         break;
+      case "novaTell":
+        if (this.timer <= 0) {
+          this.fireNova();
+          this.state = "recover";
+          this.timer = 0.55;
+        }
+        break;
       case "recover":
       case "phaseShift":
         if (this.timer <= 0) {
           this.state = "idle";
-          this.timer = Math.max(0.28, 0.9 - this.phase * 0.2);
+          // Quicker between attacks — the mountain barely pauses now.
+          this.timer = Math.max(0.18, 0.62 - this.phase * 0.18);
         }
         break;
     }

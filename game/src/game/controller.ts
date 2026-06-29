@@ -159,7 +159,7 @@ export class Controller {
         player.animDodge = null;
       }
     } else if (this.externalMoveTimer <= 0) {
-      const target = player.hero.speed * speedMult * this.ctx.overdrive.moveSpeedMult;
+      const target = player.hero.speed * speedMult;
       this.vel.x = damp(this.vel.x, ix * target, 11, dt);
       this.vel.y = damp(this.vel.y, iz * target, 11, dt);
     }

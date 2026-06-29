@@ -87,40 +87,6 @@ export function clearRunSave(): void {
   } catch { /* ignore */ }
 }
 
-// --- Daily challenge best (per-seed), kept tiny and self-contained.
-const DAILY_KEY = "rh3v2-daily";
-export interface DailyBest {
-  seed: number;
-  kills: number;
-  time: number;
-  won: boolean;
-}
-
-/** A stable integer seed for today's daily challenge. */
-export function dailySeed(): number {
-  const d = new Date();
-  return (d.getFullYear() * 372 + (d.getMonth() + 1) * 31 + d.getDate()) >>> 0;
-}
-
-export function getDailyBest(seed: number): DailyBest | null {
-  try {
-    const raw = localStorage.getItem(DAILY_KEY);
-    if (raw) {
-      const d = JSON.parse(raw) as DailyBest;
-      if (d.seed === seed) return d;
-    }
-  } catch { /* ignore */ }
-  return null;
-}
-
-export function recordDailyBest(seed: number, kills: number, time: number, won: boolean): void {
-  const prev = getDailyBest(seed);
-  const next: DailyBest = prev
-    ? { seed, kills: Math.max(prev.kills, kills), time: won ? (prev.won ? Math.min(prev.time, time) : time) : prev.time, won: prev.won || won }
-    : { seed, kills, time, won };
-  try { localStorage.setItem(DAILY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-}
-
 const KEY = "rh3v2-profile";
 
 /** The base game: all 8 original cards + 5 relics + The Blade, free from the start. */
@@ -160,23 +126,23 @@ export interface Milestone {
 // so new cards, relics, and blessings unspool slowly over many runs. Story-paced
 // act-clear unlocks are left as-is so each act still earns its reward.
 export const MILESTONES: Milestone[] = [
-  { id: "slayer-25", desc: "Slay 65 enemies", unlocks: ["card:sunder"], check: (p) => p.kills >= 65 },
+  { id: "slayer-25", desc: "Slay 120 enemies", unlocks: ["card:sunder"], check: (p) => p.kills >= 120 },
   { id: "act1-clear", desc: "Defeat the Pit Warden", unlocks: ["card:meteor-call", "card:bleeding-edge"], check: (p) => p.actsCleared >= 1 },
   { id: "slayer-150", desc: "Slay 450 enemies", unlocks: ["relic:frost-chord"], check: (p) => p.kills >= 450 },
   { id: "dodge-master", desc: "26 perfect dodges in one run", unlocks: ["relic:adrenal-surge"], check: (_p, run) => !!run && run.perfectDodges >= 26 },
   { id: "untouchable", desc: "Clear Act I taking 60 damage or less", unlocks: ["relic:ironclad"], check: (p, run) => p.actsCleared >= 1 && !!run && run.actReached >= 2 && run.damageTaken <= 60 },
-  { id: "streak-8", desc: "Reach an 11-kill streak", unlocks: ["card:gravity-well"], check: (p, run) => p.bestStreak >= 11 || (!!run && run.bestStreak >= 11) },
+  { id: "streak-8", desc: "Reach a 15-kill streak", unlocks: ["card:gravity-well"], check: (p, run) => p.bestStreak >= 15 || (!!run && run.bestStreak >= 15) },
   { id: "act2-clear", desc: "Defeat the Spire Caster", unlocks: ["card:storm-conduit", "relic:berserker-sigil"], check: (p) => p.actsCleared >= 2 },
-  { id: "crash-20", desc: "Crash your tempo 55 times", unlocks: ["card:charged-lance"], check: (p) => p.crashes >= 55 },
+  { id: "crash-20", desc: "Crash your tempo 95 times", unlocks: ["card:charged-lance"], check: (p) => p.crashes >= 95 },
   { id: "slayer-400", desc: "Slay 1100 enemies", unlocks: ["relic:bulwark-idol"], check: (p) => p.kills >= 1100 },
   { id: "first-win", desc: "Seal the Rift — win a full run", unlocks: ["card:ember-wave", "relic:chain-amulet"], check: (p) => p.wins >= 1 },
   // --- Heroes (each unlocks its signature, hero-locked card alongside it)
   { id: "hero-bulwark", desc: "Defeat the Pit Warden", unlocks: ["hero:bulwark", "card:shield-bash"], check: (p) => p.actsCleared >= 1 },
   { id: "hero-sparkmage", desc: "Defeat the Spire Caster", unlocks: ["hero:sparkmage", "card:singularity"], check: (p) => p.actsCleared >= 2 },
   // --- Expansion II content
-  { id: "streak-12", desc: "Reach a 16-kill streak", unlocks: ["card:blade-cyclone"], check: (p, run) => p.bestStreak >= 16 || (!!run && run.bestStreak >= 16) },
-  { id: "dodge-50", desc: "140 lifetime perfect dodges", unlocks: ["card:riposte"], check: (p) => p.perfectDodges >= 140 },
-  { id: "crash-35", desc: "Crash your tempo 95 times", unlocks: ["card:tempo-theft"], check: (p) => p.crashes >= 95 },
+  { id: "streak-12", desc: "Reach a 22-kill streak", unlocks: ["card:blade-cyclone"], check: (p, run) => p.bestStreak >= 22 || (!!run && run.bestStreak >= 22) },
+  { id: "dodge-50", desc: "210 lifetime perfect dodges", unlocks: ["card:riposte"], check: (p) => p.perfectDodges >= 210 },
+  { id: "crash-35", desc: "Crash your tempo 150 times", unlocks: ["card:tempo-theft"], check: (p) => p.crashes >= 150 },
   { id: "second-seal", desc: "Seal the Rift three times", unlocks: ["card:starfall"], check: (p) => p.wins >= 3 },
   { id: "veteran-5", desc: "Brave the Rift 14 times", unlocks: ["relic:second-wind"], check: (p) => p.runs >= 14 },
   { id: "slayer-40-run", desc: "Slay 90 enemies in one run", unlocks: ["relic:thorn-plate"], check: (_p, run) => !!run && run.kills >= 90 },
@@ -187,21 +153,21 @@ export const MILESTONES: Milestone[] = [
   { id: "slayer-300", desc: "Slay 850 enemies", unlocks: ["hero:reaver", "card:rend-boomerang"], check: (p) => p.kills >= 850 },
   { id: "dodge-75", desc: "200 lifetime perfect dodges", unlocks: ["hero:tempest", "card:tempest-storm"], check: (p) => p.perfectDodges >= 200 },
   { id: "third-seal", desc: "Seal the Rift five times", unlocks: ["card:spectral-volley"], check: (p) => p.wins >= 5 },
-  { id: "veteran-10", desc: "Brave the Rift 26 times", unlocks: ["card:glacial-lance"], check: (p) => p.runs >= 26 },
-  { id: "veteran-15", desc: "Brave the Rift 38 times", unlocks: ["card:seismic-slam"], check: (p) => p.runs >= 38 },
-  { id: "streak-15", desc: "Reach a 20-kill streak", unlocks: ["card:warcry"], check: (p, run) => p.bestStreak >= 20 || (!!run && run.bestStreak >= 20) },
-  { id: "slayer-1200", desc: "Slay 3100 enemies", unlocks: ["card:soul-harvest"], check: (p) => p.kills >= 3100 },
+  { id: "veteran-10", desc: "Brave the Rift 34 times", unlocks: ["card:glacial-lance"], check: (p) => p.runs >= 34 },
+  { id: "veteran-15", desc: "Brave the Rift 50 times", unlocks: ["card:seismic-slam"], check: (p) => p.runs >= 50 },
+  { id: "streak-15", desc: "Reach a 28-kill streak", unlocks: ["card:warcry"], check: (p, run) => p.bestStreak >= 28 || (!!run && run.bestStreak >= 28) },
+  { id: "slayer-1200", desc: "Slay 4400 enemies", unlocks: ["card:soul-harvest"], check: (p) => p.kills >= 4400 },
   { id: "slayer-600b", desc: "Slay 1600 enemies", unlocks: ["relic:molten-heart"], check: (p) => p.kills >= 1600 },
   { id: "crash-75", desc: "Crash your tempo 200 times", unlocks: ["relic:siphon-sigil"], check: (p) => p.crashes >= 200 },
   { id: "dodge-100", desc: "260 lifetime perfect dodges", unlocks: ["relic:tempo-capacitor"], check: (p) => p.perfectDodges >= 260 },
   { id: "boss-6", desc: "Slay 14 wardens", unlocks: ["relic:executioner"], check: (p) => p.bossesKilled >= 14 },
   { id: "rich-4000", desc: "Earn 10500 lifetime shards", unlocks: ["relic:rampart"], check: (p) => p.shardsEarned >= 10500 },
   // --- Expansion IV content (Act V + new cards)
-  { id: "slayer-60", desc: "Slay 180 enemies", unlocks: ["card:seeker-swarm"], check: (p) => p.kills >= 180 },
+  { id: "slayer-60", desc: "Slay 320 enemies", unlocks: ["card:seeker-swarm"], check: (p) => p.kills >= 320 },
   { id: "act3-clear", desc: "Defeat the Colossus", unlocks: ["card:flame-channel"], check: (p) => p.actsCleared >= 3 },
-  { id: "veteran-3", desc: "Brave the Rift 7 times", unlocks: ["card:decoy-totem"], check: (p) => p.runs >= 7 },
-  { id: "rich-800", desc: "Earn 2200 lifetime shards", unlocks: ["card:leech-orb"], check: (p) => p.shardsEarned >= 2200 },
-  { id: "streak-10", desc: "Reach a 14-kill streak", unlocks: ["card:tempo-edge"], check: (p, run) => p.bestStreak >= 14 || (!!run && run.bestStreak >= 14) },
+  { id: "veteran-3", desc: "Brave the Rift 12 times", unlocks: ["card:decoy-totem"], check: (p) => p.runs >= 12 },
+  { id: "rich-800", desc: "Earn 3600 lifetime shards", unlocks: ["card:leech-orb"], check: (p) => p.shardsEarned >= 3600 },
+  { id: "streak-10", desc: "Reach a 18-kill streak", unlocks: ["card:tempo-edge"], check: (p, run) => p.bestStreak >= 18 || (!!run && run.bestStreak >= 18) },
   // --- Expansion V: status-combo relics + tiers
   { id: "slayer-500", desc: "Slay 1350 enemies", unlocks: ["relic:shatterglass"], check: (p) => p.kills >= 1350 },
   { id: "crash-60", desc: "Crash your tempo 160 times", unlocks: ["relic:hex-brand"], check: (p) => p.crashes >= 160 },
@@ -209,7 +175,11 @@ export const MILESTONES: Milestone[] = [
   { id: "fourth-seal", desc: "Seal the Rift seven times", unlocks: ["relic:overcharger"], check: (p) => p.wins >= 7 },
   { id: "streak-20", desc: "Reach a 26-kill streak", unlocks: ["relic:tempo-engine"], check: (p, run) => p.bestStreak >= 26 || (!!run && run.bestStreak >= 26) },
   { id: "veteran-20", desc: "Brave the Rift 48 times", unlocks: ["relic:featherbone"], check: (p) => p.runs >= 48 },
-  { id: "hero-revenant", desc: "Slay 2600 enemies", unlocks: ["hero:revenant"], check: (p) => p.kills >= 2600 },
+  { id: "hero-revenant", desc: "Slay 2600 enemies", unlocks: ["hero:revenant", "card:grave-harvest"], check: (p) => p.kills >= 2600 },
+  // --- Expansion V cards: gated behind sustained play so they unspool slowly.
+  { id: "slayer-220", desc: "Slay 600 enemies", unlocks: ["card:thunderclap"], check: (p) => p.kills >= 600 },
+  { id: "dodge-130", desc: "320 lifetime perfect dodges", unlocks: ["card:frost-lattice"], check: (p) => p.perfectDodges >= 320 },
+  { id: "veteran-22", desc: "Brave the Rift 44 times", unlocks: ["card:bulwark-breaker"], check: (p) => p.runs >= 44 },
   // --- Run-start blessings: locked at first, earned slowly through play.
   { id: "bless-vigor", desc: "Brave the Rift 5 times", unlocks: ["blessing:vigor"], check: (p) => p.runs >= 5 },
   { id: "bless-arsenal", desc: "Defeat the Spire Caster", unlocks: ["blessing:arsenal"], check: (p) => p.actsCleared >= 2 },

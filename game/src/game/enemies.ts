@@ -1031,7 +1031,7 @@ export abstract class Enemy {
     const dz = tz - this.pos.z;
     const d = Math.hypot(dx, dz);
     if (d > 0.05) {
-      const sp = this.speed * speedScale * this.affixSpeedMult * (this.kind === "boss" ? 1 : this.ctx.difficulty.enemySpeedMult) * this.ctx.overdrive.enemySpeedMult;
+      const sp = this.speed * speedScale * this.affixSpeedMult * (this.kind === "boss" ? 1 : this.ctx.difficulty.enemySpeedMult);
       this.pos.x += (dx / d) * sp * dt;
       this.pos.z += (dz / d) * sp * dt;
       this.heading = dampAngle(this.heading, Math.atan2(dx, dz), 8, dt);
@@ -1755,15 +1755,17 @@ export class EnemyManager {
         const b = list[j];
         const dx = b.pos.x - a.pos.x;
         const dz = b.pos.z - a.pos.z;
-        const d = Math.hypot(dx, dz);
         const min = a.radius + b.radius;
-        if (d > 0.001 && d < min) {
-          const push = ((min - d) / d) * 0.5;
-          a.pos.x -= dx * push;
-          a.pos.z -= dz * push;
-          b.pos.x += dx * push;
-          b.pos.z += dz * push;
-        }
+        // Squared-distance early-out: most pairs don't overlap, so skip the sqrt
+        // entirely and only take it on the rare actual-overlap case below.
+        const d2 = dx * dx + dz * dz;
+        if (d2 <= 1e-6 || d2 >= min * min) continue;
+        const d = Math.sqrt(d2);
+        const push = ((min - d) / d) * 0.5;
+        a.pos.x -= dx * push;
+        a.pos.z -= dz * push;
+        b.pos.x += dx * push;
+        b.pos.z += dz * push;
       }
     }
   }
