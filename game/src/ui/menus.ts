@@ -393,7 +393,11 @@ export class Menus {
     s.querySelector('[data-act="exit-game"]')?.addEventListener("click", () =>
       this.confirm("Exit Rogue Hero III?", "Your run is saved — Continue Run will resume it.", () => this.cb.onQuit(), () => this.showMain()));
     s.querySelector('[data-act="continue"]')?.addEventListener("click", () => this.cb.onContinueRun());
-    s.querySelector('[data-act="start"]')!.addEventListener("click", () => this.cb.onNewRun());
+    s.querySelector('[data-act="start"]')!.addEventListener("click", () => {
+      // A saved checkpoint is real progress — never let one misclick eat it.
+      if (hasSave) this.confirm("Abandon the saved run?", "Starting a new run erases your Continue checkpoint.", () => this.cb.onNewRun(), () => this.showMain());
+      else this.cb.onNewRun();
+    });
     s.querySelector('[data-act="armory"]')!.addEventListener("click", () => this.showArmory(() => this.showMain()));
     s.querySelector('[data-act="progress"]')!.addEventListener("click", () => this.showProgress(() => this.showMain()));
     s.querySelector('[data-act="settings"]')!.addEventListener("click", () => this.showSettings(() => this.showMain()));

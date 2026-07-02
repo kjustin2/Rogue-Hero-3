@@ -212,7 +212,12 @@ export abstract class Enemy {
 
   /** Force first-time visual sub-objects (the ground glow) into the scene so their
    *  shader programs compile during warm-up, not as a mid-fight hitch on first spawn. */
-  warmVisuals(): void { this.ensureGroundGlow(); }
+  warmVisuals(): void {
+    this.ensureGroundGlow();
+    // Show the HP-bar sprites through the warm frame — the map-less sprite program
+    // is distinct from the textured one, and otherwise compiles on the first enemy hit.
+    this.hpBg.visible = this.hpFill.visible = true;
+  }
 
   protected registerFlash(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
     this.flashMats.push({ mat, baseEmissive: mat.emissive.clone(), baseIntensity: mat.emissiveIntensity });
@@ -1673,16 +1678,26 @@ export class EnemyManager {
    * Boot warm-up: build one of every roster enemy off-screen so the renderer
    * compiles their shader variants NOW (during load) instead of on first spawn
    * mid-fight — a real-GPU first-use compile shows up as a frame hitch. The
-   * dummies are added to the scene, compiled via Stage.warmUp(), then disposed.
+   * dummies stay in the scene forever, parked 1000 units out (frustum-culled,
+   * zero draw cost, never ticked — they're not in `enemies`): disposing them
+   * would release the just-compiled GL programs (three refcounts programs per
+   * material), and the first real spawn would pay the compile again.
    */
   precompile(): void {
     const dummies: Enemy[] = [];
     for (const kind of REGISTRY.keys()) {
       try { dummies.push(makeEnemy(kind, this.ctx, 0, -1000)); } catch { /* skip a bad ctor */ }
     }
-    for (const e of dummies) e.warmVisuals(); // ground glow into the scene before the compile
+    const p = this.ctx.player.pos; // always centered in frame, whatever the camera mode
+    for (const e of dummies) {
+      e.warmVisuals(); // ground glow into the scene before the compile
+      // Must sit inside the frustum for the composer warm frame — the composer-target
+      // program variant (srgb-linear) only compiles for objects actually drawn.
+      e.root.position.set(p.x, 0.6, p.z);
+      e.root.scale.setScalar(0.02);
+    }
     this.ctx.stage.warmUp(); // compiles the whole scene, including the dummies just added
-    for (const e of dummies) e.dispose();
+    for (const e of dummies) e.root.position.set(0, 0, -1000); // park off-arena, culled forever
   }
 
   living(): Enemy[] {

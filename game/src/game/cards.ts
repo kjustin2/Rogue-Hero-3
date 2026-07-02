@@ -352,7 +352,13 @@ export class CardCaster {
   precompile(): void {
     const scene = this.ctx.stage.scene;
     const root = new THREE.Group();
-    root.position.set(0, -1000, 0);
+    // The warm meshes must be INSIDE the camera frustum for the composer warm frame:
+    // renderer.compile() only builds the canvas-target program variant (srgb+ACES);
+    // the in-combat variant (composer target: srgb-linear, no tonemap) compiles only
+    // when the object is actually DRAWN through the composer — culled = not warmed.
+    // The player is always centered in frame, whatever camera mode is active.
+    root.position.set(this.ctx.player.pos.x, 1.1, this.ctx.player.pos.z);
+    root.scale.setScalar(0.02); // sub-pixel for the one warm frame
     scene.add(root);
     const add = (mesh: THREE.Object3D): void => {
       mesh.visible = true;
@@ -383,17 +389,28 @@ export class CardCaster {
       new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-1, 1, 0), new THREE.Vector3(1, 1.2, 0)]),
       new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 1 }),
     ));
+    // Sprite program (projectile glow halos): no Sprite is drawn until the first
+    // shot, so its GL program would otherwise compile mid-fight.
+    const spriteCv = document.createElement("canvas");
+    spriteCv.width = spriteCv.height = 2;
+    add(new THREE.Sprite(new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(spriteCv), transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
+    })));
+    // Slash-arc program: flash one REAL pooled slash arc through the warm frame —
+    // its double-sided additive program is distinct, and the pooled material lives
+    // forever in Combat, so warming the actual mesh keeps the program pinned.
+    this.ctx.combat.slashVisual(Math.PI / 2, 1.6, false);
+    // Sword-trail ribbon: a custom ShaderMaterial that's invisible until the first
+    // swing — prime it so its program compiles now instead of mid-combo.
+    this.ctx.trail.warm(this.ctx.player.pos.x, this.ctx.player.pos.z);
 
     this.ctx.stage.warmUp();
-    scene.remove(root);
-    root.traverse((o) => {
-      if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
-        o.geometry.dispose();
-        const mat = o.material as THREE.Material | THREE.Material[];
-        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-        else mat.dispose();
-      }
-    });
+    // Keep the warm meshes alive (hidden): disposing them would release the
+    // just-compiled GL programs, and the first real cast of a card whose material
+    // archetype lives only here (lightning lines, additive orbs, sprites, emissive
+    // totems) would pay the synchronous compile again — the "card hitch" class.
+    root.visible = false;
+    root.position.set(0, -1000, 0);
   }
 
   /** Apply a damage-over-time stack (Bleeding Edge, Ember Wave burns). */

@@ -66,6 +66,17 @@ export class SwordTrail {
     (this.mat.uniforms.uColor.value as THREE.Color).set(c);
   }
 
+  /** Prime two dummy segments so the boot warm frame draws (and compiles) the
+   *  ribbon's custom shader — otherwise the first real swing pays the compile.
+   *  The segments age out within SEG_LIFE on the next live updates. */
+  warm(x: number, z: number): void {
+    const tip = new THREE.Vector3(x, 1.5, z);
+    const base = new THREE.Vector3(x, 0.9, z);
+    this.update(0, tip, base, true);
+    tip.x += 0.05;
+    this.update(0.001, tip, base, true);
+  }
+
   /** The i-th live segment, oldest-first (i in 0..count-1). */
   private segAt(i: number): Seg { return this.pool[(this.head + i) % MAX_SEGS]; }
 
