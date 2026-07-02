@@ -682,7 +682,7 @@ export class Menus {
               <b>W A S D</b><span>Move</span>
               <b>MOUSE</b><span>Aim — you always face the cursor</span>
               <b>LMB</b><span>Sword combo; <i>hold</i> to wind up a heavy</span>
-              <b>SPACE</b><span>Dodge — dodge <i>through</i> a hit for a <span style="color:#66ffee">PERFECT DODGE</span>; strike as a blow lands to <span style="color:#ffe066">PARRY</span></span>
+              <b>SPACE</b><span>Dodge — dodge <i>through</i> a hit for a <span style="color:#66ffee">PERFECT DODGE</span>, then strike back fast: the next blow is a <span style="color:#66ffee">COUNTER</span>; strike as a blow lands to <span style="color:#ffe066">PARRY</span></span>
               <b>1 · 2 · 3</b><span>Cast cards</span>
               <b>F</b><span>CRASH — at 85+ tempo, detonate your heat</span>
               <b>ESC</b><span>Pause</span>

@@ -76,6 +76,10 @@ export const CARDS: CardDef[] = [
   { id: "bulwark-breaker", name: "Bulwark Breaker", desc: "Slam the ground — a heavy shock hurls the pack back and raises a barrier per foe hit.", upDesc: "Bigger shock, harder shove, a much stouter barrier.", cooldown: 9, color: "#7fd0ff", glow: 0x7fd0ff, icon: "⬢", rarity: "uncommon", tempo: 8, hero: "bulwark" },
   { id: "thunderclap", name: "Thunderclap", desc: "A point-blank shock that hammers and stuns everything around you.", upDesc: "Bigger blast, harder hit, a longer stun.", cooldown: 7, color: "#ffe066", glow: 0xffe066, icon: "↯", rarity: "uncommon", tempo: 7 },
   { id: "frost-lattice", name: "Frost Lattice", desc: "Spears of frost lance out in four directions, freezing all they cross.", upDesc: "An eight-point star with a deeper freeze.", cooldown: 8, color: "#bfeaff", glow: 0xbfeaff, icon: "❅", rarity: "uncommon", tempo: 6 },
+  // --- Expansion VI: the pull hook, an orbiting summon, and a bleed detonator
+  { id: "rift-hook", name: "Rift Hook", desc: "Lash rift-tethers into the pack ahead and yank it to your feet.", upDesc: "Hooks all around you, hits harder, and chills what arrives.", cooldown: 8, color: "#9a8fff", glow: 0x9a8fff, icon: "☍", rarity: "uncommon", tempo: 7 },
+  { id: "blade-spirit", name: "Blade Spirit", desc: "Summon a spectral blade that orbits you, cutting all it crosses.", upDesc: "A faster, fiercer blade that lingers longer.", cooldown: 10, color: "#8fe8ff", glow: 0x8fe8ff, icon: "❂", rarity: "uncommon", tempo: 6 },
+  { id: "hemorrhage", name: "Hemorrhage", desc: "Rupture every wound near you — each bleed erupts all at once.", upDesc: "A wider rupture that hits harder per wound.", cooldown: 8, color: "#ff4d66", glow: 0xff4d66, icon: "❥", rarity: "rare", tempo: 6 },
 ];
 
 /** Build-archetype tags per card — assigned once below so the literals stay readable. */
@@ -94,6 +98,7 @@ const CARD_TAGS: Record<string, string[]> = {
   "tempo-edge": ["force"],
   "grave-harvest": ["bleed", "heal"], "bulwark-breaker": ["guard", "force"],
   "thunderclap": ["lightning", "force"], "frost-lattice": ["frost"],
+  "rift-hook": ["force", "arcane"], "blade-spirit": ["summon", "force"], "hemorrhage": ["bleed"],
 };
 for (const c of CARDS) c.tags = CARD_TAGS[c.id] ?? [];
 
@@ -248,6 +253,26 @@ interface Boomerang {
   mat: THREE.MeshStandardMaterial;
 }
 
+/** An enemy being reeled to the player's feet (Rift Hook). */
+interface Yank {
+  e: Enemy;
+  t: number;
+  /** Honed hooks chill what arrives. */
+  chill: boolean;
+}
+
+/** A spectral blade orbiting the player (Blade Spirit). */
+interface SpiritBlade {
+  angle: number;
+  life: number;
+  dmg: number;
+  spin: number;
+  tickAcc: number;
+  trailAcc: number;
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+}
+
 export class CardCaster {
   private mines: Mine[] = [];
   private phantoms: Phantom[] = [];
@@ -280,6 +305,8 @@ export class CardCaster {
   private totems: Totem[] = [];
   private leeches: LeechOrb[] = [];
   private boomerangs: Boomerang[] = [];
+  private yanks: Yank[] = [];
+  private spirits: SpiritBlade[] = [];
 
   get riposteActive(): boolean {
     return this.riposteTimer > 0;
@@ -1289,6 +1316,82 @@ export class CardCaster {
         this.ctx.stage.punch(0.12);
         return true;
       }
+
+      case "rift-hook": {
+        // The pull verb: tether the pack and reel it to your feet — arrivals land
+        // Vulnerable, primed for point-blank novas and Shatterglass setups.
+        const range = upgraded ? 11 : 9;
+        const arc = upgraded ? Math.PI * 2 : (110 * Math.PI) / 180;
+        const dmg = upgraded ? 14 : 8;
+        let hooked = 0;
+        for (const e of enemies.living()) {
+          if (e.kind === "boss") continue;
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          const d = Math.hypot(dx, dz);
+          if (d > range + e.radius || d < 1.6) continue;
+          if (arc < Math.PI * 2 && Math.abs(angleDelta(player.facing, Math.atan2(dx, dz))) > arc / 2) continue;
+          combat.dealDamage(e, dmg, { kbX: -dx, kbZ: -dz, kb: 2, countCombo: true });
+          this.yanks.push({ e, t: 0.45, chill: upgraded });
+          this.lightningVisual([{ x: player.pos.x, z: player.pos.z }, { x: e.pos.x, z: e.pos.z }], 0x9a8fff);
+          hooked++;
+        }
+        if (!hooked) return false; // nothing to hook — don't burn the cooldown
+        fx.ring(player.pos.x, player.pos.z, { radius: 2.4, color: 0x9a8fff, duration: 0.4 });
+        this.ctx.cam.kick(-Math.sin(player.facing), -Math.cos(player.facing), 2.6);
+        this.ctx.cam.addTrauma(0.14);
+        return true;
+      }
+
+      case "blade-spirit": {
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0x8fe8ff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(this.boomerangGeo, mat);
+        mesh.position.set(player.pos.x, 1.1, player.pos.z);
+        this.ctx.stage.scene.add(mesh);
+        this.spirits.push({
+          angle: player.facing, life: upgraded ? 9 : 6, dmg: upgraded ? 13 : 9,
+          spin: upgraded ? 3.4 : 2.6, tickAcc: 0, trailAcc: 0, mesh, mat,
+        });
+        fx.ring(player.pos.x, player.pos.z, { radius: 2.7, color: 0x8fe8ff, duration: 0.45 });
+        return true;
+      }
+
+      case "hemorrhage": {
+        // Bleed detonator: every wound near you erupts at once — its remaining
+        // ticks are consumed and paid out as one heavy burst.
+        const R = upgraded ? 7 : 5.5;
+        const mult = upgraded ? 1.6 : 1.2;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x;
+          const dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) > R + e.radius) continue;
+          let pooled = 0;
+          for (let i = this.bleeds.length - 1; i >= 0; i--) {
+            const b = this.bleeds[i];
+            if (b.enemy !== e) continue;
+            pooled += b.ticks * b.dmg;
+            this.bleeds.splice(i, 1);
+          }
+          const ruptured = pooled > 0;
+          combat.dealDamage(e, (upgraded ? 16 : 10) + Math.round(pooled * mult), {
+            kbX: dx, kbZ: dz, kb: ruptured ? 6 : 3, heavy: ruptured, countCombo: true,
+          });
+          if (ruptured) {
+            fx.burst({
+              x: e.pos.x, y: 1.0, z: e.pos.z,
+              count: 18, color: [0xff4d66, 0xb8203a, 0xffffff],
+              speed: [3, 10], up: 0.6, size: [0.35, 0.8], life: [0.2, 0.5], gravity: -3, drag: 3,
+            });
+            fx.ring(e.pos.x, e.pos.z, { radius: 1.8, color: 0xff4d66, duration: 0.35 });
+          }
+        }
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0xff4d66, duration: 0.5 });
+        this.ctx.stage.punch(0.18);
+        this.ctx.cam.addTrauma(0.18);
+        return true;
+      }
     }
     return false;
   }
@@ -1339,9 +1442,9 @@ export class CardCaster {
     this.ctx.events.emit("SHIELD_BROKEN", {});
   }
 
-  private lightningVisual(points: { x: number; z: number }[]): void {
+  private lightningVisual(points: { x: number; z: number }[], color = 0xffe066): void {
     const scene = this.ctx.stage.scene;
-    const mat = new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 1 });
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 1 });
     const verts: THREE.Vector3[] = [];
     for (let i = 0; i < points.length - 1; i++) {
       const a = points[i];
@@ -1355,7 +1458,7 @@ export class CardCaster {
       }
       this.ctx.fx.burst({
         x: b.x, y: 1, z: b.z,
-        count: 10, color: 0xffe066, speed: [2, 6], up: 0.6, size: [0.3, 0.6], life: [0.15, 0.35], gravity: -3, drag: 3,
+        count: 10, color, speed: [2, 6], up: 0.6, size: [0.3, 0.6], life: [0.15, 0.35], gravity: -3, drag: 3,
       });
     }
     const geo = new THREE.BufferGeometry().setFromPoints(verts);
@@ -1410,6 +1513,10 @@ export class CardCaster {
       this.ctx.stage.scene.remove(b.mesh);
       b.mat.dispose();
     }
+    for (const sp of this.spirits) {
+      this.ctx.stage.scene.remove(sp.mesh);
+      sp.mat.dispose();
+    }
     this.mines = [];
     this.phantoms = [];
     this.wells = [];
@@ -1424,6 +1531,8 @@ export class CardCaster {
     this.totems = [];
     this.leeches = [];
     this.boomerangs = [];
+    this.yanks = [];
+    this.spirits = [];
     this.riposteTimer = 0;
     this.conduitTimer = 0;
     this.aegisTimer = 0;
@@ -1840,6 +1949,71 @@ export class CardCaster {
         this.boomerangs.splice(i, 1);
         this.ctx.stage.scene.remove(b.mesh);
         b.mat.dispose();
+      }
+    }
+
+    // Rift Hook: reel hooked foes to the player's feet; arrivals land Vulnerable
+    for (let i = this.yanks.length - 1; i >= 0; i--) {
+      const y = this.yanks[i];
+      y.t -= dt;
+      const p = this.ctx.player;
+      const dx = p.pos.x - y.e.pos.x;
+      const dz = p.pos.z - y.e.pos.z;
+      const arrived = Math.hypot(dx, dz) < 2.0;
+      if (!y.e.alive || arrived || y.t <= 0) {
+        this.yanks.splice(i, 1);
+        if (y.e.alive && arrived) {
+          y.e.applyVulnerable(3, 1.25);
+          if (y.chill) y.e.freeze(1.2);
+          this.ctx.fx.burst({
+            x: y.e.pos.x, y: 1, z: y.e.pos.z, count: 8, color: [0x9a8fff, 0xffffff],
+            speed: [2, 6], up: 0.4, size: [0.3, 0.6], life: [0.15, 0.35], gravity: -2, drag: 3,
+          });
+        }
+        continue;
+      }
+      y.e.shove(dx, dz, 60 * dt);
+    }
+
+    // Blade Spirits: orbit the player, cutting everything they cross
+    for (let i = this.spirits.length - 1; i >= 0; i--) {
+      const sp = this.spirits[i];
+      sp.life -= dt;
+      sp.angle += dt * sp.spin;
+      const p = this.ctx.player;
+      const bx = p.pos.x + Math.sin(sp.angle) * 2.7;
+      const bz = p.pos.z + Math.cos(sp.angle) * 2.7;
+      sp.mesh.position.set(bx, 1.1, bz);
+      sp.mesh.rotation.y = sp.angle;
+      sp.mesh.rotation.x += dt * 7;
+      sp.mat.opacity = sp.life < 1 ? 0.9 * sp.life : 0.9;
+      sp.trailAcc += dt;
+      if (sp.trailAcc > 0.05) {
+        sp.trailAcc = 0;
+        this.ctx.fx.burst({
+          x: bx, y: 1.1, z: bz, count: 1, color: 0x8fe8ff,
+          speed: [0.2, 0.8], up: 0.2, size: [0.25, 0.45], life: [0.12, 0.28], gravity: 0, drag: 2, jitter: 0.1,
+        });
+      }
+      sp.tickAcc -= dt;
+      if (sp.tickAcc <= 0) {
+        sp.tickAcc = 0.25;
+        for (const e of this.ctx.enemies.living()) {
+          const dx = e.pos.x - bx;
+          const dz = e.pos.z - bz;
+          if (Math.hypot(dx, dz) < 1.3 + e.radius) {
+            this.ctx.combat.dealDamage(e, sp.dmg, { kbX: dx, kbZ: dz, kb: 2, countCombo: true });
+          }
+        }
+      }
+      if (sp.life <= 0) {
+        this.spirits.splice(i, 1);
+        this.ctx.stage.scene.remove(sp.mesh);
+        sp.mat.dispose();
+        this.ctx.fx.burst({
+          x: bx, y: 1.1, z: bz, count: 10, color: [0x8fe8ff, 0xffffff],
+          speed: [2, 6], up: 0.5, size: [0.3, 0.6], life: [0.15, 0.35], gravity: -1, drag: 3,
+        });
       }
     }
 

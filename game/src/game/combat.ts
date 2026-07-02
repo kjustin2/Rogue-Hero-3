@@ -60,6 +60,8 @@ export class Combat {
   private coldCrashLatch = false;
   /** Brief invulnerability after crashing. */
   private crashIframes = 0;
+  /** Counter window: a perfect dodge arms the next melee strike (bonus damage + tempo). Public for the smoke seam. */
+  counterWindow = 0;
   /** Debug god-mode: when on, all player damage is ignored (toggled via __rh3debug.godmode). */
   god = false;
   /** Enemies hit by the current swing (for combo tempo). */
@@ -104,6 +106,7 @@ export class Combat {
   clearTransient(): void {
     this.chargeT = 0;
     this.charging = false;
+    this.counterWindow = 0;
     this.stageIdx = -1;
     this.swingT = 0;
     this.buffered = false;
@@ -136,6 +139,7 @@ export class Combat {
         controller.consumePerfect();
         tempo.gain(15);
         stats.perfectDodges++;
+        this.counterWindow = 1.6;
         this.ctx.relics.onPerfectDodge();
         events.emit("PERFECT_DODGE", { x: player.pos.x, z: player.pos.z });
         this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 2.6, color: 0x66ffee, duration: 0.45 });
@@ -145,6 +149,7 @@ export class Combat {
           speed: [3, 9], up: 0.6, size: [0.4, 0.8], life: [0.25, 0.5], gravity: -2, drag: 3.5,
         });
         this.ctx.floaters.spawn(player.pos.x, 1.8, player.pos.z, "PERFECT", "tempo");
+        this.ctx.floaters.spawn(player.pos.x, 2.35, player.pos.z, "COUNTER READY", "label");
       }
       return "dodged";
     }
@@ -479,9 +484,18 @@ export class Combat {
   update(dt: number): void {
     const { input, player } = this.ctx;
     this.crashIframes = Math.max(0, this.crashIframes - dt);
+    this.counterWindow = Math.max(0, this.counterWindow - dt);
     if (!player.alive) {
       player.animSwing = null;
       return;
+    }
+
+    // Counter armed: a cyan shimmer on the hero sells the live window.
+    if (this.counterWindow > 0 && Math.random() < dt * 14) {
+      this.ctx.fx.burst({
+        x: player.pos.x, y: 1.1, z: player.pos.z, count: 1, color: 0x66ffee,
+        speed: [0.5, 1.8], up: 1.3, size: [0.25, 0.5], life: [0.2, 0.4], gravity: 0, drag: 2, jitter: 0.5,
+      });
     }
 
     // Cold crash trigger
@@ -533,10 +547,20 @@ export class Combat {
         this.struck = true;
         this.swingHits = 0;
         const hero = player.hero;
+        const counter = this.counterWindow > 0;
         const hits = this.meleeSweep(
           player.facing, stage.arc, stage.range,
-          stage.dmg * hero.meleeDmgMult, stage.kb * hero.kbMult, stage.heavy
+          stage.dmg * hero.meleeDmgMult * (counter ? 1.75 : 1), stage.kb * hero.kbMult, stage.heavy
         );
+        // Counter payoff: the armed strike lands hard — extra tempo + a clear read.
+        if (counter && hits > 0) {
+          this.counterWindow = 0;
+          this.ctx.tempo.gain(12);
+          this.ctx.floaters.spawn(player.pos.x, 2.1, player.pos.z, "COUNTER!", "crit");
+          this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 3, color: 0x66ffee, duration: 0.4 });
+          this.ctx.cam.addTrauma(0.2);
+          this.ctx.sfx.critical();
+        }
         this.comboTempoPayout(hits);
         this.spawnSlashArc(stage);
         this.ctx.sfx.swing(this.stageIdx, hits > 0);

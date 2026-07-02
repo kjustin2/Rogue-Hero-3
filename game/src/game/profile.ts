@@ -180,6 +180,10 @@ export const MILESTONES: Milestone[] = [
   { id: "slayer-220", desc: "Slay 600 enemies", unlocks: ["card:thunderclap"], check: (p) => p.kills >= 600 },
   { id: "dodge-130", desc: "320 lifetime perfect dodges", unlocks: ["card:frost-lattice"], check: (p) => p.perfectDodges >= 320 },
   { id: "veteran-22", desc: "Brave the Rift 44 times", unlocks: ["card:bulwark-breaker"], check: (p) => p.runs >= 44 },
+  // --- Expansion VI cards
+  { id: "slayer-950", desc: "Slay 950 enemies", unlocks: ["card:rift-hook"], check: (p) => p.kills >= 950 },
+  { id: "veteran-25", desc: "Brave the Rift 25 times", unlocks: ["card:blade-spirit"], check: (p) => p.runs >= 25 },
+  { id: "slayer-3400", desc: "Slay 3400 enemies", unlocks: ["card:hemorrhage"], check: (p) => p.kills >= 3400 },
   // --- Run-start blessings: locked at first, earned slowly through play.
   { id: "bless-vigor", desc: "Brave the Rift 5 times", unlocks: ["blessing:vigor"], check: (p) => p.runs >= 5 },
   { id: "bless-arsenal", desc: "Defeat the Spire Caster", unlocks: ["blessing:arsenal"], check: (p) => p.actsCleared >= 2 },
