@@ -311,7 +311,7 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   // Opening cinematic: slow orbit of the lone hero on the disc, embers drifting up,
   // the rift's words rising over a letterboxed frame.
   ctx.arena.applyTheme(THEMES.rift);
-  ctx.cam.mode = "menu";
+  ctx.cam.menuOrbit();
   ctx.fx.ambientColor = THEMES.rift.ember;
   ctx.fx.ambientRate = 18;
   const introFx = window.setInterval(() => {
@@ -353,7 +353,7 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   ctx.arena.applyTheme(theme);
   ctx.fx.ambientColor = theme.ember;
   ctx.fx.ambientRate = 16;
-  ctx.cam.mode = "menu";
+  ctx.cam.menuOrbit();
   ctx.player.pos.set(0, 0, 6);
   ctx.player.facing = Math.PI;
   const emberFx = window.setInterval(() => {
@@ -561,8 +561,9 @@ function toMenu(): void {
   ctx.player.facing = Math.PI;
   ctx.player.root.position.set(ctx.player.pos.x, ctx.player.pos.y, ctx.player.pos.z);
   ctx.player.root.rotation.y = ctx.player.facing;
-  ctx.cam.mode = "menu";
+  ctx.cam.menuOrbit();
   ctx.arena.applyTheme(THEMES.rift);
+  ctx.arena.criticalHeat = 0; // don't carry a mid-run Critical surge into the menu
   ctx.cam.snapTo(0, 5.2);
   ctx.fx.ambientColor = THEMES.rift.ember;
   // The drifting embers are a big part of the menu's "deep rift" backdrop — keep
@@ -617,8 +618,10 @@ ctx.events.on("KILL", () => {
 });
 
 // Tempo stinger: a bright rising triad the moment you reach the Critical zone.
+// The arena breathes with the player while Critical holds (rim/crystal surge).
 ctx.events.on("TEMPO_ZONE", ({ zone, prev }) => {
   if (zone === "critical" && prev !== "critical") ctx.sfx.critical();
+  ctx.arena.criticalHeat = zone === "critical" ? 1 : 0;
 });
 
 function playRoomClearFloorBeat(): void {
@@ -1361,7 +1364,9 @@ function playEnding(unlocks: UnlockedItem[]): void {
   state = "cutscene";
   ctx.input.enabled = false;
   hud.setVisible(false);
-  ctx.cam.mode = "menu";
+  // The beauty shot: a slow, close orbit of the hero who did it — held behind
+  // the ending story and the recap, instead of the raw last combat frame.
+  ctx.cam.heroOrbit(ctx.player.pos.x, ctx.player.pos.z);
   // Mercy keeps the world's light alive — the embers stay thick rather than thinning out.
   ctx.fx.ambientRate = chosenMercy ? 14 : 2;
   const heroLine = HERO_ENDING[ctx.player.hero.id];
@@ -1410,7 +1415,7 @@ ctx.events.on("PLAYER_DIED", () => {
   const unlocks = ctx.profile.recordRun("death", ctx.stats);
   window.setTimeout(() => {
     state = "dead";
-    ctx.cam.mode = "menu";
+    ctx.cam.menuOrbit();
     hud.setVisible(false);
     menus.showDeath(ctx.stats, unlocks);
     if (unlocks.length) ctx.sfx.unlockFanfare();

@@ -200,11 +200,20 @@ export class Hud {
       this.replay(this.streakEl, "streak--show");
     });
     events.on("ROOM_CLEARED", () => this.banner("ROOM CLEARED", "", "banner--clear"));
-    events.on("BOSS_INTRO", ({ name }) => {
+    events.on("BOSS_INTRO", ({ name, phases }) => {
       // The name slams in as a title card at the cutscene's materialize beat (main.ts);
       // here we just prime the boss bar to reveal once the boss has formed.
       this.bossName.textContent = name;
       this.bossFill.style.width = "100%";
+      // Phase ticks: marks where the next drama beat lands, so the shift reads as earned.
+      const wrap = this.bossFill.parentElement!;
+      wrap.querySelectorAll(".bossbar__tick").forEach((t) => t.remove());
+      for (const f of phases) {
+        const t = document.createElement("span");
+        t.className = "bossbar__tick";
+        t.style.left = `${(f * 100).toFixed(1)}%`;
+        wrap.appendChild(t);
+      }
       window.setTimeout(() => this.bossBar.classList.add("bossbar--show"), 2600);
     });
     events.on("BOSS_PHASE", ({ line }) => this.banner(line, "", "banner--boss"));

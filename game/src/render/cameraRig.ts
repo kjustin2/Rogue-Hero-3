@@ -29,6 +29,12 @@ export class CameraRig {
   private cineTarget = new THREE.Vector3();
   private cineZoom = 0.62;
   private zoom = 1;
+  // Menu-orbit framing: wide arena sweep by default; heroOrbit() pulls it in
+  // close for the victory beauty shot. Reset via menuOrbit().
+  private orbitCenter = new THREE.Vector3();
+  private orbitRadius = 26;
+  private orbitHeight = 13;
+  private orbitLookY = 1.5;
 
   private offset = new THREE.Vector3(0, 15.5, 9.6);
 
@@ -69,18 +75,36 @@ export class CameraRig {
     this.cineZoom = zoom;
   }
 
+  /** Default wide arena orbit for menus. */
+  menuOrbit(): void {
+    this.mode = "menu";
+    this.orbitCenter.set(0, 0, 0);
+    this.orbitRadius = 26;
+    this.orbitHeight = 13;
+    this.orbitLookY = 1.5;
+  }
+
+  /** Slow, close orbit around a world point — the victory beauty shot. */
+  heroOrbit(x: number, z: number): void {
+    this.mode = "menu";
+    this.orbitCenter.set(x, 0, z);
+    this.orbitRadius = 8;
+    this.orbitHeight = 3.6;
+    this.orbitLookY = 1.2;
+  }
+
   update(dt: number): void {
     this.t += dt;
 
     if (this.mode === "menu") {
       this.orbitAngle += dt * 0.08;
-      const r = 26;
+      const r = this.orbitRadius;
       this.camera.position.set(
-        Math.cos(this.orbitAngle) * r,
-        13 + Math.sin(this.t * 0.21) * 1.2,
-        Math.sin(this.orbitAngle) * r
+        this.orbitCenter.x + Math.cos(this.orbitAngle) * r,
+        this.orbitHeight + Math.sin(this.t * 0.21) * r * 0.046,
+        this.orbitCenter.z + Math.sin(this.orbitAngle) * r
       );
-      this.camera.lookAt(0, 1.5, 0);
+      this.camera.lookAt(this.orbitCenter.x, this.orbitLookY, this.orbitCenter.z);
       this.camera.fov = damp(this.camera.fov, this.baseFov, 4, dt);
       this.camera.updateProjectionMatrix();
       return;

@@ -2853,3 +2853,15 @@ body.rh-no-anim .menu-sigil {
 /* ---- hero mastery + earned cosmetics ---- */
 .hero-mastery { margin-top: 6px; font-size: 11px; letter-spacing: 1.5px; color: #ffd24a; }
 .shop-item--earned .shop-item__state { font-size: 9px; line-height: 1.35; color: #9fd2ff; letter-spacing: 0.5px; }
+
+/* ---- boss bar phase ticks ---- */
+.bossbar__wrap { position: relative; }
+.bossbar__tick {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: rgba(255, 244, 214, 0.55);
+  box-shadow: 0 0 4px rgba(255, 220, 140, 0.35);
+  pointer-events: none;
+}

@@ -959,9 +959,14 @@ export class Arena {
     this.mixTo(this.rockMat.emissive, f.crystal, t.crystal, k);
   }
 
+  /** Target 0/1 — set by the tempo system while the player holds Critical. */
+  criticalHeat = 0;
+  private heat = 0;
+
   update(dt: number): void {
     this.t += dt;
     this.skyMat.uniforms.uTime.value = this.t;
+    this.heat += (this.criticalHeat - this.heat) * Math.min(1, dt * 2.5);
 
     if (this.themeLerp < 1) {
       this.themeLerp = Math.min(1, this.themeLerp + dt * 0.7);
@@ -972,12 +977,14 @@ export class Arena {
       this.blendSettled = true;
     }
 
-    // Breathing rim + crystals + a slow grid pulse so the floor never reads as static
-    const breathe = 1.9 + Math.sin(this.t * 1.4) * 0.5;
+    // Breathing rim + crystals + a slow grid pulse so the floor never reads as static.
+    // At Critical tempo the whole arena breathes faster and hotter with the player.
+    const h = this.heat;
+    const breathe = (1.9 + Math.sin(this.t * (1.4 + h * 2.4)) * (0.5 + h * 0.5)) * (1 + h * 0.3);
     this.rimMat.emissiveIntensity = breathe;
-    this.floorMat.emissiveIntensity = 1.5 + Math.sin(this.t * 0.8) * 0.22;
+    this.floorMat.emissiveIntensity = 1.5 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.22 + h * 0.35;
     for (let i = 0; i < this.crystalMats.length; i++) {
-      this.crystalMats[i].emissiveIntensity = 1.1 + Math.sin(this.t * 1.1 + i * 1.7) * 0.45;
+      this.crystalMats[i].emissiveIntensity = 1.1 + h * 0.35 + Math.sin(this.t * (1.1 + h * 1.4) + i * 1.7) * 0.45;
     }
 
     for (const r of this.rocks) {

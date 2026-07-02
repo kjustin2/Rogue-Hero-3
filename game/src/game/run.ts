@@ -17,16 +17,18 @@ export type BossKind = "warden" | "spire" | "colossus" | "tyrant" | "unmaker" | 
 interface BossEntry {
   name: string;
   title: string;
+  /** HP fractions where the boss shifts phase (must match each class's takeDamage logic) — drives the boss-bar tick marks. */
+  phases: number[];
   make: (c: Ctx, x: number, z: number) => Enemy;
 }
 
 export const BOSSES: Record<BossKind, BossEntry> = {
-  warden: { name: "THE PIT WARDEN", title: "Keeper of the Ember Rift", make: (c, x, z) => new PitWarden(c, x, z) },
-  spire: { name: "THE SPIRE CASTER", title: "Warden of the Glass Crown", make: (c, x, z) => new SpireCaster(c, x, z) },
-  colossus: { name: "THE COLOSSUS", title: "Engine of the Core", make: (c, x, z) => new Colossus(c, x, z) },
-  tyrant: { name: "THE RIFT TYRANT", title: "The Wound Made Flesh", make: (c, x, z) => new RiftTyrant(c, x, z) },
-  unmaker: { name: "THE UNMAKER", title: "The Hollow Star", make: (c, x, z) => new Unmaker(c, x, z) },
-  echo: { name: "THE RIFT ECHO", title: "Your Reflection, Sharpened", make: (c, x, z) => new RiftEcho(c, x, z) },
+  warden: { name: "THE PIT WARDEN", title: "Keeper of the Ember Rift", phases: [0.7, 0.35], make: (c, x, z) => new PitWarden(c, x, z) },
+  spire: { name: "THE SPIRE CASTER", title: "Warden of the Glass Crown", phases: [0.7, 0.35], make: (c, x, z) => new SpireCaster(c, x, z) },
+  colossus: { name: "THE COLOSSUS", title: "Engine of the Core", phases: [0.7, 0.35], make: (c, x, z) => new Colossus(c, x, z) },
+  tyrant: { name: "THE RIFT TYRANT", title: "The Wound Made Flesh", phases: [0.66, 0.33], make: (c, x, z) => new RiftTyrant(c, x, z) },
+  unmaker: { name: "THE UNMAKER", title: "The Hollow Star", phases: [0.66, 0.33, 0.12], make: (c, x, z) => new Unmaker(c, x, z) },
+  echo: { name: "THE RIFT ECHO", title: "Your Reflection, Sharpened", phases: [0.5], make: (c, x, z) => new RiftEcho(c, x, z) },
 };
 
 export const ROMAN = ["I", "II", "III", "IV", "V"];
@@ -187,7 +189,7 @@ export class RunManager {
       const boss = BOSSES[node.bossKind];
       const bx = 0;
       const bz = -ARENA_RADIUS * 0.4;
-      ctx.events.emit("BOSS_INTRO", { name: boss.name, title: boss.title, x: bx, z: bz });
+      ctx.events.emit("BOSS_INTRO", { name: boss.name, title: boss.title, x: bx, z: bz, phases: boss.phases });
       ctx.enemies.spawnCustom((c, x, z) => {
         const e = boss.make(c, x, z);
         e.setSpawnGrace(5.0);
