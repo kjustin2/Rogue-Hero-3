@@ -351,10 +351,11 @@ export class Menus {
     const s = this.screen("screen--main");
     const p = this.ctx.profile.data;
     const unlockedCount = p.unlocks.length;
-    const draftableRelics = RELICS.filter((r) => !r.boon);
+    const draftableRelics = RELICS.filter((r) => !r.boon && !r.eventOnly);
     const totalCount = CARDS.length + draftableRelics.length;
+    const riftbreaker = p.earnedMilestones.includes("depth-15") ? ` &nbsp;·&nbsp; <span style="color:#ffd24a">✦ RIFTBREAKER</span>` : "";
     const strip = p.runs > 0
-      ? `WINS ${p.wins} &nbsp;·&nbsp; RUNS ${p.runs} &nbsp;·&nbsp; FURTHEST: ACT ${ROMAN[Math.max(0, p.furthestAct - 1)]} &nbsp;·&nbsp; ARSENAL ${unlockedCount}/${totalCount} &nbsp;·&nbsp; ◆ ${p.shards}`
+      ? `WINS ${p.wins} &nbsp;·&nbsp; RUNS ${p.runs} &nbsp;·&nbsp; FURTHEST: ACT ${ROMAN[Math.max(0, p.furthestAct - 1)]} &nbsp;·&nbsp; ARSENAL ${unlockedCount}/${totalCount} &nbsp;·&nbsp; ◆ ${p.shards}${riftbreaker}`
       : `THE RIFT AWAITS ITS FIRST CHALLENGER`;
     const hasSave = this.cb.hasSave();
     // "Exit Game" only makes sense in the desktop build — a browser tab can't be
@@ -495,7 +496,8 @@ export class Menus {
             <div class="hero-stat"><span>PWR</span>${bars(hero.bars.power)}</div>
           </div>
           <div class="hero-passive"><b>${hero.passiveName}</b> — ${hero.passiveDesc}</div>
-          <div class="hero-hand">${handIcons}</div>`
+          <div class="hero-hand">${handIcons}</div>
+          ${(this.ctx.profile.data.heroWins[hero.id] ?? 0) > 0 ? `<div class="hero-mastery">★ ${this.ctx.profile.data.heroWins[hero.id]} WIN${this.ctx.profile.data.heroWins[hero.id] === 1 ? "" : "S"}${(this.ctx.profile.data.heroBestWinDepth[hero.id] ?? 0) > 0 ? ` · BEST DEPTH ${this.ctx.profile.data.heroBestWinDepth[hero.id]}` : ""}</div>` : ""}`
         : `
           ${heroFigure(hero)}
           <div class="hero-card__icon">🔒</div>
@@ -563,11 +565,12 @@ export class Menus {
         const owned = p.ownsCosmetic(c.id);
         const equipped = p.data.equipped[slot] === c.id;
         const hex = vividHex(c.color);
+        const state = equipped ? "EQUIPPED" : owned ? "OWNED" : c.earned ? `🔒 ${c.earned}` : `◆ ${c.price}`;
         return `
-          <div class="shop-item${equipped ? " shop-item--equipped" : ""}${owned ? " shop-item--owned" : ""}" data-id="${c.id}" data-slot="${slot}" data-price="${c.price}">
+          <div class="shop-item${equipped ? " shop-item--equipped" : ""}${owned ? " shop-item--owned" : ""}${!owned && c.earned ? " shop-item--earned" : ""}" data-id="${c.id}" data-slot="${slot}" data-price="${c.price}"${c.earned ? ' data-earned="1"' : ""}>
             <div class="shop-item__swatch" style="--swatch:${hex}"></div>
             <div class="shop-item__name">${c.name}</div>
-            <div class="shop-item__state">${equipped ? "EQUIPPED" : owned ? "OWNED" : `◆ ${c.price}`}</div>
+            <div class="shop-item__state">${state}</div>
           </div>`;
       }).join("");
 
@@ -592,6 +595,9 @@ export class Menus {
         if (p.ownsCosmetic(id)) {
           p.equipCosmetic(slot, id);
           this.ctx.events.emit("UI_CLICK", {});
+        } else if (item.dataset.earned) {
+          this.ctx.sfx.deny(); // earned through play, never sold
+          return;
         } else if (p.buyCosmetic(id, price)) {
           p.equipCosmetic(slot, id);
           this.ctx.sfx.relicPickup();
@@ -610,7 +616,7 @@ export class Menus {
     const s = this.screen();
     const p = this.ctx.profile.data;
     const mins = (t: number) => `${Math.floor(t / 60)}:${Math.floor(t % 60).toString().padStart(2, "0")}`;
-    const draftableRelics = RELICS.filter((r) => !r.boon);
+    const draftableRelics = RELICS.filter((r) => !r.boon && !r.eventOnly);
 
     const gridItem = (kind: "card" | "relic" | "hero" | "blessing", def: { id: string; icon: string; name: string; color: string }): string => {
       const key = `${kind}:${def.id}`;
@@ -1262,6 +1268,12 @@ export class Menus {
     interface Vignette { title: string; text: string; choices: Choice[]; }
     const relicOffer = c.relics.draftChoices()[0] ?? null;
     const cardOffer = c.deck.hasEmptySlot ? (c.deck.draftChoices()[0] ?? null) : null;
+    const cursedPool = RELICS.filter((r) => r.cursed && !c.relics.has(r.id));
+    const cursedOffer = cursedPool.length ? c.rng.pick(cursedPool) : null;
+    // Temptation, not a draft: the vault may hold legendaries you haven't milestone-unlocked yet.
+    const legendPool = RELICS.filter((r) => r.rarity === "legendary" && !r.boon && !r.eventOnly && !c.relics.has(r.id));
+    const legendOffer = legendPool.length ? c.rng.pick(legendPool) : null;
+    const vaultPrice = Math.max(10, Math.round(c.player.maxHp * 0.25));
     const hurt = (n: number) => { c.player.hp = Math.max(1, c.player.hp - n); };
     const mend = (n: number) => { const h = Math.min(n, c.player.maxHp - c.player.hp); c.player.hp += h; if (h > 0) c.events.emit("HEAL", { amount: h }); };
 
@@ -1338,6 +1350,36 @@ export class Menus {
           { label: "Keep your shards — mend 10 HP", run: () => mend(10) },
         ],
       },
+      // --- The heavy bargains: curses, blood-priced legendaries, and run-long pacts.
+      {
+        title: "THE HOLLOW BARGAIN",
+        text: "Something waits inside a ring of dead candles, holding out a gift with too many hands.",
+        choices: [
+          ...(cursedOffer ? [{ label: `Seal the pact — take ${cursedOffer.name} (CURSED: ${cursedOffer.desc})`, run: () => c.relics.add(cursedOffer) }] : []),
+          { label: "Snuff the candles and go — mend 8 HP", run: () => mend(8) },
+        ],
+      },
+      {
+        title: "THE SEALED VAULT",
+        text: "A vault door older than the Rift. The lock reads heartbeats, and it only opens for blood.",
+        choices: [
+          ...(legendOffer ? [{ label: `Pay in blood — lose ${vaultPrice} HP, take ${legendOffer.name} (LEGENDARY)`, run: () => { hurt(vaultPrice); c.relics.add(legendOffer); } }] : []),
+          { label: "Leave it sealed — ◆ 20 shards", run: () => { c.stats.shards += 20; } },
+        ],
+      },
+      ...(c.tempo.resting === 50 ? [{
+        title: "THE METRONOME'S PACT",
+        text: "A brass heart ticks in the dark, half a beat faster than yours. It offers to keep your time — forever.",
+        choices: [
+          { label: "Swear the pact — resting tempo becomes 65 this run, lose 12 MAX HP", run: () => {
+            c.tempo.resting = 65;
+            c.tempo.gain(0);
+            c.player.maxHp = Math.max(40, c.player.maxHp - 12);
+            c.player.hp = Math.max(1, Math.min(c.player.hp, c.player.maxHp));
+          } },
+          { label: "Keep your own time — mend 6 HP", run: () => mend(6) },
+        ],
+      }] : []),
     ];
 
     const v = c.rng.pick(POOL);
@@ -1427,9 +1469,8 @@ export class Menus {
   // ---------------------------------------------------------------- shop (between acts)
   showShop(onDone: () => void): void {
     const PRICE = { heal: 25, card: 40, relic: 65, hone: 55 };
-    const cardOffer: CardDef | null = this.ctx.deck.buyableChoices(1)[0] ?? null;
-    const relicPool = this.ctx.relics.draftChoices();
-    const relicOffer: RelicDef | null = relicPool.length ? relicPool[0] : null;
+    let cardOffer: CardDef | null = this.ctx.deck.buyableChoices(1)[0] ?? null;
+    let relicOffer: RelicDef | null = this.ctx.relics.draftChoices()[0] ?? null;
     const sold = { heal: false, card: false, relic: false };
     const afford = (n: number) => this.ctx.stats.shards >= n;
 
@@ -1488,9 +1529,19 @@ export class Menus {
             ${relicOffer ? offer("relic", relicOffer.icon, relicOffer.name, relicOffer.desc, PRICE.relic, !afford(PRICE.relic), sold.relic) : ""}
             ${offer("hone", "✦", "Hone a Card", "Forge a held card stronger", PRICE.hone, !afford(PRICE.hone) || !canHone, false)}
           </div>
+          <button class="draft-reroll"${afford(REROLL_COST) ? "" : " disabled"} data-act="reroll">↻ NEW STOCK — ◆ ${REROLL_COST}</button>
           <button class="btn btn--primary" data-act="leave">Leave the Shop</button>
         </div>`;
       this.wireButtons(s);
+      s.querySelector('[data-act="reroll"]')!.addEventListener("click", () => {
+        if (!afford(REROLL_COST)) { this.ctx.sfx.deny(); return; }
+        this.ctx.stats.shards -= REROLL_COST;
+        // Restock only what hasn't sold — the merchant won't take back a sale.
+        if (!sold.card) cardOffer = this.ctx.deck.buyableChoices(1)[0] ?? null;
+        if (!sold.relic) relicOffer = this.ctx.relics.draftChoices()[0] ?? null;
+        this.ctx.events.emit("UI_CLICK", {});
+        render();
+      });
       s.querySelectorAll<HTMLElement>(".shop-offer").forEach((el) => {
         el.addEventListener("click", () => {
           const id = el.dataset.buy!;
@@ -1565,11 +1616,17 @@ export class Menus {
     if (!unlocks.length) return "";
     return `
       <div class="unlock-row">
-        ${unlocks.map((u) => `
-          <div class="unlock-toast" style="--accent:${u.def.color}">
-            <div class="unlock-toast__tag">NEW ${u.kind.toUpperCase()} UNLOCKED</div>
-            <div class="unlock-toast__body"><span class="unlock-toast__icon">${u.def.icon}</span> ${u.def.name}</div>
-          </div>`).join("")}
+        ${unlocks.map((u) => {
+          // Cosmetics carry a numeric color and no icon — adapt for the toast.
+          const color = typeof u.def.color === "number" ? vividHex(u.def.color) : u.def.color;
+          const icon = "icon" in u.def ? u.def.icon : "❖";
+          const tag = u.kind === "cosmetic" ? "COSMETIC EARNED" : `NEW ${u.kind.toUpperCase()} UNLOCKED`;
+          return `
+          <div class="unlock-toast" style="--accent:${color}">
+            <div class="unlock-toast__tag">${tag}</div>
+            <div class="unlock-toast__body"><span class="unlock-toast__icon">${icon}</span> ${u.def.name}</div>
+          </div>`;
+        }).join("")}
       </div>`;
   }
 

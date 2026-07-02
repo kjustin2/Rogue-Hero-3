@@ -13,6 +13,8 @@ export interface RelicDef {
   cursed?: boolean;
   /** Warden boons are auto-granted on boss kills, not drafted — hidden from the draft pool + grid. */
   boon?: boolean;
+  /** Event-only temptations — never drafted, hidden from the progress grid. */
+  eventOnly?: boolean;
   /** Milestone text shown while locked (profile system). */
   unlockHint?: string;
 }
@@ -50,6 +52,7 @@ export const RELICS: RelicDef[] = [
   { id: "overcharger", name: "Overcharger", desc: "Every 3rd card you cast costs no cooldown.", icon: "⚛", color: "#9fffe0", rarity: "legendary" },
   { id: "tempo-engine", name: "Tempo Engine", desc: "Begin every chamber already Hot — tempo starts at 70.", icon: "♔", color: "#ffd24a", rarity: "legendary" },
   { id: "featherbone", name: "Featherbone", desc: "Deal 30% more damage — but take 50% more. A glass dagger.", icon: "⩙", color: "#ff6b7a", rarity: "rare", cursed: true },
+  { id: "blood-pact", name: "Blood Pact", desc: "Deal 20% more damage — but every hit you take bleeds 10 extra tempo.", icon: "🜏", color: "#ff5a80", rarity: "rare", cursed: true, eventOnly: true },
   // --- Warden boons (auto-granted when you break a warden — you carry them in their memory)
   { id: "warden-heart", name: "Warden's Heart", desc: "The Pit Warden's gift: +16 max HP, mended in full.", icon: "♥", color: "#ff9a6a", rarity: "legendary", boon: true },
   { id: "spire-spark", name: "Spire's Spark", desc: "The Spire Caster's gift: perfect dodges surge +6 tempo.", icon: "ϟ", color: "#aaffee", rarity: "legendary", boon: true },
@@ -143,7 +146,7 @@ export class Relics {
    *  legendary is a rare, exciting offer rather than a coin-flip. May be fewer if the
    *  pool is thin. */
   draftChoices(): RelicDef[] {
-    const pool = RELICS.filter((r) => !r.boon && !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
+    const pool = RELICS.filter((r) => !r.boon && !r.eventOnly && !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
     const out: RelicDef[] = [];
     while (out.length < 3 && pool.length > 0) {
       let total = 0;
@@ -177,6 +180,7 @@ export class Relics {
     if (e.frozen > 0 && this.has("frost-chord")) m *= 1.3;
     if (this.has("glass-cannon")) m *= 1.25;
     if (this.has("featherbone")) m *= 1.3;
+    if (this.has("blood-pact")) m *= 1.2;
     if (this.has("colossus-might")) m *= 1.1;
     if (this.has("executioner") && e.hp <= e.maxHp * 0.40) m *= 1.45;
     if (this.has("molten-heart")) {
@@ -196,8 +200,9 @@ export class Relics {
     return m;
   }
 
-  /** After the player takes a real hit: Thorn Plate bites back at close attackers. */
+  /** After the player takes a real hit: Thorn Plate bites back; Blood Pact bleeds tempo. */
   onDamageTaken(srcX: number, srcZ: number): void {
+    if (this.has("blood-pact")) this.ctx.tempo.drain(10);
     if (!this.has("thorn-plate")) return;
     const p = this.ctx.player;
     if (Math.hypot(srcX - p.pos.x, srcZ - p.pos.z) > 3.2) return;

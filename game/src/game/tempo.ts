@@ -51,7 +51,8 @@ export function setTempoPalette(colorblind: boolean): void {
  */
 export class Tempo {
   value = 50;
-  readonly resting = 50;
+  /** Drift target. 50 by default; the Metronome's Pact event raises it for a run. */
+  resting = 50;
   private decayRate = 4.5;
   /** After any gain, tempo holds for this long before drifting again. */
   private sustainTimer = 0;
@@ -107,6 +108,7 @@ export class Tempo {
   }
 
   reset(): void {
+    this.resting = 50; // any run-scoped pact ends with the run
     this.value = this.resting;
     this.sustainTimer = 0;
     this.refreshZone();

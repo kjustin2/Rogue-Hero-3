@@ -8,6 +8,8 @@ export interface CosmeticDef {
   slot: "cape" | "blade";
   color: number;
   price: number;
+  /** Earned (never bought) — the hint tells the player how. Granted by milestones. */
+  earned?: string;
 }
 
 export const COSMETICS: CosmeticDef[] = [
@@ -33,6 +35,21 @@ export const COSMETICS: CosmeticDef[] = [
   { id: "blade-frost", name: "Glacial Edge", slot: "blade", color: 0x8fe8ff, price: 350 },
   { id: "blade-toxic", name: "Venom Glow", slot: "blade", color: 0x9aff44, price: 350 },
   { id: "blade-prism", name: "Prism Light", slot: "blade", color: 0xffffff, price: 450 },
+  // --- Hero mastery (earned, never sold): first win → a blade; a depth-5 win → a cape.
+  { id: "blade-sig-blade", name: "Edgemaster's Light", slot: "blade", color: 0x7ff0ff, price: 0, earned: "Seal the Rift as the Blade" },
+  { id: "blade-sig-bulwark", name: "Bastion Flame", slot: "blade", color: 0xffb066, price: 0, earned: "Seal the Rift as the Bulwark" },
+  { id: "blade-sig-sparkmage", name: "Arcanist's Gleam", slot: "blade", color: 0xd8a8ff, price: 0, earned: "Seal the Rift as the Sparkmage" },
+  { id: "blade-sig-reaver", name: "Reaver's Grudge", slot: "blade", color: 0xff6a52, price: 0, earned: "Seal the Rift as the Reaver" },
+  { id: "blade-sig-tempest", name: "Stormsurf", slot: "blade", color: 0x7df3d0, price: 0, earned: "Seal the Rift as the Tempest" },
+  { id: "blade-sig-revenant", name: "Grave-light", slot: "blade", color: 0x6affb0, price: 0, earned: "Seal the Rift as the Revenant" },
+  { id: "cape-sig-blade", name: "Blade's Standard", slot: "cape", color: 0x0e4652, price: 0, earned: "Seal the Rift at Depth 5+ as the Blade" },
+  { id: "cape-sig-bulwark", name: "Bastion Wall", slot: "cape", color: 0x5a3a10, price: 0, earned: "Seal the Rift at Depth 5+ as the Bulwark" },
+  { id: "cape-sig-sparkmage", name: "Arcane Vestment", slot: "cape", color: 0x3a1a58, price: 0, earned: "Seal the Rift at Depth 5+ as the Sparkmage" },
+  { id: "cape-sig-reaver", name: "Butcher's Drape", slot: "cape", color: 0x581212, price: 0, earned: "Seal the Rift at Depth 5+ as the Reaver" },
+  { id: "cape-sig-tempest", name: "Storm Mantle", slot: "cape", color: 0x0e4a42, price: 0, earned: "Seal the Rift at Depth 5+ as the Tempest" },
+  { id: "cape-sig-revenant", name: "Shroud of Return", slot: "cape", color: 0x0e4a28, price: 0, earned: "Seal the Rift at Depth 5+ as the Revenant" },
+  // --- The Ascension summit
+  { id: "blade-riftgold", name: "Riftgold", slot: "blade", color: 0xffd24a, price: 0, earned: "Seal the Rift at Depth 15" },
 ];
 
 export function cosmeticById(id: string): CosmeticDef {

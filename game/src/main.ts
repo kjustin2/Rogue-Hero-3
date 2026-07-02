@@ -1775,6 +1775,18 @@ void boot();
     boss0() { return livingBoss(); },
     /** Current top-level UI screen. */
     state(): string { return state; },
+    /** Open an interstitial screen directly (shop/treasure/rest/event/shrine/gamble) — smokes/screenshots. */
+    screen(kind: string): boolean {
+      const done = () => menus.clear();
+      if (kind === "shop") menus.showShop(done);
+      else if (kind === "treasure") menus.showTreasure(done);
+      else if (kind === "rest") menus.showRest(done);
+      else if (kind === "event") menus.showEvent(done);
+      else if (kind === "shrine") menus.showShrine(done);
+      else if (kind === "gamble") menus.showGamble(done);
+      else return false;
+      return true;
+    },
     /** The recognized scenario name patterns. */
     list(): string[] {
       return [

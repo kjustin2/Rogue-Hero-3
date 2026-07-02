@@ -2,7 +2,7 @@ import { CARDS, type CardDef } from "./cards";
 import { RELICS, type RelicDef } from "./relics";
 import { HEROES, type HeroDef } from "./heroes";
 import { blessingById, type BlessingDef } from "./blessings";
-import { DEFAULT_COSMETICS } from "./cosmetics";
+import { COSMETICS, DEFAULT_COSMETICS, type CosmeticDef } from "./cosmetics";
 import { MAX_DEPTH } from "./difficulty";
 import type { RunStats } from "./ctx";
 
@@ -31,6 +31,9 @@ interface ProfileData {
   bestStreak: number;
   /** Highest Ascension depth unlocked (0-based; win depth N to unlock N+1). */
   maxDepth: number;
+  /** Hero mastery: wins per hero id, and the deepest depth each has won at. */
+  heroWins: Record<string, number>;
+  heroBestWinDepth: Record<string, number>;
   /** Rift-shard balance + lifetime earnings (the Armory currency). */
   shards: number;
   shardsEarned: number;
@@ -104,6 +107,7 @@ function defaults(): ProfileData {
     runs: 0, wins: 0, kills: 0, perfectDodges: 0, crashes: 0, bossesKilled: 0,
     actsCleared: 0, furthestAct: 1, bestTime: null, bestStreak: 0,
     maxDepth: 0,
+    heroWins: {}, heroBestWinDepth: {},
     shards: 0, shardsEarned: 0,
     cosmeticsOwned: [DEFAULT_COSMETICS.cape, DEFAULT_COSMETICS.blade],
     equipped: { ...DEFAULT_COSMETICS },
@@ -188,19 +192,31 @@ export const MILESTONES: Milestone[] = [
   { id: "bless-vigor", desc: "Brave the Rift 5 times", unlocks: ["blessing:vigor"], check: (p) => p.runs >= 5 },
   { id: "bless-arsenal", desc: "Defeat the Spire Caster", unlocks: ["blessing:arsenal"], check: (p) => p.actsCleared >= 2 },
   { id: "bless-fortune", desc: "Earn 2000 lifetime shards", unlocks: ["blessing:fortune"], check: (p) => p.shardsEarned >= 2000 },
+  // --- Hero mastery: each hero's first win + a depth-5 win earn exclusive cosmetics.
+  ...HEROES.flatMap((h): Milestone[] => [
+    { id: `mastery-${h.id}-1`, desc: `Seal the Rift as ${h.name}`, unlocks: [`cosmetic:blade-sig-${h.id}`], check: (p) => (p.heroWins[h.id] ?? 0) >= 1 },
+    { id: `mastery-${h.id}-5`, desc: `Seal the Rift at Depth 5+ as ${h.name}`, unlocks: [`cosmetic:cape-sig-${h.id}`], check: (p) => (p.heroBestWinDepth[h.id] ?? -1) >= 5 },
+  ]),
+  // --- The Ascension summit: winning the final depth earns a title + a unique blade.
+  { id: "depth-15", desc: "Seal the Rift at Depth 15", unlocks: ["cosmetic:blade-riftgold"], check: (p) => p.history.some((r) => r.outcome === "victory" && r.depth >= 15) },
 ];
 
 export type UnlockedItem =
   | { kind: "card"; def: CardDef }
   | { kind: "relic"; def: RelicDef }
   | { kind: "hero"; def: HeroDef }
-  | { kind: "blessing"; def: BlessingDef };
+  | { kind: "blessing"; def: BlessingDef }
+  | { kind: "cosmetic"; def: CosmeticDef };
 
 function resolveUnlock(key: string): UnlockedItem | null {
   const [kind, id] = key.split(":");
   if (kind === "card") {
     const def = CARDS.find((c) => c.id === id);
     return def ? { kind: "card", def } : null;
+  }
+  if (kind === "cosmetic") {
+    const def = COSMETICS.find((c) => c.id === id);
+    return def ? { kind: "cosmetic", def } : null;
   }
   if (kind === "hero") {
     const def = HEROES.find((h) => h.id === id);
@@ -265,6 +281,11 @@ export class Profile {
       for (const key of m.unlocks) {
         if (!this.data.unlocks.includes(key)) {
           this.data.unlocks.push(key);
+          // Earned cosmetics land straight in the wardrobe (never shard-bought).
+          if (key.startsWith("cosmetic:")) {
+            const id = key.slice("cosmetic:".length);
+            if (!this.data.cosmeticsOwned.includes(id)) this.data.cosmeticsOwned.push(id);
+          }
           fresh.push(key);
         }
       }
@@ -298,6 +319,10 @@ export class Profile {
       if (this.data.bestTime === null || run.time < this.data.bestTime) this.data.bestTime = run.time;
       // Win at your current ceiling → the next Rift Depth opens.
       if (run.depth >= this.data.maxDepth) this.data.maxDepth = Math.min(run.depth + 1, MAX_DEPTH);
+      // Hero mastery: lastHero is set at run start, so it names this run's hero.
+      const h = this.data.lastHero;
+      this.data.heroWins[h] = (this.data.heroWins[h] ?? 0) + 1;
+      this.data.heroBestWinDepth[h] = Math.max(this.data.heroBestWinDepth[h] ?? -1, run.depth);
     }
     this.data.kills += run.kills;
     this.data.perfectDodges += run.perfectDodges;
