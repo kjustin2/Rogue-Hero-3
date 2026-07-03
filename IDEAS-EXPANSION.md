@@ -6,49 +6,7 @@ and the cutscene performances in `BOSS-CUTSCENE-AUDIT.md` — none repeated here
 
 ---
 
-## 1. The true final boss (your idea, fleshed out)
-
-**THE WOUND — the thing that hollowed the star.** On an Ascension run
-(suggest depth 3+ so it's earned but not depth-15-only), killing or sparing
-the Unmaker doesn't seal the Rift. The floor tears open mid-victory beat and
-the run gets one more fight against the thing that's been beneath every arena
-all game — the source the Wardens actually fell guarding against.
-
-What makes it a TRUE final boss rather than a sixth boss:
-
-- **It fights with your own kit.** It has a visible Tempo meter of its own:
-  it heats up as it presses you, crashes when it peaks (a real crash nova you
-  must dodge), and goes cold and sluggish if you deny it hits. Your signature
-  mechanic, mirrored — the player finally reads an enemy the way enemies read
-  them. (The Rift Echo already copies your *shape*; The Wound copies your
-  *system*. Echo stays the mid-run optional duel.)
-- **It corrupts your cards.** Each phase it "swallows" one of your 3 slots
-  (the HUD slot cracks, card unusable) and casts a hostile version of it at
-  you — your own Meteor Call / Gravity Well / Frost Nova as boss attacks,
-  driven by the same card defs so every player sees THEIR loadout weaponized.
-  Kill the phase to take the card back (slot restores with a flourish).
-- **Mercy pays off mechanically.** If you SPARED the Hollow Star this run,
-  the ember you carried fights with you: a drifting light that periodically
-  charges your tempo and revives you once (a story-earned Second Wind).
-  Kill the star instead and you fight The Wound alone in a darker arena.
-  This makes the true ending a *strategic* choice, not just a sentimental one.
-- **Arena participates.** The fight is on the shattered underside of the disc:
-  rim gone (no wall to hug — falling off the edge costs HP and teleports you
-  back), floor segments crack and drop on a telegraph, the sky is the inside
-  of the rift (new theme, one entry in `THEMES`).
-- **Rewards**: a guaranteed legendary + a big shard multiplier, a unique
-  "Woundbreaker" title + blade cosmetic for the first kill, and its own
-  milestone line. Depth ladder unchanged — The Wound is the same fight at
-  every depth, only its HP/damage scale, so it stays a summit rather than
-  a second grind.
-
-Build note: it slots into the existing `BOSSES` registry + `debugLoadBoss`
-harness; the victory pipeline needs one branch (depth ≥ N → interstitial tear
-cutscene → wound fight → the existing ending). Biggest new work is the
-card-corruption system — but it reuses `CardDef` + the hostile projectile /
-telegraph plumbing.
-
----
+## 1. ~~The true final boss~~ — SHIPPED (THE WOUND BENEATH, depth 3+)
 
 ## 2. A new combat system (options, ranked)
 
@@ -105,12 +63,6 @@ Pick A alone, or A + B if you want a headline feature for a big update.
 - **Relic set bonuses.** 2-3 piece sets (all frost relics = Shatterglass
   radius up, etc.) — makes late-run relic drafting a build puzzle instead of
   raw stat soup. Data-only.
-- **Act interlude vignettes.** One 20-second playable beat between acts (walk
-  a short bridge, one story line, one choice tile) instead of a map screen
-  jump — big pacing win for a small scene.
-- **Arena variants per act.** Each act gets 1 alternate arena mechanic pulled
-  from `features.ts` (rotating beam in act 3, drifting void tiles in act 5)
-  so chamber 3 doesn't look like chamber 1. The MapFeatures seam exists.
 - **Ship it wider**: electron-builder is wired — a Steam-shaped pass
   (achievements mapped from milestones, cloud-save = the existing profile
   JSON, a settings "reset profile" confirm) is mostly checklist work.
