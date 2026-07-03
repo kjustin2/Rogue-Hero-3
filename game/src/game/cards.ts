@@ -33,7 +33,7 @@ export interface CardDef {
 }
 
 export const CARDS: CardDef[] = [
-  { id: "dash-strike", name: "Dash Strike", desc: "Lunge through enemies, carving everything in your path.", upDesc: "Dashes farther and bursts an AoE on landing.", cooldown: 5, color: "#5fe0ff", glow: 0x5fe0ff, icon: "➤", rarity: "common", tempo: 8 },
+  { id: "dash-strike", name: "Dash Strike", desc: "Lunge untouchable through the pack, carving everything near your path.", upDesc: "Dashes farther and bursts an AoE on landing.", cooldown: 5, color: "#5fe0ff", glow: 0x5fe0ff, icon: "➤", rarity: "common", tempo: 8 },
   { id: "arc-bolt", name: "Arc Bolt", desc: "A piercing lance of energy that punches through the pack.", upDesc: "Fires a 3-bolt spread.", cooldown: 3, color: "#7fa8ff", glow: 0x7fa8ff, icon: "✦", rarity: "common", tempo: 4 },
   { id: "cleave", name: "Cleave", desc: "A massive sweeping blow. Crowds are an invitation.", upDesc: "Becomes a full 360° sweep for more damage.", cooldown: 5, color: "#ffc266", glow: 0xffc266, icon: "⚔", rarity: "common", tempo: 6 },
   { id: "frost-nova", name: "Frost Nova", desc: "Detonate the cold. Damages and freezes everything nearby.", upDesc: "Bigger radius, harder hit, ~3s freeze.", cooldown: 9, color: "#9fd8ff", glow: 0x9fd8ff, icon: "❄", rarity: "uncommon", tempo: 5 },
@@ -280,6 +280,8 @@ export class CardCaster {
   /** Whether the live Aegis barrier was cast honed (bigger detonation). */
   private aegisUpgraded = false;
   private fakeSwing = -1;
+  private fakeSwingHeavy = true;
+  private fakeSwingDur = 0.34;
   private mineGeo = new THREE.ConeGeometry(0.28, 0.4, 4);
   private seekerGeo = new THREE.IcosahedronGeometry(0.22, 0);
   private boomerangGeo = new THREE.TorusGeometry(0.42, 0.12, 6, 12, Math.PI * 1.3);
@@ -411,6 +413,10 @@ export class CardCaster {
     // totems) would pay the synchronous compile again — the "card hitch" class.
     root.visible = false;
     root.position.set(0, -1000, 0);
+    // The warm slash/trail only fade while PLAYING — at the boot menu they'd
+    // freeze mid-swing over the idle hero. Hide them now; programs stay compiled.
+    this.ctx.combat.clearSlashVisuals();
+    this.ctx.trail.clear();
   }
 
   /** Apply a damage-over-time stack (Bleeding Edge, Ember Wave burns). */
@@ -436,7 +442,17 @@ export class CardCaster {
     return ok;
   }
 
+  /** Drive the player's swing pose from a card (heavy sweep vs quick cast flick). */
+  private castPose(heavy: boolean): void {
+    this.fakeSwing = 0;
+    this.fakeSwingHeavy = heavy;
+    this.fakeSwingDur = heavy ? 0.34 : 0.22;
+  }
+
   private castFlourish(def: CardDef, upgraded: boolean): void {
+    // Every cast must read on the BODY, not just as world FX: if the card didn't
+    // drive its own swing pose, give a quick light flick (bolts, calls, buffs).
+    if (this.fakeSwing < 0 && !this.ctx.combat.swinging && this.cycloneTimers.length === 0) this.castPose(false);
     const p = this.ctx.player;
     const fx = Math.sin(p.facing);
     const fz = Math.cos(p.facing);
@@ -467,22 +483,38 @@ export class CardCaster {
         const dz = aim.z - player.pos.z;
         const len = Math.hypot(dx, dz) || 1;
         const dist = Math.min(upgraded ? 9 : 6, Math.max(3, len));
-        const dmg = upgraded ? 36 : 26;
+        const dmg = upgraded ? 46 : 34;
         const nx = dx / len;
         const nz = dz / len;
-        // Damage everything along the path
+        // Untouchable through the dash — it's a commitment, not a coin flip —
+        // and the body lunges with the blade (heavy pose + sword ribbon).
+        this.ctx.controller.grantIframes(0.35);
+        this.castPose(true);
+        // Carve everything on or NEAR the line (generous side reach), and make
+        // every contact READ: a white ring + sparks on each foe cut through.
+        let dashHits = 0;
         for (const e of enemies.living()) {
           const ex = e.pos.x - player.pos.x;
           const ez = e.pos.z - player.pos.z;
           const along = ex * nx + ez * nz;
-          if (along < -0.5 || along > dist + 1) continue;
+          if (along < -0.8 || along > dist + 1.6) continue;
           const perp = Math.abs(ex * nz - ez * nx);
-          if (perp < 1.3 + e.radius) {
+          if (perp < 2.1 + e.radius) {
             combat.dealDamage(e, dmg, { kbX: ex - along * nx, kbZ: ez - along * nz, kb: 2.2, heavy: false, countCombo: true, allowShieldStagger: false });
+            fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.3, color: 0xffffff, duration: 0.28 });
+            fx.burst({
+              x: e.pos.x, y: 1.0, z: e.pos.z,
+              count: 12, color: [0x5fe0ff, 0xffffff], speed: [3, 9], up: 0.5, size: [0.3, 0.7], life: [0.15, 0.35], gravity: -2, drag: 3,
+            });
+            dashHits++;
           }
         }
+        if (dashHits > 0) {
+          this.ctx.sfx.swing(2, true);
+          this.ctx.cam.addTrauma(0.16);
+        }
         this.ctx.controller.push(nx * dist * 9, nz * dist * 9);
-        this.ctx.controller.externalMoveTimer = 0.16;
+        this.ctx.controller.externalMoveTimer = 0.18;
         player.spawnGhost();
         window.setTimeout(() => player.alive && player.spawnGhost(), 60);
         window.setTimeout(() => player.alive && player.spawnGhost(), 120);
@@ -502,7 +534,7 @@ export class CardCaster {
             const ex = e.pos.x - landX;
             const ez = e.pos.z - landZ;
             if (Math.hypot(ex, ez) < R + e.radius) {
-              combat.dealDamage(e, 24, { kbX: ex, kbZ: ez, kb: 6, heavy: true, countCombo: true });
+              combat.dealDamage(e, 30, { kbX: ex, kbZ: ez, kb: 6, heavy: true, countCombo: true });
             }
           }
           window.setTimeout(() => {
@@ -546,7 +578,7 @@ export class CardCaster {
         const arc = upgraded ? Math.PI * 2 : (170 * Math.PI) / 180;
         const hits = combat.meleeSweep(player.facing, arc, 3.6, upgraded ? 56 : 42, 7, true);
         combat.slashVisual(arc, 3.6, true);
-        this.fakeSwing = 0;
+        this.castPose(true);
         if (hits > 0) {
           this.ctx.cam.addTrauma(0.3);
           this.ctx.cam.kick(Math.sin(player.facing), Math.cos(player.facing), 4);
@@ -713,7 +745,7 @@ export class CardCaster {
             timer: 0.1 + i * 0.12,
           });
         }
-        this.fakeSwing = 0;
+        this.castPose(true);
         this.ctx.cam.kick(Math.sin(player.facing), Math.cos(player.facing), 2.5);
         return true;
       }
@@ -775,7 +807,7 @@ export class CardCaster {
           hits++;
         }
         combat.slashVisual(arc, range, false);
-        this.fakeSwing = 0;
+        this.castPose(true);
         if (hits > 0) this.ctx.cam.addTrauma(0.18);
         return true;
       }
@@ -868,7 +900,7 @@ export class CardCaster {
         this.cycloneRadius = upgraded ? 4.0 : 3.2;
         if (upgraded) this.cycloneTimers.push(0.05, 0.25, 0.45, 0.65);
         else this.cycloneTimers.push(0.05, 0.25, 0.45);
-        this.fakeSwing = 0;
+        this.castPose(true);
         this.ctx.cam.pulseFov(0.5);
         return true;
       }
@@ -971,7 +1003,7 @@ export class CardCaster {
         });
         this.ctx.cam.addTrauma(0.4);
         this.ctx.stage.punch(0.45);
-        this.fakeSwing = 0;
+        this.castPose(true);
         return true;
       }
 
@@ -1220,7 +1252,7 @@ export class CardCaster {
           t: 0, dur: upgraded ? 1.0 : 0.85, reach: upgraded ? 11 : 8.5,
           dmg: upgraded ? 34 : 24, bleedTicks: upgraded ? 6 : 4, hit: new Set(), clearedReturn: false, mesh, mat,
         });
-        this.fakeSwing = 0;
+        this.castPose(true);
         this.ctx.cam.kick(nx, nz, 2.4);
         return true;
       }
@@ -2034,11 +2066,11 @@ export class CardCaster {
       }
     }
 
-    // Fake heavy-swing pose for Cleave
+    // Card-driven swing pose: heavy sweep for melee cards, quick light flick for casts
     if (this.fakeSwing >= 0) {
       this.fakeSwing += dt;
-      const phase = Math.min(1, this.fakeSwing / 0.34);
-      if (!this.ctx.combat.swinging) this.ctx.player.animSwing = { phase, heavy: true };
+      const phase = Math.min(1, this.fakeSwing / this.fakeSwingDur);
+      if (!this.ctx.combat.swinging) this.ctx.player.animSwing = { phase, heavy: this.fakeSwingHeavy };
       if (phase >= 1) {
         this.fakeSwing = -1;
         if (!this.ctx.combat.swinging) this.ctx.player.animSwing = null;

@@ -46,8 +46,15 @@ export class Controller {
     return this.dodgeTimer >= 0 && this.dodgeTimer < DODGE_DURATION;
   }
 
+  /** External i-frame grants (Dash Strike etc.) — independent of the dodge roll. */
+  private iframeTimer = 0;
+
+  grantIframes(sec: number): void {
+    this.iframeTimer = Math.max(this.iframeTimer, sec);
+  }
+
   get invulnerable(): boolean {
-    return this.dodging;
+    return this.dodging || this.iframeTimer > 0;
   }
 
   get inPerfectWindow(): boolean {
@@ -121,6 +128,7 @@ export class Controller {
     this.ctx.cam.aimPoint.copy(input.aimPoint);
 
     this.dodgeCooldown -= dt;
+    this.iframeTimer = Math.max(0, this.iframeTimer - dt);
     this.externalMoveTimer = Math.max(0, this.externalMoveTimer - dt);
 
     // Start dodge

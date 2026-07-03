@@ -68,13 +68,21 @@ export class SwordTrail {
 
   /** Prime two dummy segments so the boot warm frame draws (and compiles) the
    *  ribbon's custom shader — otherwise the first real swing pays the compile.
-   *  The segments age out within SEG_LIFE on the next live updates. */
+   *  Caller MUST clear() after the warm frame: update() only ticks while playing,
+   *  so at the menu the ribbon would otherwise freeze mid-air by the idle hero. */
   warm(x: number, z: number): void {
     const tip = new THREE.Vector3(x, 1.5, z);
     const base = new THREE.Vector3(x, 0.9, z);
     this.update(0, tip, base, true);
     tip.x += 0.05;
     this.update(0.001, tip, base, true);
+  }
+
+  /** Drop all segments and hide the ribbon immediately. */
+  clear(): void {
+    this.count = 0;
+    this.head = 0;
+    this.mesh.visible = false;
   }
 
   /** The i-th live segment, oldest-first (i in 0..count-1). */

@@ -395,6 +395,15 @@ export class Combat {
     this.spawnSlashArc({ dur: 0, dmg: 0, arc, range, kb: 0, heavy });
   }
 
+  /** Instantly hide all slash arcs. The fade only ticks while playing, so the boot
+   *  warm-up must clear its warm arc or it freezes over the menu hero. */
+  clearSlashVisuals(): void {
+    for (const s of this.slashes) {
+      s.active = false;
+      s.mesh.visible = false;
+    }
+  }
+
   /** Tempo payout scaling with enemies caught in one swing. */
   private comboTempoPayout(hits: number): void {
     if (hits <= 0) return;
@@ -596,8 +605,10 @@ export class Combat {
         s.mesh.visible = false;
         continue;
       }
-      s.mat.opacity = 0.7 * (1 - k);
-      s.mesh.scale.setScalar(1 + k * 0.25);
+      // Follow-through: hold bright through the first half, then expand + drop —
+      // the arc reads as a swing's wake, not a decal blinking off.
+      s.mat.opacity = 0.8 * (1 - k * k);
+      s.mesh.scale.setScalar(1 + k * 0.45);
     }
   }
 

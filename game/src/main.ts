@@ -556,6 +556,11 @@ function toMenu(): void {
   ctx.hostiles.clear();
   ctx.caster.clear();
   ctx.features.clear();
+  // Quitting mid-swing must not freeze the menu hero mid-attack: drop any
+  // in-flight swing/charge pose and its visuals before the orbit shot.
+  ctx.combat.clearTransient();
+  ctx.combat.clearSlashVisuals();
+  ctx.trail.clear();
   ctx.player.root.visible = true;
   ctx.player.pos.set(0, 0, 5.2);
   ctx.player.facing = Math.PI;
