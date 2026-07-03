@@ -137,20 +137,22 @@ export const THEMES: Record<string, ArenaTheme> = {
     ember: 0x8a6cff,
     gridEmissive: 0x281a4a,
   },
-  // --- Act V: The Hollow Star — a collapsing cosmos, white-violet light in a black void
+  // --- Act V: The Hollow Star — the last pale-gold starlight guttering in a black
+  // void (distinct from Act IV's violet abyss; the boss room's white-violet
+  // "starfall" then reads as the star itself finally reached).
   hollow: {
     name: "hollow",
     dressing: "void",
-    fog: 0x05030a,
-    skyTop: 0x020108,
-    skyBottom: 0x180a2e,
-    hemiSky: 0xc9b8ff,
-    hemiGround: 0x0a0814,
-    key: 0xf2ecff,
-    rim: 0xb98cff,
-    crystal: 0xcdb6ff,
-    ember: 0xb98cff,
-    gridEmissive: 0x2a1a4e,
+    fog: 0x070506,
+    skyTop: 0x030204,
+    skyBottom: 0x241408,
+    hemiSky: 0xf2e0c0,
+    hemiGround: 0x0c0a08,
+    key: 0xfff4e0,
+    rim: 0xf2d8a0,
+    crystal: 0xffe8b8,
+    ember: 0xe8c890,
+    gridEmissive: 0x4a3a1c,
   },
   starfall: {
     name: "starfall",
@@ -268,20 +270,33 @@ export class Arena {
     this.obstacleGroup = new THREE.Group();
     for (const d of defs) {
       const h = 2.4 + d.r;
-      const rock = new THREE.MeshStandardMaterial({ color: 0x191523, roughness: 0.85, flatShading: true });
+      // Faint accent emissive on the rock body so mid-field pillars read as lit
+      // theme objects instead of crushed-black lumps (same trick as rockMat).
+      const rock = new THREE.MeshStandardMaterial({
+        color: 0x191523, emissive: accentColor, emissiveIntensity: 0.08, roughness: 0.85, flatShading: true,
+      });
       const band = new THREE.MeshStandardMaterial({
-        color: 0x0c0a14, emissive: accentColor, emissiveIntensity: 1.4, roughness: 0.3, flatShading: true,
+        color: 0x0c0a14, emissive: accentColor, emissiveIntensity: 2.0, roughness: 0.3, flatShading: true,
       });
       const pillar = new THREE.Mesh(new THREE.CylinderGeometry(d.r * 0.82, d.r, h, 7), rock);
       pillar.position.set(d.x, h / 2, d.z);
       pillar.rotation.y = Math.random() * Math.PI;
       pillar.castShadow = true;
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(d.r * 0.92, 0.07, 8, 24), band);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(d.r * 0.92, 0.09, 8, 24), band);
       ring.rotation.x = Math.PI / 2;
       ring.position.set(d.x, h * 0.72, d.z);
       const cap = new THREE.Mesh(new THREE.ConeGeometry(d.r * 0.5, 0.9, 5), band);
       cap.position.set(d.x, h + 0.4, d.z);
       this.obstacleGroup.add(pillar, ring, cap);
+      // Glowing seam studs down the flanks — vertical accents visible from the
+      // gameplay camera, breaking the silhouette's flat side planes.
+      for (let s = 0; s < 3; s++) {
+        const a = pillar.rotation.y + (s / 3) * Math.PI * 2;
+        const stud = new THREE.Mesh(new THREE.BoxGeometry(0.1, h * 0.42, 0.1), band);
+        stud.position.set(d.x + Math.sin(a) * d.r * 0.88, h * 0.42, d.z + Math.cos(a) * d.r * 0.88);
+        stud.rotation.y = a;
+        this.obstacleGroup.add(stud);
+      }
     }
     this.stage.scene.add(this.obstacleGroup);
   }
@@ -499,7 +514,7 @@ export class Arena {
       map: floorTex,
       emissiveMap: floorTex,
       emissive: new THREE.Color(THEMES.rift.gridEmissive),
-      emissiveIntensity: 1.6,
+      emissiveIntensity: 2.3,
       roughness: 0.85,
       metalness: 0.15,
       color: 0xbbbbcc,
@@ -982,7 +997,7 @@ export class Arena {
     const h = this.heat;
     const breathe = (1.9 + Math.sin(this.t * (1.4 + h * 2.4)) * (0.5 + h * 0.5)) * (1 + h * 0.3);
     this.rimMat.emissiveIntensity = breathe;
-    this.floorMat.emissiveIntensity = 1.5 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.22 + h * 0.35;
+    this.floorMat.emissiveIntensity = 2.3 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.3 + h * 0.5;
     for (let i = 0; i < this.crystalMats.length; i++) {
       this.crystalMats[i].emissiveIntensity = 1.1 + h * 0.35 + Math.sin(this.t * (1.1 + h * 1.4) + i * 1.7) * 0.45;
     }
