@@ -197,6 +197,11 @@ export abstract class Enemy {
       if (lum > best) { best = lum; color.copy(c); }
     }
     if (color.r + color.g + color.b <= 0.02) return; // no emissive accent → no glow
+    // Pale, whitish accents (wisp, warper, echo…) wash out into a dirty gray pool —
+    // clamp a minimum saturation so the glow stays in the unit's color family.
+    const hsl = { h: 0, s: 0, l: 0 };
+    color.getHSL(hsl);
+    if (hsl.s < 0.55) color.setHSL(hsl.h, 0.55, Math.min(hsl.l, 0.6));
     const { tex, geo } = groundGlowAssets();
     const mat = new THREE.MeshBasicMaterial({
       map: tex, color, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,

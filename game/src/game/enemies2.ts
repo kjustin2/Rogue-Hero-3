@@ -248,11 +248,13 @@ export class Tether extends Enemy {
     this.hp = this.maxHp = 24;
     this.speed = 2.4;
     this.radius = 0.5;
-    this.addRoleSilhouette("caster", 0x55bbff);
+    // Amber identity: tether wore the same cyan halo as spitter/wisp/harrier —
+    // 4 of 17 units in one hue failed the color-role read (audit finding).
+    this.addRoleSilhouette("caster", 0xffb84d);
 
-    const robeMat = this.stdMat(0x132e3a, 0x115566, 0.4);
-    const trimMat = this.stdMat(0x1d4250, 0x33aacc, 0.7);
-    this.crystalMat = this.stdMat(0x0a2030, 0x55bbff, 2.0);
+    const robeMat = this.stdMat(0x2a2014, 0x4a3410, 0.4);
+    const trimMat = this.stdMat(0x3a2c14, 0xd89a3a, 0.7);
+    this.crystalMat = this.stdMat(0x2a1a08, 0xffb84d, 2.0);
     this.addMesh(new THREE.ConeGeometry(0.5, 1.4, 5), robeMat, 0, 0.7);
     // Glowing hem ring + a seam climbing the robe
     const hem = this.addMesh(new THREE.TorusGeometry(0.47, 0.045, 6, 12), trimMat, 0, 0.12);
@@ -311,7 +313,7 @@ export class Tether extends Enemy {
         this.windup = -1;
         this.crystalMat.emissiveIntensity = 2;
         for (const a of this.lockedAngles) {
-          this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: 10, dmg: 7, color: 0x55bbff, radius: 0.28 });
+          this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: 10, dmg: 7, color: 0xffb84d, radius: 0.28 });
         }
         this.ctx.sfx.enemyShoot();
       }
@@ -340,8 +342,10 @@ export class Mirror extends Enemy {
     this.shieldBarColor = 0x99ddff;
     this.addRoleSilhouette("shield", 0x99ddff);
 
-    const plateMat = this.stdMat(0x39414f, 0x4a6a8a, 0.5);
-    const trimMat = this.stdMat(0x222831, 0x99ccff, 0.9);
+    // Mid-value plates with the glow confined to trims/visor — full-plate emissive
+    // blew the whole knight out to a flat white-blue sticker (audit finding).
+    const plateMat = this.stdMat(0x39414f, 0x4a6a8a, 0.18);
+    const trimMat = this.stdMat(0x222831, 0x99ccff, 0.6);
     const eyeMat = this.stdMat(0x000000, 0xbbeeff, 2.4);
     this.addMesh(new THREE.BoxGeometry(1.2, 1.5, 0.9), plateMat, 0, 0.95);
     this.addMesh(new THREE.BoxGeometry(0.6, 0.45, 0.5), plateMat, 0, 1.9);
@@ -605,8 +609,10 @@ export class Shade extends Enemy {
       this.bodyMats.push(m);
       return m;
     };
-    const cloak = mk(0x12081e, 0x441166, 0.6);
-    const wisp = mk(0x1a0c2a, 0x9933cc, 1.2);
+    // Lifted cloak emissive: the robe crushed to a mud silhouette on dark floors
+    // (only its rings read). Still dim — it's a shade — but the form now exists.
+    const cloak = mk(0x1a0c2e, 0x6a22aa, 0.85);
+    const wisp = mk(0x1a0c2a, 0xa844dd, 1.3);
     const eye = mk(0x000000, 0xff2266, 3.0);
     const torso = this.addMesh(new THREE.ConeGeometry(0.45, 1.5, 5), cloak, 0, 0.75);
     torso.rotation.y = 0.4;
