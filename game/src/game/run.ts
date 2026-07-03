@@ -5,6 +5,7 @@ import { Colossus } from "./bossColossus";
 import { RiftTyrant } from "./bossTyrant";
 import { Unmaker } from "./bossUnmaker";
 import { RiftEcho } from "./bossEcho";
+import { WoundBoss } from "./bossWound";
 import { makeEnemy, type Enemy, type EnemyKind } from "./enemies";
 import { rollAffixes, affixById } from "./affixes";
 import { generatePlan, type MapNode, type NodeKind, type RunPlan, type SpawnList } from "./mapgen";
@@ -12,7 +13,10 @@ import type { Ctx } from "./ctx";
 
 type FieldKind = Exclude<EnemyKind, "boss">;
 
-export type BossKind = "warden" | "spire" | "colossus" | "tyrant" | "unmaker" | "echo";
+export type BossKind = "warden" | "spire" | "colossus" | "tyrant" | "unmaker" | "echo" | "wound";
+
+/** Rift Depth at which killing/sparing the Unmaker reveals the true final boss. */
+export const WOUND_MIN_DEPTH = 3;
 
 interface BossEntry {
   name: string;
@@ -29,6 +33,7 @@ export const BOSSES: Record<BossKind, BossEntry> = {
   tyrant: { name: "THE RIFT TYRANT", title: "The Wound Made Flesh", phases: [0.66, 0.33], make: (c, x, z) => new RiftTyrant(c, x, z) },
   unmaker: { name: "THE UNMAKER", title: "The Hollow Star", phases: [0.66, 0.33, 0.12], make: (c, x, z) => new Unmaker(c, x, z) },
   echo: { name: "THE RIFT ECHO", title: "Your Reflection, Sharpened", phases: [0.5], make: (c, x, z) => new RiftEcho(c, x, z) },
+  wound: { name: "THE WOUND BENEATH", title: "What Hollowed the Star", phases: [0.66, 0.33], make: (c, x, z) => new WoundBoss(c, x, z) },
 };
 
 export const ROMAN = ["I", "II", "III", "IV", "V"];
@@ -87,12 +92,22 @@ export class RunManager {
   path: number[] = [];
   private waveIndex = 0;
   private prevAct = 0;
+  /** Whether the Ascension true-final fight has been staged this run. */
+  private woundFought = false;
 
   constructor(private ctx: Ctx) {
     ctx.events.on("BOSS_DEFEATED", () => {
       if (this.state !== "fighting") return;
       this.ctx.stats.roomsCleared++;
       if (this.position >= this.plan.forks.length - 1) {
+        // Ascension truth (depth 3+): ending the star doesn't end the run — the
+        // thing it was holding shut is still beneath the floor. One more fight.
+        if (this.currentNode?.bossKind === "unmaker" && this.plan.depth >= WOUND_MIN_DEPTH && !this.woundFought) {
+          this.woundFought = true;
+          this.state = "cleared"; // main.ts stages the tear, then loadWoundFight()
+          this.ctx.events.emit("WOUND_REVEAL", {});
+          return;
+        }
         this.state = "victory";
         this.ctx.events.emit("RUN_VICTORY", {});
         return;
@@ -128,6 +143,7 @@ export class RunManager {
     this.prevAct = 0;
     this.state = "idle";
     this.currentNode = null;
+    this.woundFought = false;
   }
 
   /** Restore from a save: same plan (regenerated from seed+depth), jump to position. */
@@ -138,6 +154,16 @@ export class RunManager {
     this.prevAct = 0;
     this.state = "idle";
     this.currentNode = null;
+    this.woundFought = false;
+  }
+
+  /** Stage the Ascension true-final fight: a synthetic Wound node on the final fork. */
+  loadWoundFight(): void {
+    this.currentNode = {
+      id: -2, kind: "boss", act: 5, actName: "THE HOLLOW STAR", name: "The Floor of the World",
+      theme: "wound", reward: "relic", bossKind: "wound", waves: [],
+    };
+    this.loadCurrentNode();
   }
 
   /** Pick option i at the current fork; records the choice and sets currentNode. */

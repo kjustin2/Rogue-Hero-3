@@ -115,6 +115,7 @@ export class Hud {
       <div class="bossbar">
         <div class="bossbar__name"></div>
         <div class="bossbar__wrap"><div class="bossbar__fill"></div></div>
+        <div class="bossbar__tempo"><div class="bossbar__tempo-fill"></div></div>
       </div>
       <div class="streak"><div class="streak__count"></div><div class="streak__label"></div></div>
       <div class="combo"><span class="combo__n">0</span><span class="combo__x">HIT</span></div>
@@ -220,7 +221,25 @@ export class Hud {
     events.on("BOSS_HP", ({ hp, maxHp }) => {
       this.bossFill.style.width = `${(hp / maxHp) * 100}%`;
     });
-    events.on("BOSS_DEFEATED", () => this.bossBar.classList.remove("bossbar--show"));
+    events.on("BOSS_DEFEATED", () => {
+      this.bossBar.classList.remove("bossbar--show", "bossbar--tempo");
+    });
+    // The Wound's own tempo meter — a thin strip under its HP bar, zone-colored.
+    const bossTempoFill = this.root.querySelector(".bossbar__tempo-fill") as HTMLElement;
+    events.on("BOSS_TEMPO", ({ value, zone }) => {
+      this.bossBar.classList.add("bossbar--tempo");
+      bossTempoFill.style.width = `${value.toFixed(0)}%`;
+      bossTempoFill.dataset.zone = zone;
+    });
+    // A swallowed card slot goes dark until the phase is broken.
+    events.on("CARD_STOLEN", ({ slot }) => {
+      const s = this.slotEls[slot];
+      if (s) { s.el.classList.add("slot--stolen"); this.replay(s.el, "slot--shake"); }
+    });
+    events.on("CARD_RESTORED", ({ slot }) => {
+      const s = this.slotEls[slot];
+      if (s) { s.el.classList.remove("slot--stolen"); this.replay(s.el, "slot--cast"); }
+    });
     events.on("ROOM_START", ({ index, name, isBoss, act }) => {
       const roman = ROMAN[act - 1] ?? `${act}`;
       const forks = this.ctx.run.plan.forks;

@@ -34,6 +34,8 @@ interface ProfileData {
   /** Hero mastery: wins per hero id, and the deepest depth each has won at. */
   heroWins: Record<string, number>;
   heroBestWinDepth: Record<string, number>;
+  /** Kills of the Ascension true-final boss (The Wound Beneath, depth 3+). */
+  woundKills: number;
   /** Rift-shard balance + lifetime earnings (the Armory currency). */
   shards: number;
   shardsEarned: number;
@@ -108,6 +110,7 @@ function defaults(): ProfileData {
     actsCleared: 0, furthestAct: 1, bestTime: null, bestStreak: 0,
     maxDepth: 0,
     heroWins: {}, heroBestWinDepth: {},
+    woundKills: 0,
     shards: 0, shardsEarned: 0,
     cosmeticsOwned: [DEFAULT_COSMETICS.cape, DEFAULT_COSMETICS.blade],
     equipped: { ...DEFAULT_COSMETICS },
@@ -199,6 +202,7 @@ export const MILESTONES: Milestone[] = [
   ]),
   // --- The Ascension summit: winning the final depth earns a title + a unique blade.
   { id: "depth-15", desc: "Seal the Rift at Depth 15", unlocks: ["cosmetic:blade-riftgold"], check: (p) => p.history.some((r) => r.outcome === "victory" && r.depth >= 15) },
+  { id: "wound-slayer", desc: "Slay the Wound Beneath (Depth 3+)", unlocks: ["cosmetic:blade-woundbreaker"], check: (p) => p.woundKills >= 1 },
 ];
 
 export type UnlockedItem =
@@ -308,6 +312,12 @@ export class Profile {
       crashes: this.data.crashes + run.crashes,
     };
     this.runUnlocks.push(...this.evaluateWith(provisional, run));
+    this.save();
+  }
+
+  /** The Ascension true-final boss fell — banked immediately, like boss kills. */
+  noteWoundKill(): void {
+    this.data.woundKills++;
     this.save();
   }
 

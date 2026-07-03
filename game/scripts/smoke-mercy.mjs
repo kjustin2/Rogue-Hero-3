@@ -46,7 +46,31 @@ await waitPlaying(); // fading-phase cutscene resolves → unmakerFading + playi
 await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyQ" })));
 await page.waitForTimeout(5000); // > SPARE_TIME (game-time) → doMercy fires → ending scheduled
 await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyQ" })));
-await page.waitForTimeout(3400); // collapse/rekindle settle + ending begins
+await page.waitForTimeout(3400); // collapse/rekindle settle
+
+// Depth 3+ = the Ascension truth: sparing the star tears the floor open and THE
+// WOUND BENEATH rises — with the spared ember fighting beside you. Fight through it.
+await page.evaluate(() => window.__rh3debug.godmode());
+let woundUp = false;
+for (let i = 0; i < 60; i++) {
+  woundUp = await page.evaluate(() => {
+    const b = window.__rh3.enemies.living().find((e) => e.kind === "boss");
+    return !!b && window.__rh3.run.currentNode?.bossKind === "wound";
+  });
+  if (woundUp) break;
+  await page.waitForTimeout(400);
+}
+check("The Wound rises after mercy (depth 3+)", woundUp);
+const emberUp = await page.evaluate(() => window.__rh3.combat.emberRevive === true);
+check("Mercy pays off: the ember revive is armed", emberUp);
+await page.evaluate(() => window.__rh3debug.skipCutscene());
+await page.waitForTimeout(6500); // outlast its spawn grace (headless clock is slow)
+for (let k = 0; k < 8; k++) {
+  await page.evaluate(() => { const b = window.__rh3debug.boss0(); if (b) b.takeDamage(999999); });
+  await page.waitForTimeout(1000);
+  if (!(await page.evaluate(() => !!window.__rh3debug.boss0()))) break;
+}
+await page.waitForTimeout(3400); // wound death beat + ending begins
 
 // Skip the ending story to the victory screen.
 let title = "";

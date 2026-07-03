@@ -252,6 +252,8 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   chosenMercy = false;
   ascendantRank = 0;
   ctx.combat.runRankMult = 1;
+  ctx.combat.emberRevive = false;
+  clearEmberAlly();
 
   if (resume) {
     currentSeed = resume.seed;
@@ -661,6 +663,7 @@ function quitToDesktop(): void {
 
 function toMenu(): void {
   finishInterlude(null, false); // quitting mid-causeway: tear the scene down, don't load the node
+  clearEmberAlly();
   state = "menu";
   pendingRoomReward = null;
   inTutorial = false;
@@ -898,6 +901,16 @@ ctx.events.on("BOSS_DEFEATED", ({ x, z }) => {
     return; // RUN_VICTORY (from RunManager) drives the ending
   }
 
+  // The true final boss: bank the kill, pay out big, let RUN_VICTORY end it.
+  if (node?.bossKind === "wound") {
+    ctx.profile.noteWoundKill();
+    awardShards(150 + ctx.stats.depth * 25);
+    clearEmberAlly();
+    playBossDeathBeat("wound", x, z);
+    hud.banner("THE WOUND CLOSES", "the floor of the world is whole again", "banner--clear banner--epitaph");
+    return;
+  }
+
   // Mid-run wardens get a themed death beat, an epitaph, and a boon.
   const kind = node?.bossKind;
   playBossDeathBeat(kind, x, z);
@@ -908,6 +921,72 @@ ctx.events.on("BOSS_DEFEATED", ({ x, z }) => {
       if (state === "playing") hud.banner(title, sub, "banner--clear banner--epitaph");
     }, 1100);
   }
+});
+
+// ---------------------------------------------------------------- the wound (true final)
+/** The spared star's ember — a drifting light that fights beside you in the Wound fight. */
+let emberAlly: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; t: number; acc: number } | null = null;
+
+function spawnEmberAlly(): void {
+  if (emberAlly) return;
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffd8a0, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), mat);
+  ctx.stage.scene.add(mesh);
+  emberAlly = { mesh, mat, t: 0, acc: 4 };
+  hud.banner("THE EMBER YOU SPARED RISES WITH YOU", "", "banner--clear");
+}
+
+function updateEmberAlly(dt: number): void {
+  if (!emberAlly) return;
+  const e = emberAlly;
+  e.t += dt;
+  const p = ctx.player.pos;
+  e.mesh.position.set(p.x + Math.sin(e.t * 1.4) * 2.1, 1.6 + Math.sin(e.t * 2.2) * 0.3, p.z + Math.cos(e.t * 1.4) * 2.1);
+  e.mat.opacity = 0.8 + Math.sin(e.t * 5) * 0.15;
+  if (Math.random() < dt * 6) {
+    ctx.fx.burst({
+      x: e.mesh.position.x, y: e.mesh.position.y, z: e.mesh.position.z,
+      count: 1, color: 0xffd8a0, speed: [0.2, 0.8], up: 0.6, size: [0.2, 0.4], life: [0.3, 0.6], gravity: 0.3, drag: 2, jitter: 0.3,
+    });
+  }
+  e.acc -= dt;
+  if (e.acc <= 0) {
+    e.acc = 5;
+    ctx.tempo.gain(8);
+    ctx.fx.ring(p.x, p.z, { radius: 1.8, color: 0xffd8a0, duration: 0.4 });
+  }
+}
+
+function clearEmberAlly(): void {
+  if (!emberAlly) return;
+  ctx.stage.scene.remove(emberAlly.mesh);
+  emberAlly.mesh.geometry.dispose();
+  emberAlly.mat.dispose();
+  emberAlly = null;
+}
+
+// Ascension truth (depth 3+): the Unmaker's fall doesn't seal the Rift — the floor
+// of the world gives way, and the thing the star was holding shut comes up.
+ctx.events.on("WOUND_REVEAL", () => {
+  window.setTimeout(() => {
+    if (state !== "playing") return; // quit-to-menu during the collapse beat
+    hud.banner("THE FLOOR OF THE WORLD GIVES WAY", "it was never the star", "banner--boss banner--long");
+    ctx.cam.addTrauma(0.6);
+    ctx.stage.punch(0.5);
+    hud.flash("#ff2a4a", 0.5);
+    ctx.fx.ring(0, 0, { radius: 16, color: 0xff2a4a, duration: 1.0 });
+    ctx.fx.ring(0, 0, { radius: 9, color: 0xffffff, duration: 0.8 });
+    ctx.sfx.bossRoar();
+  }, 3600);
+  window.setTimeout(() => {
+    if (state !== "playing") return;
+    // Mercy pays off mechanically: the spared star fights beside you.
+    if (chosenMercy) {
+      ctx.combat.emberRevive = true;
+      spawnEmberAlly();
+    }
+    ctx.run.loadWoundFight();
+  }, 5600);
 });
 
 /** The final boss's quiet end: the star's light gathers, folds inward, and winks out. */
@@ -1079,6 +1158,10 @@ const BOSS_FX: Record<string, BossFxConfig> = {
   echo: {
     zoom: 0.6, c1: 0x3aa0ff, c2: 0x9fe8ff, hex: "#9fe8ff",
     bannerClass: "banner--boss-echo", omen: "echoes", phaseColor: 0x3aa0ff, phaseHex: "#9fe8ff", tear: true,
+  },
+  wound: {
+    zoom: 0.58, c1: 0xff2a4a, c2: 0xff9aa8, hex: "#ff5a6e",
+    bannerClass: "banner--boss-tyrant", omen: "claws", phaseColor: 0xff2a4a, phaseHex: "#ff5a6e", tear: true, seismic: true,
   },
 };
 
@@ -1629,6 +1712,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.trail.setColor(ctx.player.bladeColor);
     ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging || ctx.caster.swinging);
     if (interlude) updateInterlude(dt);
+    if (emberAlly) updateEmberAlly(dt);
     if (inTutorial) tutorial.update(dt);
     // Mercy: while the Hollow Star fades, holding the mercy input spares it instead of killing it.
     if (unmakerFading && !chosenMercy) {

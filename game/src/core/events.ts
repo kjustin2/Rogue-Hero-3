@@ -35,6 +35,13 @@ export interface EventMap {
   UI_CLICK: Record<string, never>;
   DRAFT_OPEN: Record<string, never>;
   HEAL: { amount: number };
+  /** Ascension true-final: the Unmaker fell at depth 3+, and the floor tears open. */
+  WOUND_REVEAL: Record<string, never>;
+  /** The Wound swallows / returns one of the player's card slots. */
+  CARD_STOLEN: { slot: number };
+  CARD_RESTORED: { slot: number };
+  /** The Wound's own tempo meter (HUD renders it under the boss bar). */
+  BOSS_TEMPO: { value: number; zone: TempoZone };
 }
 
 export type TempoZone = "cold" | "flowing" | "hot" | "critical";

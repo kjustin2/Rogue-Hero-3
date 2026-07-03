@@ -13,6 +13,8 @@ export class Deck {
   cooldowns = [0, 0, 0];
   /** "Honed" cards — faster, hotter, harder-hitting. One per slot. */
   upgraded = [false, false, false];
+  /** Slots swallowed by The Wound — unusable until the phase is broken. */
+  stolen = [false, false, false];
   /** Lifetime successful casts this run (drives Overcharger's free-3rd-cast). */
   private castCount = 0;
 
@@ -22,8 +24,22 @@ export class Deck {
     this.slots = [null, null, null];
     this.cooldowns = [0, 0, 0];
     this.upgraded = [false, false, false];
+    this.stolen = [false, false, false];
     this.castCount = 0;
     this.ctx.player.hero.startingHand.forEach((id, i) => (this.slots[i] = cardById(id)));
+  }
+
+  /** The Wound swallows a slot — the card is unusable until restore(). */
+  steal(slot: number): void {
+    this.stolen[slot] = true;
+    this.ctx.events.emit("CARD_STOLEN", { slot });
+  }
+
+  restore(slot: number): void {
+    if (!this.stolen[slot]) return;
+    this.stolen[slot] = false;
+    this.cooldowns[slot] = 0; // returned ready — a phase break should feel like a gift
+    this.ctx.events.emit("CARD_RESTORED", { slot });
   }
 
   get hasEmptySlot(): boolean {
@@ -82,6 +98,11 @@ export class Deck {
   tryCast(slot: number): void {
     const card = this.slots[slot];
     if (!card) return;
+    if (this.stolen[slot]) {
+      this.ctx.events.emit("CARD_FAIL", { slot });
+      this.ctx.sfx.deny();
+      return;
+    }
     // Aegis re-press detonates even while "on cooldown" conceptually —
     // the detonation is part of the same cast.
     if (card.id === "aegis" && this.ctx.caster.aegisActive) {

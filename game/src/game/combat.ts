@@ -68,6 +68,8 @@ export class Combat {
   private swingHits = 0;
   /** In-run passive growth (Ascendant ranks) — a damage multiplier that climbs with kills. */
   runRankMult = 1;
+  /** The spared star's gift: once, a lethal hit is refused (Wound fight on mercy runs). */
+  emberRevive = false;
   /** Charged-heavy state: how long attack has been held, and whether a charge is winding up. */
   private chargeT = 0;
   private charging = false;
@@ -195,6 +197,24 @@ export class Combat {
         events.emit("SHIELD_BROKEN", {});
       }
       return "shielded";
+    }
+
+    // The ember you spared refuses to let you go out — once, restored to half.
+    if (player.hp - dmg <= 0 && this.emberRevive) {
+      this.emberRevive = false;
+      player.hp = Math.max(1, Math.round(player.maxHp * 0.5));
+      stats.damageTaken += dmg;
+      this.ctx.fx.ring(player.pos.x, player.pos.z, { radius: 6, color: 0xffd8a0, duration: 0.8 });
+      this.ctx.fx.burst({
+        x: player.pos.x, y: 1, z: player.pos.z,
+        count: 40, color: [0xffd8a0, 0xffffff],
+        speed: [3, 10], up: 0.9, size: [0.4, 0.9], life: [0.4, 0.9], gravity: -1, drag: 2.5,
+      });
+      this.ctx.floaters.spawn(player.pos.x, 2.2, player.pos.z, "THE EMBER HOLDS YOU", "heal");
+      this.ctx.stage.punch(0.6);
+      this.ctx.sfx.coldCrash();
+      events.emit("PLAYER_HIT", { dmg, srcX, srcZ });
+      return "hit";
     }
 
     // Second Wind: a lethal hit is survived, restoring to 40% HP, once per run

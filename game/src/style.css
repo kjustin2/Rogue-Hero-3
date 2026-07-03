@@ -2865,3 +2865,39 @@ body.rh-no-anim .menu-sigil {
   box-shadow: 0 0 4px rgba(255, 220, 140, 0.35);
   pointer-events: none;
 }
+
+/* ---- The Wound: boss tempo strip + swallowed card slots ---- */
+.bossbar__tempo {
+  display: none;
+  position: relative;
+  height: 4px;
+  margin-top: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bossbar--tempo .bossbar__tempo { display: block; }
+.bossbar__tempo-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 2px;
+  background: #3df59a;
+  transition: width 0.15s linear, background 0.3s;
+}
+.bossbar__tempo-fill[data-zone="cold"] { background: #4f8dff; }
+.bossbar__tempo-fill[data-zone="flowing"] { background: #3df59a; }
+.bossbar__tempo-fill[data-zone="hot"] { background: #ffa028; }
+.bossbar__tempo-fill[data-zone="critical"] { background: #ff4252; box-shadow: 0 0 8px rgba(255, 66, 82, 0.8); }
+.slot--stolen {
+  filter: grayscale(1) brightness(0.45) sepia(0.4) hue-rotate(-30deg);
+  outline: 1px solid rgba(255, 42, 74, 0.65);
+}
+.slot--stolen::after {
+  content: "SWALLOWED";
+  position: absolute;
+  inset: auto 0 4px 0;
+  text-align: center;
+  font-size: 8px;
+  letter-spacing: 1.5px;
+  color: #ff5a6e;
+}

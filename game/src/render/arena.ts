@@ -168,6 +168,21 @@ export const THEMES: Record<string, ArenaTheme> = {
     ember: 0xd8ccff,
     gridEmissive: 0x33305e,
   },
+  // The Wound — beneath the floor of the world: raw crimson light in torn black
+  wound: {
+    name: "wound",
+    dressing: "void",
+    fog: 0x0a0305,
+    skyTop: 0x060102,
+    skyBottom: 0x2e060e,
+    hemiSky: 0xff8a9a,
+    hemiGround: 0x120406,
+    key: 0xffd8dc,
+    rim: 0xff2a4a,
+    crystal: 0xff5a6e,
+    ember: 0xff3a52,
+    gridEmissive: 0x4e0e1a,
+  },
   voidcrown: {
     name: "voidcrown",
     dressing: "void",

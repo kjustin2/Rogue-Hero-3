@@ -50,6 +50,7 @@ export const COSMETICS: CosmeticDef[] = [
   { id: "cape-sig-revenant", name: "Shroud of Return", slot: "cape", color: 0x0e4a28, price: 0, earned: "Seal the Rift at Depth 5+ as the Revenant" },
   // --- The Ascension summit
   { id: "blade-riftgold", name: "Riftgold", slot: "blade", color: 0xffd24a, price: 0, earned: "Seal the Rift at Depth 15" },
+  { id: "blade-woundbreaker", name: "Woundbreaker", slot: "blade", color: 0xff2a4a, price: 0, earned: "Slay the Wound Beneath (Depth 3+)" },
 ];
 
 export function cosmeticById(id: string): CosmeticDef {
