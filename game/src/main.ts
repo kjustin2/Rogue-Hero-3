@@ -925,6 +925,7 @@ function finishCutscene(): void {
   window.removeEventListener("pointerdown", skipCutscene);
   window.removeEventListener("keydown", skipCutscene);
   hud.setLetterbox(false);
+  ctx.arena.cutsceneDim = 0; // skip path: never leave the arena held dark
   ctx.cam.mode = "follow";
   ctx.input.enabled = true;
   ctx.music.duckTo(musicLament ? 0.25 : 1); // keep the lament quiet through the fade
@@ -1098,6 +1099,10 @@ function faceHeroToward(x: number, z: number): void {
 }
 
 function revealBoss(cfg: BossFxConfig, name: string, title: string, bx: number, bz: number): void {
+  // The room stops holding its breath: dimmed arena snaps back with the flash,
+  // and the boss body lands with an overshoot settle instead of fading in.
+  ctx.arena.cutsceneDim = 0;
+  ctx.enemies.living().find((e) => e.kind === "boss")?.arrivalPop();
   if (cfg.quiet) ctx.sfx.bossIntroSting();
   else ctx.sfx.bossRoar();
   ctx.cam.addTrauma(cfg.quiet ? 0.22 : cfg.seismic ? 0.82 : 0.55);
@@ -1133,20 +1138,22 @@ function runBossBeat(beat: BossCutsceneBeat, cfg: BossFxConfig, bx: number, bz: 
 function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, title: string): BossCutsceneBeat[] {
   const beats: BossCutsceneBeat[] = [
     { at: 0, type: "faceHero" },
-    { at: 180, type: "camera", zoom: cfg.zoom * 0.68, zOff: -0.25 },
+    // Camera language: start WIDE and push IN continuously toward the name-drop
+    // (the old beats started close and pulled out — tension read backwards).
+    { at: 180, type: "camera", zoom: cfg.zoom * 1.45, zOff: -0.25 },
     { at: 260, type: "prop", omen: "gate" },
     { at: 300, type: "sound", cue: "intro" },
     { at: 360, type: "prop", omen: cfg.omen },
     { at: 500, type: "ring", radius: 15, color: "c1", duration: 0.5, startRadius: 18 },
     { at: 620, type: "ring", radius: 4, color: "c1", duration: 0.85 },
     { at: 860, type: "ring", radius: 11, color: "c1", duration: 0.5, startRadius: 14 },
-    { at: 900, type: "camera", zoom: cfg.zoom },
+    { at: 900, type: "camera", zoom: cfg.zoom * 1.1 },
     { at: 1180, type: "ring", radius: 7.5, color: "c2", duration: 0.45, startRadius: 10 },
     { at: 1200, type: "burst", preset: "summon" },
     { at: 1520, type: "ring", radius: 4.5, color: "c2", duration: 0.4, startRadius: 6.5 },
     { at: 1700, type: "burst", preset: cfg.quiet ? "starfall" : "pillar" },
     { at: 1760, type: "prop", omen: "beam" },
-    { at: 1900, type: "camera", zoom: cfg.zoom * 1.12 },
+    { at: 1900, type: "camera", zoom: cfg.zoom * 0.88 },
     { at: 1920, type: "ring", radius: 6.5, color: "c2", duration: 0.7 },
     { at: 1930, type: "burst", preset: kind === "spire" || kind === "echo" ? "shards" : cfg.seismic ? "seismic" : "summon" },
     { at: 2180, type: "flash", color: cfg.hex, intensity: cfg.quiet ? 0.16 : 0.24 },
@@ -1233,6 +1240,7 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
   state = "cutscene";
   ctx.input.enabled = false;
   hud.setLetterbox(true);
+  ctx.arena.cutsceneDim = 1; // the room holds its breath until the reveal
   ctx.music.duckTo(0.35);
   faceHeroToward(bx, bz);
   const queueBeat = (t: number, fn: () => void) => cutsceneTimers.push(window.setTimeout(fn, t));
@@ -1285,6 +1293,7 @@ function playBossPhaseCutscene(phase: number, line: string): void {
   state = "cutscene";
   ctx.input.enabled = false;
   hud.setLetterbox(true);
+  ctx.arena.cutsceneDim = 1; // dim under the escalation beat (fading phase stays dim throughout)
 
   if (phase >= 4) {
     // The fading phase. No roar, no shake — the fight simply quiets, and the star sags.
@@ -1328,6 +1337,7 @@ function playBossPhaseCutscene(phase: number, line: string): void {
       ctx.fx.ring(bx, bz, { radius: 16, color: cfg.c2, duration: 0.6, startRadius: 8 });
       hud.flash(cfg.phaseHex || "#ffffff", 0.3);
       ctx.cam.pulseFov(0.5);
+      ctx.arena.cutsceneDim = 0; // lights back up as the new phase asserts itself
     }, 1050));
     // Hold the phase banner up a beat or two longer so the line reads cleanly.
     cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 5800));

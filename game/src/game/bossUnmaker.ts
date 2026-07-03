@@ -145,7 +145,9 @@ export class Unmaker extends Enemy {
     this.cageMat = this.stdMat(0x0a0814, 0x2a1450, 0.5);
     this.ringMat = this.stdMat(0x100a1e, VOID_VIOLET, 1.4);
     this.debrisMat = this.stdMat(0x080610, 0x8a5aff, 1.2);
-    this.coreMat = this.stdMat(0x0c0a18, VOID_CORE, 3.0);
+    // Deeper violet + lower intensity: near-white x3.0 clipped the star to an
+    // untinted white blob under bloom (emissive-must-tint).
+    this.coreMat = this.stdMat(0x0c0a18, 0xd8beff, 2.4);
 
     // Blinding collapsing core
     this.core = this.addMesh(new THREE.IcosahedronGeometry(1.0, 1), this.coreMat, 0, 2.2);

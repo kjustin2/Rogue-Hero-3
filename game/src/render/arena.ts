@@ -977,11 +977,17 @@ export class Arena {
   /** Target 0/1 — set by the tempo system while the player holds Critical. */
   criticalHeat = 0;
   private heat = 0;
+  /** Target 0/1 — boss cutscenes dim the arena ("the room holds its breath"),
+   *  snapping back fast at the reveal. */
+  cutsceneDim = 0;
+  private dim = 0;
 
   update(dt: number): void {
     this.t += dt;
     this.skyMat.uniforms.uTime.value = this.t;
     this.heat += (this.criticalHeat - this.heat) * Math.min(1, dt * 2.5);
+    // Dim eases in slowly, releases fast — darkness → impact at the name-drop.
+    this.dim += (this.cutsceneDim - this.dim) * Math.min(1, dt * (this.cutsceneDim > this.dim ? 1.8 : 7));
 
     if (this.themeLerp < 1) {
       this.themeLerp = Math.min(1, this.themeLerp + dt * 0.7);
@@ -995,11 +1001,12 @@ export class Arena {
     // Breathing rim + crystals + a slow grid pulse so the floor never reads as static.
     // At Critical tempo the whole arena breathes faster and hotter with the player.
     const h = this.heat;
+    const lit = 1 - this.dim * 0.62;
     const breathe = (1.9 + Math.sin(this.t * (1.4 + h * 2.4)) * (0.5 + h * 0.5)) * (1 + h * 0.3);
-    this.rimMat.emissiveIntensity = breathe;
-    this.floorMat.emissiveIntensity = 2.3 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.3 + h * 0.5;
+    this.rimMat.emissiveIntensity = breathe * lit;
+    this.floorMat.emissiveIntensity = (2.3 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.3 + h * 0.5) * lit;
     for (let i = 0; i < this.crystalMats.length; i++) {
-      this.crystalMats[i].emissiveIntensity = 1.1 + h * 0.35 + Math.sin(this.t * (1.1 + h * 1.4) + i * 1.7) * 0.45;
+      this.crystalMats[i].emissiveIntensity = (1.1 + h * 0.35 + Math.sin(this.t * (1.1 + h * 1.4) + i * 1.7) * 0.45) * lit;
     }
 
     for (const r of this.rocks) {

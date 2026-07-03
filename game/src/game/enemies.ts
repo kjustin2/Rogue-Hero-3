@@ -539,6 +539,9 @@ export abstract class Enemy {
   /** Set the boss's base body-scale target (smoothly grown toward in update). */
   protected setBossScale(s: number): void { this.bossScale = s; }
 
+  /** Cutscene arrival: land with an overshoot that settles back to base scale. */
+  arrivalPop(): void { this.bossScaleCur = this.bossScale * 1.35; }
+
   /** Reveal phase geometry with an erupting overshoot scale-pop (0 → ~1.2 → rest). */
   protected eruptReveal(meshes: THREE.Object3D[], dur = 0.75): void {
     for (const o of meshes) {

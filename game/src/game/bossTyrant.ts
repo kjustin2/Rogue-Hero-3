@@ -102,7 +102,9 @@ export class RiftTyrant extends Enemy {
     this.radius = 1.6;
     this.wardColor = RIFT_VIOLET;
 
-    const plateMat = this.stdMat(0x14161f, 0x1b1030, 0.4);
+    // Lifted from near-black: the hull crushed into the dark floor and only the
+    // cyan blocks/crown read, dissolving the silhouette (audit finding).
+    const plateMat = this.stdMat(0x1f1a2e, 0x3a2460, 0.6);
     const trimMat = this.stdMat(0x0d1a24, RIFT_VIOLET, 0.9);
     this.coreMat = this.stdMat(0x06121a, RIFT_CYAN, 2.6);
     this.haloMat = this.stdMat(0x140a26, RIFT_VIOLET, 1.8);

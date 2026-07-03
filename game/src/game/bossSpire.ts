@@ -88,8 +88,8 @@ export class SpireCaster extends Enemy {
     // Dimmer glass robe so the bright crystalline crown/fins/orbs read as the
     // glowing "glass crown" against a darker body — value contrast the old
     // brighter-teal silhouette lacked (it blurred into one glowing blob).
-    const robeMat = this.stdMat(0x0a201e, 0x105046, 0.48);
-    const trimMat = this.stdMat(0x081a16, 0x2affc8, 1.2);
+    const robeMat = this.stdMat(0x0a201e, 0x105046, 0.38);
+    const trimMat = this.stdMat(0x081a16, 0x2affc8, 0.85);
     this.coreMat = this.stdMat(0x06201a, 0x3effd2, 2.4);
     this.robeMat = robeMat;
     this.trimMat = trimMat;
