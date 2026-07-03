@@ -55,6 +55,26 @@ const ACTS: ActDef[] = [
 ];
 
 const COMBAT_NAMES = ["Skirmish", "The Gauntlet", "Ambush", "Broken Ground", "The Crossing", "Hollow Run"];
+
+/** Per-act arena identity: a signature mechanic (weighted heavily) + a secondary
+ *  for variety — chambers within an act share a mechanical flavor instead of
+ *  drawing from one uniform grab bag. Signatures are unique across acts:
+ *  ember pits → sweeping beam → fire geysers → warp pads → drifting void orbs. */
+const ACT_FEATURES: Record<number, [NonNullable<MapNode["feature"]>, NonNullable<MapNode["feature"]>]> = {
+  1: ["hazard", "spikes"],
+  2: ["sweeper", "teleport"],
+  3: ["flamevent", "hazard"],
+  4: ["teleport", "spikes"],
+  5: ["drifters", "sweeper"],
+};
+
+function pickFeature(a: ActDef, rng: Rng, elite: boolean): NonNullable<MapNode["feature"]> {
+  const [sig, alt] = ACT_FEATURES[a.act] ?? ACT_FEATURES[1];
+  let f = rng.chance(0.75) ? sig : alt;
+  // Elite hunts stay pure combat mechanics — a warp pad mid-duel reads as escape, not threat.
+  if (elite && f === "teleport") f = sig === "teleport" ? alt : sig;
+  return f;
+}
 const OBSTACLE_PRESETS: { x: number; z: number; r: number }[][] = [
   [{ x: -6, z: -3, r: 1.2 }, { x: 6, z: -3, r: 1.2 }, { x: 0, z: 6, r: 1.5 }],
   [{ x: -8, z: 2, r: 1.3 }, { x: 8, z: 2, r: 1.3 }, { x: -4, z: -8, r: 1.1 }, { x: 4, z: -8, r: 1.1 }],
@@ -112,10 +132,8 @@ function combatNode(a: ActDef, rng: Rng, diff: Difficulty, id: number): MapNode 
     name: rng.pick(COMBAT_NAMES), theme: a.theme, reward,
     waves: generateWaves(a, rng, false, diff),
     obstacles: hasObstacles ? rng.pick(OBSTACLE_PRESETS) : undefined,
-    // Some chambers carry a mechanic (skip if pillars already crowd the floor).
-    feature: !hasObstacles && rng.chance(0.52)
-      ? rng.pick(["hazard", "teleport", "spikes", "drifters", "sweeper", "flamevent"] as const)
-      : undefined,
+    // Some chambers carry the act's signature mechanic (skip if pillars crowd the floor).
+    feature: !hasObstacles && rng.chance(0.52) ? pickFeature(a, rng, false) : undefined,
   };
 }
 
@@ -124,7 +142,7 @@ function eliteNode(a: ActDef, rng: Rng, diff: Difficulty, id: number): MapNode {
     id, kind: "elite", act: a.act, actName: a.name,
     name: "Elite Hunt", theme: a.altTheme, reward: "relic", elite: true,
     waves: generateWaves(a, rng, true, diff),
-    feature: rng.chance(0.58) ? rng.pick(["hazard", "spikes", "drifters", "sweeper", "flamevent"] as const) : undefined,
+    feature: rng.chance(0.58) ? pickFeature(a, rng, true) : undefined,
   };
 }
 

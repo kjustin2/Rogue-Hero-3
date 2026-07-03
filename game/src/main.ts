@@ -338,44 +338,157 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
  * the lone hero under drifting embers, and rise the story over a letterboxed
  * frame — then hand off to load the act's first chamber.
  */
+/**
+ * Act interlude: a short PLAYABLE beat between acts. The hero walks a narrow
+ * pillar causeway under the new act's sky while the story lines drift past as
+ * banners, and two lights burn at the far end — step into one to take its gift
+ * (mend vs shards) and cross into the act. The skip button uses the same
+ * .story-skip affordance the old cutscene had, so smokes and impatient players
+ * resolve it instantly (no boon).
+ */
+let interlude: {
+  pads: { x: number; z: number; kind: "mend" | "shards"; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; label: string; color: number }[];
+  group: THREE.Group;
+  timers: number[];
+  skipBtn: HTMLElement;
+  onDone: () => void;
+  t: number;
+  labelAcc: number;
+} | null = null;
+
+/** Tear the interlude scene down. `chosen` applies that pad's boon; null = skipped. */
+function finishInterlude(chosen: "mend" | "shards" | null, proceed = true): void {
+  if (!interlude) return;
+  const it = interlude;
+  interlude = null;
+  it.timers.forEach((t) => window.clearTimeout(t));
+  it.skipBtn.remove();
+  ctx.stage.scene.remove(it.group);
+  it.group.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.geometry.dispose();
+      (o.material as THREE.Material).dispose();
+    }
+  });
+  hud.setLetterbox(false);
+  ctx.arena.setObstacles([], 0);
+  if (chosen === "mend") {
+    const h = Math.min(30, ctx.player.maxHp - ctx.player.hp);
+    if (h > 0) {
+      ctx.player.hp += h;
+      ctx.events.emit("HEAL", { amount: h });
+    }
+    ctx.sfx.relicPickup();
+    hud.banner("THE WARM LIGHT MENDS YOU", "", "banner--clear");
+  } else if (chosen === "shards") {
+    awardShards(45);
+    ctx.sfx.relicPickup();
+    hud.banner("THE BRIGHT LIGHT PAYS ITS DEBT", "", "banner--clear");
+  }
+  if (proceed) it.onDone();
+}
+
+/** Per-frame interlude tick (runs inside the playing branch of the loop). */
+function updateInterlude(dt: number): void {
+  if (!interlude) return;
+  const it = interlude;
+  it.t += dt;
+  it.labelAcc -= dt;
+  for (const pad of it.pads) {
+    pad.mat.opacity = 0.45 + Math.abs(Math.sin(it.t * 2.4 + pad.x)) * 0.35;
+    pad.ring.rotation.z += dt * 1.2;
+    if (it.labelAcc <= 0) ctx.floaters.spawn(pad.x, 1.7, pad.z, pad.label, "label");
+    if (ctx.player.alive && Math.hypot(ctx.player.pos.x - pad.x, ctx.player.pos.z - pad.z) < 1.6) {
+      takeInterludePad(pad);
+      return;
+    }
+  }
+  // Crossing the line of lights always resolves to the NEAREST light — walking
+  // dead-center between the pads (or past them) must never strand the player.
+  if (ctx.player.alive && ctx.player.pos.z < -13.6) {
+    let best = it.pads[0];
+    for (const pad of it.pads) if (Math.abs(ctx.player.pos.x - pad.x) < Math.abs(ctx.player.pos.x - best.x)) best = pad;
+    takeInterludePad(best);
+    return;
+  }
+  if (it.labelAcc <= 0) it.labelAcc = 1.1;
+}
+
+function takeInterludePad(pad: { x: number; z: number; kind: "mend" | "shards"; color: number }): void {
+  ctx.fx.ring(pad.x, pad.z, { radius: 2.4, color: pad.color, duration: 0.5 });
+  ctx.fx.burst({
+    x: pad.x, y: 1, z: pad.z,
+    count: 24, color: [pad.color, 0xffffff], speed: [2, 7], up: 0.8, size: [0.35, 0.7], life: [0.25, 0.55], gravity: -1, drag: 3,
+  });
+  finishInterlude(pad.kind);
+}
+
 function playActTransition(node: { act: number; actName: string; theme: keyof typeof THEMES }, onDone: () => void): void {
-  state = "cutscene";
-  ctx.input.enabled = false;
-  hud.setVisible(false);
+  state = "playing"; // a real playable beat — the hero walks the causeway
+  ctx.input.enabled = true;
+  hud.setVisible(true);
+  hud.setLetterbox(true);
   ctx.music.duckTo(0.7);
   ctx.music.map();
   ctx.enemies.clear();
   ctx.projectiles.clear();
   ctx.hostiles.clear();
   ctx.caster.clear();
-  ctx.arena.setObstacles([], 0);
+  ctx.features.clear();
   const theme = THEMES[node.theme];
   ctx.arena.applyTheme(theme);
   ctx.fx.ambientColor = theme.ember;
-  ctx.fx.ambientRate = 16;
-  ctx.cam.menuOrbit();
-  ctx.player.pos.set(0, 0, 6);
+  ctx.fx.ambientRate = 14;
+
+  // The causeway: two pillar rows funnel the walk from the south rim to the lights.
+  const obs: { x: number; z: number; r: number }[] = [];
+  for (let i = 0; i < 5; i++) {
+    const z = 10 - i * 5.5;
+    obs.push({ x: -4.4, z, r: 1.1 }, { x: 4.4, z, r: 1.1 });
+  }
+  ctx.arena.setObstacles(obs, theme.crystal);
+  ctx.player.pos.set(0, 0, 13);
   ctx.player.facing = Math.PI;
-  const emberFx = window.setInterval(() => {
-    const a = Math.random() * Math.PI * 2;
-    const r = 6 + Math.random() * 11;
-    ctx.fx.burst({
-      x: Math.sin(a) * r, y: 0.2, z: Math.cos(a) * r,
-      count: 4, color: [theme.ember, theme.crystal], speed: [0.4, 2], up: 2.2, size: [0.25, 0.6], life: [0.9, 1.7], gravity: 0.3, drag: 1.1, jitter: 0.6,
-    });
-  }, 200);
-  const lines = [`ACT ${ROMAN[node.act - 1] ?? node.act} · ${node.actName}`, ...(ACT_STORY[node.act] ?? [])];
-  // Each act's transition lingers 0.5s longer than the one before (act 2 → +0.5s, …),
-  // and each paragraph shown holds an extra 1.5s on top of the last — so the later,
-  // weightier beats of an act's story stay readable well after they appear.
-  const extraHold = Math.max(0, (node.act - 1) * 500);
-  menus.storyIntro(lines, () => {
-    window.clearInterval(emberFx);
-    menus.clear();
-    ctx.cam.mode = "follow";
-    ctx.fx.ambientRate = 7;
-    onDone();
-  }, extraHold, 1500);
+  ctx.cam.mode = "follow";
+  ctx.cam.snapTo(0, 13);
+
+  // Two lights at the bridge's end — the choice tiles.
+  const group = new THREE.Group();
+  const pads: NonNullable<typeof interlude>["pads"] = [];
+  const padDefs = [
+    { x: -2.8, z: -14, kind: "mend" as const, color: 0x7dffb0, label: "MEND +30" },
+    { x: 2.8, z: -14, kind: "shards" as const, color: 0xffd24a, label: "◆ 45" },
+  ];
+  for (const d of padDefs) {
+    const mat = new THREE.MeshBasicMaterial({ color: d.color, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 1.3, 28), mat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(d.x, 0.05, d.z);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.85, 4.6, 14, 1, true), mat);
+    beam.position.set(d.x, 2.3, d.z);
+    group.add(ring, beam);
+    pads.push({ x: d.x, z: d.z, kind: d.kind, ring, mat, label: d.label, color: d.color });
+  }
+  ctx.stage.scene.add(group);
+
+  // Skip affordance (same class the old cutscene used — smokes click it too).
+  const skipBtn = document.createElement("button");
+  skipBtn.className = "story-skip";
+  skipBtn.textContent = "SKIP ▸";
+  document.body.appendChild(skipBtn);
+  skipBtn.addEventListener("click", () => finishInterlude(null));
+
+  // The story drifts past as banners while the hero walks.
+  const timers: number[] = [];
+  const lines = [...(ACT_STORY[node.act] ?? [])];
+  timers.push(window.setTimeout(() => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long"), 500));
+  lines.forEach((line, i) => {
+    timers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), 4200 + i * 6200));
+  });
+  // Soft-lock guard: if nothing is chosen in 45s, cross without a gift.
+  timers.push(window.setTimeout(() => finishInterlude(null), 45000));
+
+  interlude = { pads, group, timers, skipBtn, onDone, t: 0, labelAcc: 0.4 };
 }
 
 /** Present the current fork: a forced node auto-enters; a choice fork opens the map. */
@@ -547,6 +660,7 @@ function quitToDesktop(): void {
 }
 
 function toMenu(): void {
+  finishInterlude(null, false); // quitting mid-causeway: tear the scene down, don't load the node
   state = "menu";
   pendingRoomReward = null;
   inTutorial = false;
@@ -1514,6 +1628,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.player.getBladePoints(trailTip, trailBase);
     ctx.trail.setColor(ctx.player.bladeColor);
     ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging || ctx.caster.swinging);
+    if (interlude) updateInterlude(dt);
     if (inTutorial) tutorial.update(dt);
     // Mercy: while the Hollow Star fades, holding the mercy input spares it instead of killing it.
     if (unmakerFading && !chosenMercy) {
