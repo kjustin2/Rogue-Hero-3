@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
+import { applyRim } from "../render/materialFx";
 import { dampAngle, TAU } from "../core/math";
 import type { Ctx } from "./ctx";
 
@@ -230,11 +231,11 @@ export abstract class Enemy {
   }
 
   protected stdMat(color: number, emissive = 0x000000, intensity = 0): THREE.MeshStandardMaterial {
-    return this.registerFlash(
-      new THREE.MeshStandardMaterial({
-        color, emissive, emissiveIntensity: intensity, roughness: 0.6, metalness: 0.2, flatShading: true,
-      })
-    );
+    const mat = new THREE.MeshStandardMaterial({
+      color, emissive, emissiveIntensity: intensity, roughness: 0.6, metalness: 0.2, flatShading: true,
+    });
+    applyRim(mat); // fresnel edge-light on every enemy body (IDEAS-GRAPHICS #2)
+    return this.registerFlash(mat);
   }
 
   protected addMesh(geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0, parent: THREE.Object3D = this.root): THREE.Mesh {

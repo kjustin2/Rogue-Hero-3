@@ -13,6 +13,7 @@ import { SwordTrail } from "./render/trail";
 import { Telegraphs } from "./render/telegraphs";
 import { Floaters } from "./render/floaters";
 import { Arena, THEMES } from "./render/arena";
+import { ContactShadows } from "./render/contactShadow";
 import { Input } from "./core/input";
 import { EventBus } from "./core/events";
 import { Rng } from "./core/rng";
@@ -136,6 +137,24 @@ ctx.trail = new SwordTrail(ctx.stage.scene);
 ctx.tele = new Telegraphs(ctx.stage.scene);
 ctx.floaters = new Floaters(ctx.stage.camera);
 ctx.arena = new Arena(ctx.stage);
+const contactShadows = new ContactShadows(ctx.stage.scene);
+// Reused scratch so placing a blob under the hero + every living enemy each frame
+// allocates nothing (the object pool is mutated in place).
+const CA_MAX = 48;
+const caPool = Array.from({ length: CA_MAX }, () => ({ x: 0, z: 0, radius: 0.8, y: 0 }));
+const caList: { x: number; z: number; radius: number; y: number }[] = [];
+function updateContactShadows(): void {
+  caList.length = 0;
+  let i = 0;
+  if (ctx.player.alive && i < CA_MAX) {
+    const o = caPool[i++]; o.x = ctx.player.pos.x; o.z = ctx.player.pos.z; o.radius = ctx.player.radius; caList.push(o);
+  }
+  for (const e of ctx.enemies.living()) {
+    if (i >= CA_MAX) break;
+    const o = caPool[i++]; o.x = e.pos.x; o.z = e.pos.z; o.radius = (e.radius || 0.8); caList.push(o);
+  }
+  contactShadows.update(caList);
+}
 ctx.sfx = new Sfx(ctx.events);
 ctx.music = new Music();
 ctx.stats = freshStats();
@@ -1764,6 +1783,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     // "cleared" here so update() no-ops — this just keeps the beat self-contained.)
     if (!interlude) ctx.run.update();
     ctx.player.update(dt);
+    updateContactShadows();
     // Sword ribbon while the blade is actually moving (chain or card swings)
     ctx.player.getBladePoints(trailTip, trailBase);
     ctx.trail.setColor(ctx.player.bladeColor);

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { clamp, clamp01, damp, dampAngle, ease, TAU } from "../core/math";
+import { applyRim } from "../render/materialFx";
 import { heroById, type HeroDef } from "./heroes";
 import { DEFAULT_COSMETICS, cosmeticById } from "./cosmetics";
 import type { Ctx } from "./ctx";
@@ -122,6 +123,7 @@ export class Player {
       const m = new THREE.MeshStandardMaterial({
         color, roughness: 0.55, metalness: 0.35, flatShading: true, emissive, emissiveIntensity: ei,
       });
+      applyRim(m, this.bladeColor, 2.4, 0.4); // hero edge-light tinted by the blade energy (IDEAS-GRAPHICS #2)
       this.armorMats.push(m);
       return m;
     };
