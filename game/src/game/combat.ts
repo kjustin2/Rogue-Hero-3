@@ -112,6 +112,8 @@ export class Combat {
     this.stageIdx = -1;
     this.swingT = 0;
     this.buffered = false;
+    this.coldCrashLatch = false; // a new room must be able to cold-crash again
+    this.crashIframes = 0;
     this.ctx.player.animSwing = null;
   }
 
@@ -316,7 +318,7 @@ export class Combat {
     const dmg = Math.max(1, Math.round(
       baseDmg * zone.damageMult * tempo.crescendoMult * this.runRankMult * e.vulnerableMult * this.ctx.relics.damageDealtMult(e)
     ));
-    const killed = e.takeDamage(dmg, opts);
+    let killed = e.takeDamage(dmg, opts);
     // Shatterglass: a blow on a frozen foe shatters the ice for a frost burst.
     if (!opts.noDetonate && wasFrozen && this.ctx.relics.has("shatterglass")) {
       this.shatter(e);
@@ -324,6 +326,7 @@ export class Combat {
     // Execution: a heavy blow finishes a badly-wounded foe outright — tempo + a sliver of heal.
     if (!killed && opts.heavy && e.kind !== "boss" && e.alive && e.hp <= e.maxHp * 0.12) {
       e.takeDamage(99999);
+      killed = true; // the execute IS the kill — ENEMY_HIT must report it
       tempo.gain(6);
       const p = this.ctx.player;
       if (p.alive && p.hp < p.maxHp) { p.hp = Math.min(p.maxHp, p.hp + 2); events.emit("HEAL", { amount: 2 }); }
@@ -561,7 +564,9 @@ export class Combat {
         this.ctx.fx.burst({ x: _chTip.x, y: _chTip.y, z: _chTip.z, count: 2, color: [0xffcc66, 0xffffff], speed: [0.5, 2], up: 1, size: [0.2, 0.5], life: [0.2, 0.5], gravity: -1, drag: 2 });
       }
     } else {
-      if (this.charged) this.chargedHeavy();
+      // Tapping dodge while charged is a clean bail — cancel the wind-up instead of
+      // firing a guard-break sweep mid-roll.
+      if (this.charged && !this.ctx.controller.dodging) this.chargedHeavy();
       this.charging = false;
       this.chargeT = 0;
     }

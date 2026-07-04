@@ -42,6 +42,8 @@ export class WoundBoss extends Enemy {
   // Its own tempo: pressing the player heats it; disengaging bleeds it cold.
   private bossTempo = 40;
   private tempoEmitAcc = 0;
+  /** Seconds since spawn — drives the first-theft (base `t` starts randomized). */
+  private spawnClock = 0;
   /** Slot currently swallowed (-1 = none yet). */
   private stolenSlot = -1;
   private stealAnnounced = false;
@@ -141,6 +143,10 @@ export class WoundBoss extends Enemy {
 
   // ------------------------------------------------------------- card theft
   private stealCard(): void {
+    // Never orphan a held slot: return whatever's swallowed before taking another,
+    // and disarm the first-theft gate so a fast phase-1 break can't double-steal.
+    if (this.stolenSlot >= 0) this.returnStolen();
+    this.stealAnnounced = true;
     const deck = this.ctx.deck;
     const candidates = deck.slots.map((c, i) => (c && !deck.stolen[i] ? i : -1)).filter((i) => i >= 0);
     if (!candidates.length) return;
@@ -284,6 +290,7 @@ export class WoundBoss extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
+    this.spawnClock += dt;
 
     // Living idle: the eye tracks, talons flex, rings grind, glow rides its tempo.
     const heat = this.bossTempo / 100;
@@ -306,13 +313,13 @@ export class WoundBoss extends Enemy {
     const zoneSpeed = this.tempoZone === "cold" ? 0.75 : this.tempoZone === "hot" ? 1.15 : this.tempoZone === "critical" ? 1.3 : 1;
 
     // First theft: once the entrance settles, it takes its first card.
-    if (!this.stealAnnounced && this.t > 6.5) {
-      this.stealAnnounced = true;
-      this.stealCard();
+    if (!this.stealAnnounced && this.spawnClock > 6.5) {
+      this.stealCard(); // sets stealAnnounced + returns any already-held slot
     }
 
     // Its CRASH: at the peak it cashes its heat out exactly like you do — dodge it.
-    if (this.bossTempo >= 100 && this.state !== "crashTell" && this.state !== "phaseShift") {
+    // Never interrupt a wind-up ward mid-cast (its punish + invuln would strand).
+    if (this.bossTempo >= 100 && this.state !== "crashTell" && this.state !== "phaseShift" && this.state !== "guard") {
       this.state = "crashTell";
       this.timer = 0.9;
       this.ctx.tele.circle(this.pos.x, this.pos.z, 7.2, 0.9, 0xffffff);

@@ -39,11 +39,10 @@ export class Floaters {
     el.style.setProperty("--drift", `${drift.toFixed(0)}px`);
     el.style.left = `${sx.toFixed(0)}px`;
     el.style.top = `${sy.toFixed(0)}px`;
+    // The element was display:none (committed 950ms ago), so none→block restarts
+    // floater-rise on its own — no per-spawn offsetWidth reflow (which, on a
+    // multi-hit frame, forced one synchronous layout flush per number spawned).
     el.style.display = "block";
-    // Restart the CSS animation
-    el.style.animation = "none";
-    void el.offsetWidth;
-    el.style.animation = "";
     window.setTimeout(() => (el.style.display = "none"), 950);
   }
 }

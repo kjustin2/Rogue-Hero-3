@@ -282,6 +282,9 @@ export class CardCaster {
   private fakeSwing = -1;
   private fakeSwingHeavy = true;
   private fakeSwingDur = 0.34;
+  /** Bumped on every clear() (room change). Delayed card effects capture it and
+   *  bail if it moved — so a queued flurry/nova can't damage the NEXT room. */
+  private epoch = 0;
   private mineGeo = new THREE.ConeGeometry(0.28, 0.4, 4);
   private seekerGeo = new THREE.IcosahedronGeometry(0.22, 0);
   private boomerangGeo = new THREE.TorusGeometry(0.42, 0.12, 6, 12, Math.PI * 1.3);
@@ -344,8 +347,8 @@ export class CardCaster {
       }
       if (!best) return;
       this.sparking = true;
-      this.ctx.combat.dealDamage(best, this.conduitDmg, { kb: 1 });
-      this.sparking = false;
+      try { this.ctx.combat.dealDamage(best, this.conduitDmg, { kb: 1 }); }
+      finally { this.sparking = false; } // a throw here must not latch the conduit off for the run
       this.lightningVisual([{ x, z }, { x: best.pos.x, z: best.pos.z }]);
     });
   }
@@ -592,10 +595,11 @@ export class CardCaster {
         const swings = (upgraded ? 3 : 2) + Math.floor(heat / 25); // 2–6 (3–7 honed)
         const perHit = upgraded ? 16 : 13;
         const arc = (150 * Math.PI) / 180;
+        const ep = this.epoch; // the flurry must die with the room it was cast in
         for (let i = 0; i < swings; i++) {
           const last = i === swings - 1;
           window.setTimeout(() => {
-            if (!player.alive) return;
+            if (!player.alive || this.epoch !== ep) return;
             combat.meleeSweep(player.facing, arc, 3.3, perHit, last ? 7 : 3, last);
             combat.slashVisual(arc, 3.3, last);
             this.ctx.cam.addTrauma(last ? 0.22 : 0.08);
@@ -607,7 +611,7 @@ export class CardCaster {
         // Honed: a tempo-fed nova caps the flurry.
         if (upgraded) {
           window.setTimeout(() => {
-            if (!player.alive) return;
+            if (!player.alive || this.epoch !== ep) return;
             const R = 3.2;
             const dmg = 18 + Math.round(heat * 0.28);
             for (const e of enemies.living()) {
@@ -1533,6 +1537,7 @@ export class CardCaster {
     for (const p of this.phantoms) { this.ctx.stage.scene.remove(p.group); disposeGroup(p.group); }
     for (const w of this.wells) {
       this.ctx.stage.scene.remove(w.mesh);
+      w.mesh.geometry.dispose(); // per-well SphereGeometry — the pop path frees it, clear() didn't
       w.mat.dispose();
     }
     for (const s of this.seekers) {
@@ -1585,6 +1590,8 @@ export class CardCaster {
     this.riposteTimer = 0;
     this.conduitTimer = 0;
     this.aegisTimer = 0;
+    this.fakeSwing = -1; // no card swing-pose bleeds into the next room
+    this.epoch++;        // orphan any queued delayed card effects
     this.ctx.player.shield = 0;
   }
 

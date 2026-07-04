@@ -1612,6 +1612,14 @@ export class EnemyManager {
   private pending: PendingSpawn[] = [];
   private streakCount = 0;
   private streakTimer = 0;
+  // living() is called many times per frame (combat sweeps, ~40 card loops, boss
+  // AI, HUD) and used to allocate a fresh filtered array every call — a top GC
+  // source in heavy combat. Cache it, rebuilt only when the roster structurally
+  // changes (spawn/add/clear) or at each frame boundary. An enemy that dies
+  // mid-frame lingers in the cache for the rest of that frame, which is safe:
+  // dealDamage no-ops on !alive and shove/steer toward a corpse is harmless.
+  private livingCache: Enemy[] = [];
+  private livingDirty = true;
 
   constructor(private ctx: Ctx) {
     ctx.events.on("KILL", () => {
@@ -1680,6 +1688,7 @@ export class EnemyManager {
 
   add(e: Enemy): void {
     this.enemies.push(e);
+    this.livingDirty = true;
   }
 
   /**
@@ -1709,7 +1718,11 @@ export class EnemyManager {
   }
 
   living(): Enemy[] {
-    return this.enemies.filter((e) => e.alive);
+    if (this.livingDirty) {
+      this.livingCache = this.enemies.filter((e) => e.alive);
+      this.livingDirty = false;
+    }
+    return this.livingCache;
   }
 
   get remaining(): number {
@@ -1728,6 +1741,8 @@ export class EnemyManager {
     this.enemies = [];
     this.pending = [];
     this.streakCount = 0;
+    this.livingCache = [];
+    this.livingDirty = false;
   }
 
   /** Remove all lesser enemies and cancel lesser pending spawns, preserving the boss. */
@@ -1736,9 +1751,11 @@ export class EnemyManager {
       if (e.alive && e.kind !== "boss") e.takeDamage(99999);
     }
     this.pending = this.pending.filter((p) => p.kind === "boss");
+    this.livingDirty = true;
   }
 
   update(dt: number): void {
+    this.livingDirty = true; // refresh once/frame — clears out last frame's dead
     this.streakTimer -= dt;
     if (this.streakTimer <= 0) this.streakCount = 0;
 
@@ -1753,6 +1770,7 @@ export class EnemyManager {
         const hpMult = e.kind === "boss" ? diff.enemyHpMult * diff.bossHpMult : diff.enemyHpMult;
         if (hpMult !== 1) e.hp = e.maxHp = Math.round(e.maxHp * hpMult);
         this.enemies.push(e);
+        this.livingDirty = true;
         this.ctx.fx.beam(s.x, s.z, e.kind === "boss" ? 0xff5533 : 0xddddff);
         this.ctx.fx.burst({
           x: s.x, y: 0.4, z: s.z,

@@ -161,6 +161,14 @@ const hud = new Hud(ctx);
 const tutorial = new Tutorial(ctx, hud);
 let state: GameState = "menu";
 let inTutorial = false;
+// Latched the instant a run ends (death / victory). Blocks pause AND the
+// pause→Exit→checkpoint path so a win/death can't be undone by quitting during
+// the resolution delay. Reset at each startRun.
+let runResolved = false;
+// Latched at the Wound reveal (point of no return past the Unmaker). Blocks only
+// checkpoint writes — the fight stays pausable — so quitting mid-Wound can't
+// leave a save that resumes at the already-dead Unmaker. Reset at each startRun.
+let woundActive = false;
 
 // Run seeding: each run gets a fresh random stream (resume reproduces via the saved seed).
 let nextRunDepth = 0;
@@ -253,6 +261,8 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   ascendantRank = 0;
   ctx.combat.runRankMult = 1;
   ctx.combat.emberRevive = false;
+  runResolved = false;
+  woundActive = false;
   clearEmberAlly();
 
   if (resume) {
@@ -582,6 +592,7 @@ function continueRun(): void {
 
 /** Save point: written at each fork boundary. Map regenerates from seed+depth. */
 function checkpoint(): void {
+  if (runResolved || woundActive) return; // run ended / past the Wound gate — never re-arm a save
   writeRunSave({
     v: 2,
     seed: currentSeed,
@@ -673,6 +684,7 @@ function toMenu(): void {
   ctx.hostiles.clear();
   ctx.caster.clear();
   ctx.features.clear();
+  ctx.arena.setObstacles([], 0); // don't leave the last fight's pillars on the menu backdrop
   // Quitting mid-swing must not freeze the menu hero mid-attack: drop any
   // in-flight swing/charge pose and its visuals before the orbit shot.
   ctx.combat.clearTransient();
@@ -699,7 +711,7 @@ function toMenu(): void {
 }
 
 function pause(): void {
-  if (state !== "playing") return;
+  if (state !== "playing" || runResolved) return; // don't let a pause interrupt death/victory resolution
   state = "paused";
   ctx.input.enabled = false;
   ctx.music.duckTo(0.32);
@@ -968,6 +980,8 @@ function clearEmberAlly(): void {
 // Ascension truth (depth 3+): the Unmaker's fall doesn't seal the Rift — the floor
 // of the world gives way, and the thing the star was holding shut comes up.
 ctx.events.on("WOUND_REVEAL", () => {
+  woundActive = true;   // past the Unmaker: no checkpoint may resume there
+  clearRunSave();       // drop the stale Unmaker save immediately
   window.setTimeout(() => {
     if (state !== "playing") return; // quit-to-menu during the collapse beat
     hud.banner("THE FLOOR OF THE WORLD GIVES WAY", "it was never the star", "banner--boss banner--long");
@@ -1556,6 +1570,7 @@ ctx.events.on("HEAL", ({ amount }) => {
 });
 
 ctx.events.on("RUN_VICTORY", () => {
+  runResolved = true; // lock out pause/checkpoint through the resolution delay
   // Not a fanfare — a quiet. The last light is out; let the music fall to nothing.
   ctx.music.silence();
   // Ascension reward: deeper clears bank far more shards (a reason to climb).
@@ -1568,7 +1583,7 @@ ctx.events.on("RUN_VICTORY", () => {
   clearRunSave();
   const unlocks = ctx.profile.recordRun("victory", ctx.stats);
   // Let the collapse settle, then the bittersweet ending plays into the end screen.
-  window.setTimeout(() => playEnding(unlocks), 2800);
+  window.setTimeout(() => { if (state === "playing") playEnding(unlocks); }, 2800);
 });
 
 /** The denouement: a letterboxed story (bittersweet, or hopeful if you showed mercy), then the end screen. */
@@ -1615,10 +1630,19 @@ ctx.events.on("PLAYER_DIED", () => {
     ctx.player.root.visible = true;
     return;
   }
+  runResolved = true; // lock out pause/checkpoint through the death resolution
   // If death lands during a boss phase cutscene, tear the cutscene down first so
   // its skip listeners / letterbox / world-freeze don't stay armed over the death
   // screen (guarded no-op otherwise; mirrors BOSS_DEFEATED).
   finishCutscene();
+  // Tear down anything a run-transition would: an in-flight interlude (its skip
+  // button + 45s auto-cross), the Wound's ember ally, and the mercy prompt —
+  // any of which would otherwise survive onto the death screen.
+  finishInterlude(null, false);
+  clearEmberAlly();
+  hud.setSparePrompt(false, 0);
+  unmakerFading = false;
+  spareHold = 0;
   ctx.music.silence();
   ctx.cam.addTrauma(0.7);
   ctx.stage.punch(1);
@@ -1672,15 +1696,16 @@ ctx.stage.renderer.setAnimationLoop(() => {
   // the ticks we keep, so latency tracks the cap — not vsync. Never gate boot.
   const fpsCap = menus.settings.fpsCap;
   if (fpsCap > 0 && !booting && now - last < 1000 / fpsCap - 1) return;
-  perf.begin(now);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
 
-  // The entire frame body is guarded. Three's setAnimationLoop never re-requests once
-  // its callback throws, so a single unhandled exception anywhere below would freeze
-  // the game permanently — what reads to a player as a "crash" (e.g. mid boss-cutscene).
-  // Contain it: log the first failure with the state it struck in, keep the loop alive.
+  // The entire frame body — INCLUDING the perf instrument — is guarded. Three's
+  // setAnimationLoop never re-requests once its callback throws, so a single
+  // unhandled exception anywhere below (even in perf.begin/end) would freeze the
+  // game permanently — a player-facing "crash". Contain it: log the first failure
+  // with the state it struck in, keep the loop alive.
   try {
+  perf.begin(now);
   // Gamepad: poll every frame; Start toggles pause (works while paused, unlike the action layer)
   ctx.input.pollGamepad();
   if (ctx.input.pauseEdgeRaw()) {
@@ -1786,8 +1811,9 @@ ctx.stage.renderer.setAnimationLoop(() => {
     }
     // Clear per-frame input edges even on a bad frame so a stuck press can't latch.
     try { ctx.input.endFrame(); } catch { /* ignore */ }
+  } finally {
+    try { perf.end(dt); } catch { /* the instrument must never freeze the loop */ }
   }
-  perf.end(dt);
 });
 
 // ---------------------------------------------------------------- boot

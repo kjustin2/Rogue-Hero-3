@@ -50,7 +50,10 @@ export class Telegraphs {
     stripGeo.rotateX(-Math.PI / 2);
     stripGeo.translate(0, 0, 0.5);
 
-    for (let i = 0; i < 32; i++) {
+    // 48, not 32: at high Ascension depth a pack + champion + affixed elites can
+    // have many attacks telegraphing at once, and a pool miss drops a telegraph —
+    // an un-warned hit, which breaks the "every attack telegraphs" fairness contract.
+    for (let i = 0; i < 48; i++) {
       const group = new THREE.Group();
       const mat = () =>
         new THREE.MeshBasicMaterial({
