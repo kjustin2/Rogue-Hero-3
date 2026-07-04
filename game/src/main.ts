@@ -723,6 +723,7 @@ function quitToDesktop(): void {
 function toMenu(): void {
   finishInterlude(null, false); // quitting mid-causeway: tear the scene down, don't load the node
   clearEmberAlly();
+  ctx.stage.setMood("neutral"); // clear any death/victory grade
   state = "menu";
   pendingRoomReward = null;
   inTutorial = false;
@@ -1619,6 +1620,7 @@ ctx.events.on("HEAL", ({ amount }) => {
 
 ctx.events.on("RUN_VICTORY", () => {
   runResolved = true; // lock out pause/checkpoint through the resolution delay
+  ctx.stage.setMood("victory"); // warm the frame + bloom the light (IDEAS-GRAPHICS #18)
   // Not a fanfare — a quiet. The last light is out; let the music fall to nothing.
   ctx.music.silence();
   // Ascension reward: deeper clears bank far more shards (a reason to climb).
@@ -1679,6 +1681,7 @@ ctx.events.on("PLAYER_DIED", () => {
     return;
   }
   runResolved = true; // lock out pause/checkpoint through the death resolution
+  ctx.stage.setMood("dead"); // drain + cool the frame (IDEAS-GRAPHICS #18)
   // If death lands during a boss phase cutscene, tear the cutscene down first so
   // its skip listeners / letterbox / world-freeze don't stay armed over the death
   // screen (guarded no-op otherwise; mirrors BOSS_DEFEATED).
@@ -1784,6 +1787,9 @@ ctx.stage.renderer.setAnimationLoop(() => {
     if (!interlude) ctx.run.update();
     ctx.player.update(dt);
     updateContactShadows();
+    // Tempo colours the whole frame, not just the HUD (IDEAS-GRAPHICS #17). Stops
+    // once a run resolves so the death/victory mood grade owns the frame.
+    if (!runResolved) ctx.stage.setTempoTint(ctx.tempo.zone.color, 0.13);
     // Sword ribbon while the blade is actually moving (chain or card swings)
     ctx.player.getBladePoints(trailTip, trailBase);
     ctx.trail.setColor(ctx.player.bladeColor);

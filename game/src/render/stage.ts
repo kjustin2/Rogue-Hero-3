@@ -14,6 +14,7 @@ import {
 } from "postprocessing";
 import { clamp01, damp } from "../core/math";
 import { EnvironmentBaker } from "./environment";
+import { GradeEffect } from "./gradeEffect";
 
 export type Quality = "low" | "medium" | "high";
 
@@ -54,6 +55,13 @@ export class Stage {
   private vignette!: VignetteEffect;
   private aberration: ChromaticAberrationEffect | null = null;
   private bloom: BloomEffect | null = null;
+  /** Combined split-tone / tempo-tint / mood / dither grade (full chain only). */
+  private grade!: GradeEffect;
+  private tintColor = new THREE.Color(1, 1, 1);
+  private tintTarget = new THREE.Color(1, 1, 1);
+  private tintAmt = 0;
+  private tintAmtTarget = 0;
+  private satTarget = 0;
   /** True while a menu/overlay is up: render the lean chain and drop shadows. */
   private lowCost = false;
 
@@ -161,6 +169,13 @@ export class Stage {
     // Subtle grade: a touch more saturation + contrast sells "finished"
     effects.push(new HueSaturationEffect({ saturation: 0.12 }));
     effects.push(new BrightnessContrastEffect({ contrast: 0.07 }));
+    // Split-tone + tempo/mood tint + dither (IDEAS-GRAPHICS #5/#17/#18/#21). Rebuilt
+    // per preset; uniforms re-seeded from the current damped tint state so a quality
+    // change mid-run doesn't reset an active tempo/mood grade.
+    this.grade = new GradeEffect();
+    this.grade.setTint(this.tintColor, this.tintAmt);
+    this.grade.saturation = this.satTarget;
+    effects.push(this.grade);
     if (this.quality === "high") {
       const noise = new NoiseEffect({ premultiply: true });
       noise.blendMode.opacity.value = 0.45;
@@ -271,6 +286,19 @@ export class Stage {
     this.stress = clamp01(this.stress + amount);
   }
 
+  /** Tempo-zone frame tint (IDEAS-GRAPHICS #17): a gentle pull toward `hex` by `amt`. */
+  setTempoTint(hex: number, amt: number): void {
+    this.tintTarget.set(hex);
+    this.tintAmtTarget = amt;
+  }
+
+  /** Whole-frame mood (IDEAS-GRAPHICS #18): death drains + cools, victory warms + blooms. */
+  setMood(mood: "neutral" | "dead" | "victory"): void {
+    if (mood === "dead") { this.tintTarget.set(0x5a6a88); this.tintAmtTarget = 0.5; this.satTarget = -0.32; }
+    else if (mood === "victory") { this.tintTarget.set(0xffe6b0); this.tintAmtTarget = 0.35; this.satTarget = 0.18; }
+    else { this.tintAmtTarget = 0; this.satTarget = 0; }
+  }
+
   update(dt: number): void {
     this.stress = damp(this.stress, 0, 6, dt);
     const s = this.stress;
@@ -279,6 +307,11 @@ export class Stage {
       const ab = this.baseAberration + s * 0.011;
       this.aberration.offset.set(ab, ab);
     }
+    // Damp the grade toward its target tint / mood and push to the effect.
+    this.tintColor.lerp(this.tintTarget, clamp01(dt * 4));
+    this.tintAmt = damp(this.tintAmt, this.tintAmtTarget, 4, dt);
+    this.grade.setTint(this.tintColor, this.tintAmt);
+    this.grade.saturation = damp(this.grade.saturation, this.satTarget, 3, dt);
   }
 
   render(dt: number): void {
