@@ -76,6 +76,13 @@ export class Player {
   private visualFacing = 0;
   private t = 0;
   private hitFlash = 0;
+  // Footfall impact (IDEAS-GRAPHICS #39): rising-edge of the footPlant contact signal.
+  private prevFootPlant = 0;
+  // Hit flinch (IDEAS-GRAPHICS #38): a short directional body recoil when struck.
+  private flinchT = 0;
+  private flinchDur = 0.18;
+  private flinchPitch = 0;
+  private flinchRoll = 0;
 
   constructor(private ctx: Ctx) {
     this.root = new THREE.Group();
@@ -576,6 +583,27 @@ export class Player {
     this.hitFlash = 1;
   }
 
+  /** Directional body flinch when struck (IDEAS-GRAPHICS #38). (dirX,dirZ) points
+   *  from the attacker toward the hero, so the body recoils along it. */
+  hitReaction(dirX: number, dirZ: number): void {
+    const len = Math.hypot(dirX, dirZ) || 1;
+    // Convert world push dir into the hero's local frame so pitch/roll read right.
+    const local = Math.atan2(dirX / len, dirZ / len) - this.visualFacing;
+    this.flinchT = this.flinchDur;
+    this.flinchPitch = Math.cos(local) * 0.16;
+    this.flinchRoll = -Math.sin(local) * 0.16;
+  }
+
+  /** A step lands: a small ground-tinted dust puff + a micro cam kick by bulk. */
+  private emitFootfall(): void {
+    this.ctx.fx.burst({
+      x: this.pos.x, y: 0.12, z: this.pos.z,
+      count: 5, color: 0x8a8496,
+      speed: [0.6, 2.2], up: 0.25, size: [0.18, 0.42], life: [0.18, 0.4], gravity: -1.5, drag: 4,
+    });
+    this.ctx.cam.addTrauma(0.02 * this.hero.bulk);
+  }
+
   /** World-space blade ribbon anchor points (tip, base) for the trail. */
   getBladePoints(tip: THREE.Vector3, base: THREE.Vector3): void {
     this.bladeTipMarker.getWorldPosition(tip);
@@ -727,6 +755,10 @@ export class Player {
     const liftR = Math.pow(Math.max(0, -Math.sin(cycle)), 1.8) * moving;
     const liftL = Math.pow(Math.max(0, Math.sin(cycle)), 1.8) * moving;
     const footPlant = Math.pow(Math.abs(Math.cos(cycle)), 6) * moving;
+    // Footfall impact: on each rising step-contact, a small ground-tinted dust puff +
+    // a micro camera kick scaled by hero bulk (IDEAS-GRAPHICS #39).
+    if (footPlant > 0.55 && this.prevFootPlant <= 0.55 && moving > 0.25) this.emitFootfall();
+    this.prevFootPlant = footPlant;
     const stepSnap = Math.max(liftR, liftL) * 0.6 + footPlant * 0.35;
     const bob = stepSnap * gait.bob * moving;
     const idleBreath = Math.sin(this.t * (h === "revenant" ? 1.25 : 1.8)) * 0.012 * (1 - moving * 0.55);
@@ -737,6 +769,13 @@ export class Player {
     this.body.position.y = damp(this.body.position.y, -0.55 + bob + idleBreath, 18, dt);
     this.body.rotation.x = damp(this.body.rotation.x, -runLean + backLean, 11, dt);
     this.body.rotation.z = damp(this.body.rotation.z, -strafeLean, 13, dt);
+    // Hit flinch: a crisp additive recoil over the locomotion pose (IDEAS-GRAPHICS #38).
+    if (this.flinchT > 0) {
+      this.flinchT = Math.max(0, this.flinchT - dt);
+      const fl = ease.outCubic(this.flinchT / this.flinchDur);
+      this.body.rotation.x += this.flinchPitch * fl;
+      this.body.rotation.z += this.flinchRoll * fl;
+    }
     this.legR.rotation.x = damp(this.legR.rotation.x, swing * 0.92 * moving * gait.stride - liftR * 0.22, 20, dt);
     this.legL.rotation.x = damp(this.legL.rotation.x, -swing * 0.92 * moving * gait.stride - liftL * 0.22, 20, dt);
     this.legR.rotation.z = damp(this.legR.rotation.z, -liftR * 0.07 - side * 0.08 * moving, 16, dt);

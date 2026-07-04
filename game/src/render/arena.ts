@@ -227,6 +227,10 @@ export class Arena {
   private floorTextureTheme = THEMES.rift.name;
   private crystalMats: THREE.MeshStandardMaterial[] = [];
   private rocks: { mesh: THREE.Mesh; baseY: number; spin: number; bob: number; phase: number }[] = [];
+  // Standing volumetric light shafts (IDEAS-GRAPHICS #24): a few slow-drifting
+  // additive god-ray columns angled with the key light, tinted per act.
+  private shaftMat!: THREE.MeshBasicMaterial;
+  private shafts: { mesh: THREE.Mesh; phase: number; baseX: number; baseZ: number }[] = [];
   private dressings: Record<Dressing, THREE.Group | null> = { rift: null, spire: null, forge: null, void: null };
   private sharedGeos = new Map<string, THREE.BufferGeometry>();
   private t = 0;
@@ -673,6 +677,25 @@ export class Arena {
         phase: Math.random() * Math.PI * 2,
       });
     }
+
+    // --- Standing light shafts (IDEAS-GRAPHICS #24): additive god-ray columns
+    // widening toward the floor, angled with the key light, drifting slowly. One
+    // shared additive material (re-tinted per act) — cheap, never near screen-fill.
+    this.shaftMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(THEMES.rift.ember), transparent: true, opacity: 0.05,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
+    });
+    const shaftGeo = new THREE.CylinderGeometry(0.2, 2.6, 24, 12, 1, true);
+    for (let i = 0; i < 4; i++) {
+      const s = new THREE.Mesh(shaftGeo, this.shaftMat);
+      const a = (i / 4) * Math.PI * 2 + 0.6;
+      const r = 5 + Math.random() * 8;
+      s.position.set(Math.cos(a) * r, 9, Math.sin(a) * r);
+      s.rotation.set(0.28, Math.random() * Math.PI, -0.42); // lean with the key light
+      s.renderOrder = 2;
+      scene.add(s);
+      this.shafts.push({ mesh: s, phase: Math.random() * Math.PI * 2, baseX: s.position.x, baseZ: s.position.z });
+    }
   }
 
   private getFloorTexture(theme: ArenaTheme): THREE.CanvasTexture {
@@ -1010,6 +1033,7 @@ export class Arena {
       }
     }
     this.mixTo(this.rockMat.emissive, f.crystal, t.crystal, k);
+    this.mixTo(this.shaftMat.color, f.ember, t.ember, k);
   }
 
   /** Target 0/1 — set by the tempo system while the player holds Critical. */
@@ -1040,6 +1064,16 @@ export class Arena {
     // At Critical tempo the whole arena breathes faster and hotter with the player.
     const h = this.heat;
     const lit = 1 - this.dim * 0.62;
+    // Tempo drives the real lights + fog, not just emissive skin (IDEAS-GRAPHICS #9/#28):
+    // Critical brightens the room and thins the air for a clarity payoff; a boss dim
+    // darkens the key + thickens the fog for dread.
+    this.stage.keyLight.intensity = 1.6 * (1 + h * 0.16) * (1 - this.dim * 0.35);
+    this.stage.hemiLight.intensity = 0.95 * (1 + h * 0.08);
+    this.stage.rimLight.intensity = 0.55 * (1 + h * 0.2);
+    if (this.blendSettled) {
+      const baseFog = this.toTheme.fogDensity ?? FOG_DEFAULT;
+      this.stage.fog.density = baseFog * (1 - h * 0.2) * (1 + this.dim * 0.35);
+    }
     const breathe = (1.9 + Math.sin(this.t * (1.4 + h * 2.4)) * (0.5 + h * 0.5)) * (1 + h * 0.3);
     this.rimMat.emissiveIntensity = breathe * lit;
     this.floorMat.emissiveIntensity = (2.3 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.3 + h * 0.5) * lit;
@@ -1051,5 +1085,13 @@ export class Arena {
       r.mesh.rotation.y += r.spin * dt;
       r.mesh.position.y = r.baseY + Math.sin(this.t * 0.4 + r.phase) * r.bob;
     }
+
+    // Light shafts drift slowly and breathe; dimmed with the arena during boss holds.
+    for (const s of this.shafts) {
+      s.phase += dt * 0.15;
+      s.mesh.position.x = s.baseX + Math.sin(s.phase) * 1.2;
+      s.mesh.position.z = s.baseZ + Math.cos(s.phase * 0.7) * 1.0;
+    }
+    this.shaftMat.opacity = (0.045 + Math.sin(this.t * 0.5) * 0.014 + h * 0.02) * lit;
   }
 }

@@ -80,8 +80,13 @@ export class Stage {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.32;
+    // Tone-map bake-off (IDEAS-GRAPHICS #22): ACES by default; `?tonemap=agx` opts
+    // into AgX (better hue retention at high exposure) for a screenshot comparison.
+    // Read once here so every material compiles + warms with the chosen curve — never
+    // hot-swapped mid-scene (tone mapping is in every program's cache key).
+    const agx = new URLSearchParams(location.search).get("tonemap") === "agx";
+    this.renderer.toneMapping = agx ? THREE.AgXToneMapping : THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = agx ? 1.15 : 1.32;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;

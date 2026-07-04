@@ -2,6 +2,75 @@ import * as THREE from "three";
 
 const MAX_PARTICLES = 4096;
 
+/** Shape-atlas cell indices for `BurstOpts.shape`. `mote` (0) is the default so
+ *  every existing burst() call site renders exactly as before. */
+export const ParticleShape = {
+  mote: 0,
+  streak: 1,
+  shard: 2,
+  ring: 3,
+} as const;
+
+let shapeAtlas: THREE.CanvasTexture | null = null;
+
+/**
+ * Shared 2x2 particle-shape atlas (soft mote / spark streak / debris shard /
+ * ring fragment), baked once at boot and reused by every burst. Cell 0 (mote)
+ * is a solid white fill so it's a no-op mask — the radial glow shape below is
+ * unchanged for callers that never opt into a shape.
+ */
+function getShapeAtlas(): THREE.CanvasTexture {
+  if (shapeAtlas) return shapeAtlas;
+  const cell = 64;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = cell * 2;
+  const g = cv.getContext("2d")!;
+  g.fillStyle = "#fff";
+
+  // Cell 0 — mote: full coverage, carves nothing.
+  g.fillRect(0, 0, cell, cell);
+
+  // Cell 1 — spark streak: a thin feathered ellipse.
+  g.save();
+  g.translate(cell * 1.5, cell * 0.5);
+  g.filter = "blur(4px)";
+  g.beginPath();
+  g.ellipse(0, 0, cell * 0.42, cell * 0.09, 0, 0, Math.PI * 2);
+  g.fill();
+  g.restore();
+
+  // Cell 2 — debris shard: an irregular angular quad.
+  g.save();
+  g.translate(cell * 0.5, cell * 1.5);
+  g.filter = "blur(2px)";
+  g.beginPath();
+  g.moveTo(0, -cell * 0.38);
+  g.lineTo(cell * 0.3, cell * 0.1);
+  g.lineTo(cell * 0.05, cell * 0.36);
+  g.lineTo(-cell * 0.32, cell * 0.05);
+  g.closePath();
+  g.fill();
+  g.restore();
+
+  // Cell 3 — ring fragment: a thick partial arc.
+  g.save();
+  g.translate(cell * 1.5, cell * 1.5);
+  g.filter = "blur(2px)";
+  g.strokeStyle = "#fff";
+  g.lineWidth = cell * 0.14;
+  g.beginPath();
+  g.arc(0, 0, cell * 0.3, -Math.PI * 0.15, Math.PI * 0.95);
+  g.stroke();
+  g.restore();
+
+  shapeAtlas = new THREE.CanvasTexture(cv);
+  // Hard cell borders — mipmaps would bleed neighboring cells at distance/glancing sizes.
+  shapeAtlas.generateMipmaps = false;
+  shapeAtlas.minFilter = THREE.LinearFilter;
+  shapeAtlas.magFilter = THREE.LinearFilter;
+  return shapeAtlas;
+}
+
 export interface BurstOpts {
   x: number;
   y: number;
@@ -20,6 +89,8 @@ export interface BurstOpts {
   drag?: number;
   /** Random spawn offset radius. */
   jitter?: number;
+  /** ParticleShape cell (or a palette to pick from per particle). Defaults to `mote`. */
+  shape?: number | number[];
 }
 
 /**
@@ -32,6 +103,7 @@ export class Particles {
   private colors: Float32Array;
   private sizes: Float32Array;
   private fades: Float32Array;
+  private shapes: Float32Array;
   private velocities: Float32Array;
   private life: Float32Array;
   private lifeTotal: Float32Array;
@@ -55,6 +127,7 @@ export class Particles {
     this.colors = new Float32Array(MAX_PARTICLES * 3);
     this.sizes = new Float32Array(MAX_PARTICLES);
     this.fades = new Float32Array(MAX_PARTICLES);
+    this.shapes = new Float32Array(MAX_PARTICLES); // all-zero = ParticleShape.mote by default
     this.velocities = new Float32Array(MAX_PARTICLES * 3);
     this.life = new Float32Array(MAX_PARTICLES);
     this.lifeTotal = new Float32Array(MAX_PARTICLES);
@@ -66,33 +139,54 @@ export class Particles {
     this.geometry.setAttribute("aColor", new THREE.BufferAttribute(this.colors, 3));
     this.geometry.setAttribute("aSize", new THREE.BufferAttribute(this.sizes, 1));
     this.geometry.setAttribute("aFade", new THREE.BufferAttribute(this.fades, 1));
+    this.geometry.setAttribute("aShape", new THREE.BufferAttribute(this.shapes, 1));
 
     const material = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      uniforms: {
+        uAtlas: { value: getShapeAtlas() },
+      },
       vertexShader: /* glsl */ `
         attribute vec3 aColor;
         attribute float aSize;
         attribute float aFade;
+        attribute float aShape;
         varying vec3 vColor;
         varying float vFade;
+        varying float vShape;
         void main() {
           vColor = aColor;
           vFade = aFade;
+          vShape = aShape;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           gl_PointSize = aSize * aFade * (240.0 / -mv.z);
           gl_Position = projectionMatrix * mv;
         }
       `,
       fragmentShader: /* glsl */ `
+        uniform sampler2D uAtlas;
         varying vec3 vColor;
         varying float vFade;
+        varying float vShape;
         void main() {
           vec2 uv = gl_PointCoord - 0.5;
           float d = length(uv) * 2.0;
-          float a = smoothstep(1.0, 0.15, d) * vFade;
-          gl_FragColor = vec4(vColor * (1.0 + (1.0 - d) * 1.4), a);
+          // Coloured corona (original falloff) plus a tight near-white core UNDER
+          // it — a sharper second power term keeps the hot center small so it
+          // reads as a highlight, not a wash.
+          float corona = smoothstep(1.0, 0.15, d);
+          float core = pow(clamp(1.0 - d, 0.0, 1.0), 6.0);
+          vec3 col = mix(vColor * (1.0 + (1.0 - d) * 1.4), vec3(1.0), core * 0.85);
+
+          // Shape atlas: carve the corona into one of 4 baked masks picked per-
+          // particle at spawn (mote's cell is solid white, so shape=0 is a no-op).
+          float cellIdx = floor(vShape + 0.5);
+          vec2 cell = vec2(mod(cellIdx, 2.0), floor(cellIdx * 0.5));
+          float mask = texture2D(uAtlas, (gl_PointCoord + cell) * 0.5).r;
+
+          gl_FragColor = vec4(col, corona * vFade * mask);
         }
       `,
     });
@@ -156,6 +250,8 @@ export class Particles {
     const drag = opts.drag ?? 2.5;
     const jitter = opts.jitter ?? 0.15;
     const palette = Array.isArray(opts.color) ? opts.color : null;
+    const shapePalette = Array.isArray(opts.shape) ? opts.shape : null;
+    const shape = shapePalette ? null : opts.shape ?? ParticleShape.mote;
 
     for (let n = 0; n < opts.count; n++) {
       const i = this.cursor;
@@ -193,11 +289,13 @@ export class Particles {
       this.fades[i] = 1;
       this.gravity[i] = gravity;
       this.drag[i] = drag;
+      this.shapes[i] = shapePalette ? shapePalette[Math.floor(Math.random() * shapePalette.length)] : (shape as number);
     }
-    // aColor/aSize only change when particles spawn — flag them here, not every
-    // frame in update(), so quiet-but-alive frames skip these two full re-uploads.
+    // aColor/aSize/aShape only change when particles spawn — flag them here, not
+    // every frame in update(), so quiet-but-alive frames skip these re-uploads.
     this.geometry.attributes.aColor.needsUpdate = true;
     this.geometry.attributes.aSize.needsUpdate = true;
+    this.geometry.attributes.aShape.needsUpdate = true;
   }
 
   /** Expanding ground shockwave ring. */

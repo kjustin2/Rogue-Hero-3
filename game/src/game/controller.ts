@@ -197,6 +197,7 @@ export class Controller {
     player.animMoveAmount = clamp01(this.vel.length() / speedBase);
     player.animMoveX = Math.max(-1, Math.min(1, (this.vel.x * rightX + this.vel.y * rightZ) / speedBase));
     player.animMoveZ = Math.max(-1, Math.min(1, (this.vel.x * fwdX + this.vel.y * fwdZ) / speedBase));
+    this.ctx.cam.setSpeed(player.animMoveAmount); // speed widens FOV + dollies out (IDEAS-GRAPHICS #49)
     this.ctx.cam.target.set(player.pos.x, 0, player.pos.z);
   }
 

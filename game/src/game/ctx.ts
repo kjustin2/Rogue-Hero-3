@@ -5,6 +5,7 @@ import type { SwordTrail } from "../render/trail";
 import type { Telegraphs } from "../render/telegraphs";
 import type { Floaters } from "../render/floaters";
 import type { Arena } from "../render/arena";
+import type { Decals } from "../render/decals";
 import type { Input } from "../core/input";
 import type { EventBus } from "../core/events";
 import type { Rng } from "../core/rng";
@@ -60,6 +61,8 @@ export interface Ctx {
   tele: Telegraphs;
   floaters: Floaters;
   arena: Arena;
+  /** Pooled ground-impact scorch/crack decals (IDEAS-GRAPHICS #29). */
+  decals: Decals;
   input: Input;
   events: EventBus;
   rng: Rng;

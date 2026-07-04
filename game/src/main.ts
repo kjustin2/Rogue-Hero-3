@@ -14,6 +14,7 @@ import { Telegraphs } from "./render/telegraphs";
 import { Floaters } from "./render/floaters";
 import { Arena, THEMES } from "./render/arena";
 import { ContactShadows } from "./render/contactShadow";
+import { Decals } from "./render/decals";
 import { Input } from "./core/input";
 import { EventBus } from "./core/events";
 import { Rng } from "./core/rng";
@@ -137,6 +138,7 @@ ctx.trail = new SwordTrail(ctx.stage.scene);
 ctx.tele = new Telegraphs(ctx.stage.scene);
 ctx.floaters = new Floaters(ctx.stage.camera);
 ctx.arena = new Arena(ctx.stage);
+ctx.decals = new Decals(ctx.stage.scene, ctx.stage.quality === "low" ? 8 : 12);
 const contactShadows = new ContactShadows(ctx.stage.scene);
 // Reused scratch so placing a blob under the hero + every living enemy each frame
 // allocates nothing (the object pool is mutated in place).
@@ -1775,6 +1777,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.controller.update(dt);
     ctx.combat.update(dt);
     ctx.tempo.update(dt);
+    ctx.cam.setTempo(ctx.tempo.value / 100); // tempo tightens the framing (IDEAS-GRAPHICS #46)
     ctx.deck.update(dt);
     ctx.caster.update(dt);
     ctx.enemies.update(dt);
@@ -1832,6 +1835,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
 
   ctx.arena.update(dt);
   ctx.fx.update(dt);
+  ctx.decals.update(dt); // scorch/crack marks fade on their own clock, even through death
   ctx.tele.update(dt);
   ctx.cam.update(dt);
   ctx.stage.update(dt);
@@ -1933,7 +1937,18 @@ async function boot(): Promise<void> {
       ctx.caster.precompile();
       step(0.74, "Sharpening the blades…");
       await paint();
+      // Stage the new render-system materials in-frustum so precompile's warmUp draws
+      // and compiles their composer-target (srgb-linear) program — decals start
+      // visible:false and the telegraph band mesh is lazily built, so both would
+      // otherwise pay a first-use compile in combat. Under the (opaque) loader; cleared
+      // right after warmUp so nothing shows.
+      const wp = ctx.player.pos;
+      ctx.decals.scorch(wp.x, wp.z, 0.25);
+      ctx.decals.crack(wp.x + 0.6, wp.z, 0.25);
+      ctx.tele.ring(wp.x, wp.z, 0.15, 0.3, 0.05);
+      ctx.tele.line(wp.x, wp.z, 0, 1, 0.15, 0.05);
       ctx.enemies.precompile();
+      ctx.decals.clear();
       step(0.86, "Summoning the wardens…");
       await paint();
       ctx.run.warmBosses();

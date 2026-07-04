@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { angleDelta } from "../core/math";
+import { ParticleShape } from "../render/particles";
 import type { Ctx } from "./ctx";
 import type { Enemy, DamageOpts } from "./enemies";
 
@@ -248,7 +249,9 @@ export class Combat {
     const len = Math.hypot(dx, dz) || 1;
     this.ctx.cam.kick(dx / len, dz / len, 6);
     this.ctx.cam.addTrauma(0.45);
+    this.ctx.cam.kickRoll((dx / len) * 0.04); // slight dutch-roll on the hit (IDEAS-GRAPHICS #50)
     this.ctx.stage.punch(0.55);
+    this.ctx.player.hitReaction(dx / len, dz / len); // directional body flinch (IDEAS-GRAPHICS #38)
     this.ctx.controller.push((dx / len) * 4, (dz / len) * 4);
     this.ctx.floaters.spawn(player.pos.x, 1.9, player.pos.z, `-${Math.round(dmg)}`, "playerdmg");
 
@@ -291,6 +294,7 @@ export class Combat {
       gravity: -5,
       drag: 5,
       jitter: 0.08,
+      shape: ParticleShape.streak, // hit sparks read as thin streaks, not dots (IDEAS-GRAPHICS #32)
     });
     const count = killed ? 22 : opts.heavy ? 18 : critical ? 14 : 8;
     this.ctx.fx.burst({
@@ -307,6 +311,9 @@ export class Combat {
     });
     if (opts.heavy) this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.8, color: 0xffffff, duration: 0.24 });
     if (critical) this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.1, color, duration: 0.28 });
+    // The floor keeps a record of the fight (IDEAS-GRAPHICS #29): kills crack it, heavy blows scorch it.
+    if (killed) this.ctx.decals.crack(e.pos.x, e.pos.z, e.radius * 1.3);
+    else if (opts.heavy) this.ctx.decals.scorch(e.pos.x, e.pos.z, e.radius);
     if (armored) this.ctx.fx.burst({ x: e.pos.x, y: 0.75, z: e.pos.z, count: 6, color: [0xffffff, 0xffcc66], speed: [4, 9], up: 0.1, size: [0.18, 0.42], life: [0.12, 0.28], gravity: -8, drag: 5 });
   }
 
@@ -465,9 +472,12 @@ export class Combat {
       x: player.pos.x, y: 1, z: player.pos.z,
       count: 60, color: [0xff4252, 0xffaa66, 0xffffff],
       speed: [5, 16], up: 0.6, size: [0.5, 1.2], life: [0.3, 0.8], gravity: -5, drag: 2.5,
+      shape: ParticleShape.shard, // crash throws debris shards (IDEAS-GRAPHICS #32)
     });
+    this.ctx.decals.scorch(player.pos.x, player.pos.z, R * 0.7); // the nova scorches the floor (#29)
     this.ctx.cam.addTrauma(0.55);
     this.ctx.cam.pulseFov(1);
+    this.ctx.cam.kickRoll(perfect ? 0.06 : 0.04); // a dutch-roll accent on the crash (IDEAS-GRAPHICS #50)
     this.ctx.stage.punch(0.5);
     this.ctx.sfx.crash();
     this.ctx.relics.onCrash();
