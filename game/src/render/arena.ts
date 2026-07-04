@@ -5,9 +5,14 @@ export const ARENA_RADIUS = 19;
 
 export type Dressing = "rift" | "spire" | "forge" | "void";
 
+/** Default FogExp2 density when a theme doesn't specify its own (IDEAS-GRAPHICS #4). */
+export const FOG_DEFAULT = 0.016;
+
 export interface ArenaTheme {
   name: string;
   fog: number;
+  /** Per-act FogExp2 density — thicker = more oppressive/enclosed, thinner = vast/airless. */
+  fogDensity?: number;
   skyTop: number;
   skyBottom: number;
   hemiSky: number;
@@ -26,6 +31,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "rift",
     dressing: "rift",
     fog: 0x0a0a18,
+    fogDensity: 0.012,
     skyTop: 0x0b0820,
     skyBottom: 0x251440,
     hemiSky: 0x8899ff,
@@ -54,6 +60,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "ember",
     dressing: "rift",
     fog: 0x180a08,
+    fogDensity: 0.02,
     skyTop: 0x190505,
     skyBottom: 0x571a08,
     hemiSky: 0xff9966,
@@ -69,6 +76,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "spire",
     dressing: "spire",
     fog: 0x081414,
+    fogDensity: 0.013,
     skyTop: 0x051210,
     skyBottom: 0x0e4038,
     hemiSky: 0x77ffdd,
@@ -98,6 +106,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "forge",
     dressing: "forge",
     fog: 0x140805,
+    fogDensity: 0.024,
     skyTop: 0x130404,
     skyBottom: 0x6a2408,
     hemiSky: 0xffaa66,
@@ -112,6 +121,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "core",
     dressing: "forge",
     fog: 0x180603,
+    fogDensity: 0.028,
     skyTop: 0x150303,
     skyBottom: 0x7a1205,
     hemiSky: 0xff8855,
@@ -127,6 +137,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "abyss",
     dressing: "void",
     fog: 0x05060f,
+    fogDensity: 0.0075,
     skyTop: 0x03030a,
     skyBottom: 0x140a2e,
     hemiSky: 0x9a88ff,
@@ -144,6 +155,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "hollow",
     dressing: "void",
     fog: 0x070506,
+    fogDensity: 0.006,
     skyTop: 0x030204,
     skyBottom: 0x241408,
     hemiSky: 0xf2e0c0,
@@ -158,6 +170,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "starfall",
     dressing: "void",
     fog: 0x06060f,
+    fogDensity: 0.007,
     skyTop: 0x03030c,
     skyBottom: 0x1a1838,
     hemiSky: 0xeae6ff,
@@ -173,6 +186,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "wound",
     dressing: "void",
     fog: 0x0a0305,
+    fogDensity: 0.02,
     skyTop: 0x060102,
     skyBottom: 0x2e060e,
     hemiSky: 0xff8a9a,
@@ -914,6 +928,9 @@ export class Arena {
     this.themeLerp = instant ? 1 : 0;
     this.blendSettled = false;
     this.applyFloorTexture(theme);
+    // Rebake the IBL env map for the new act (IDEAS-GRAPHICS #1) — a one-shot behind
+    // the spawn flash; a texture swap, so no whole-scene shader relink.
+    this.stage.applyEnvironment(theme.skyTop, theme.skyBottom, theme.key, theme.rim, theme.ember);
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
     this.setDressing(theme.dressing);
     // Sky style is per-act, not per-dressing: abyss + hollow share the "void" dressing
@@ -936,6 +953,7 @@ export class Arena {
       name: t.name,
       dressing: t.dressing,
       fog: mix(f.fog, t.fog),
+      fogDensity: (f.fogDensity ?? FOG_DEFAULT) + ((t.fogDensity ?? FOG_DEFAULT) - (f.fogDensity ?? FOG_DEFAULT)) * k,
       skyTop: mix(f.skyTop, t.skyTop),
       skyBottom: mix(f.skyBottom, t.skyBottom),
       hemiSky: mix(f.hemiSky, t.hemiSky),
@@ -969,6 +987,11 @@ export class Arena {
     const t = this.toTheme;
     const k = this.themeLerp;
     this.mixTo(this.stage.fog.color, f.fog, t.fog, k);
+    // Per-act fog density lerp (IDEAS-GRAPHICS #4) — a plain number alongside the colors.
+    const fd = f.fogDensity ?? FOG_DEFAULT;
+    this.stage.fog.density = fd + ((t.fogDensity ?? FOG_DEFAULT) - fd) * k;
+    // Kicker/rim light tracks the theme rim color (IDEAS-GRAPHICS #6).
+    this.mixTo(this.stage.rimLight.color, f.rim, t.rim, k);
     if (this.stage.scene.background instanceof THREE.Color) {
       this.stage.scene.background.copy(this.stage.fog.color);
     }

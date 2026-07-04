@@ -13,6 +13,7 @@ import {
   type Effect,
 } from "postprocessing";
 import { clamp01, damp } from "../core/math";
+import { EnvironmentBaker } from "./environment";
 
 export type Quality = "low" | "medium" | "high";
 
@@ -29,8 +30,12 @@ export class Stage {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   readonly keyLight: THREE.DirectionalLight;
+  /** Dim, non-shadow kicker opposite the key (IDEAS-GRAPHICS #6) — defines the far
+   *  edge of every silhouette; color driven per-act by arena.ts. */
+  readonly rimLight: THREE.DirectionalLight;
   readonly hemiLight: THREE.HemisphereLight;
   readonly fog: THREE.FogExp2;
+  private envBaker!: EnvironmentBaker;
   quality: Quality = "high";
   /**
    * Resolution scale (render-target multiplier on the quality-capped device pixel
@@ -89,14 +94,31 @@ export class Stage {
     this.keyLight.position.set(14, 26, 8);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(2048, 2048);
-    this.keyLight.shadow.camera.left = -30;
-    this.keyLight.shadow.camera.right = 30;
-    this.keyLight.shadow.camera.top = 30;
-    this.keyLight.shadow.camera.bottom = -30;
-    this.keyLight.shadow.camera.far = 80;
-    this.keyLight.shadow.bias = -0.0008;
+    // Frustum matched to the play disc (ARENA_RADIUS≈19) instead of a loose ±30 box:
+    // ~35% more shadow-texel density for free. normalBias kills acne on the flat-
+    // shaded low-poly set-dressing. (IDEAS-GRAPHICS #7)
+    this.keyLight.shadow.camera.left = -23;
+    this.keyLight.shadow.camera.right = 23;
+    this.keyLight.shadow.camera.top = 23;
+    this.keyLight.shadow.camera.bottom = -23;
+    this.keyLight.shadow.camera.far = 70;
+    this.keyLight.shadow.bias = -0.0006;
+    this.keyLight.shadow.normalBias = 0.02;
     this.scene.add(this.keyLight);
     this.scene.add(this.keyLight.target);
+
+    // Rim/kicker light opposite the key — present from construction so the 2-dir-light
+    // program variant is what every material compiles + warms (no later relink).
+    this.rimLight = new THREE.DirectionalLight(0x37e0ff, 0.55);
+    this.rimLight.position.set(-13, 9, -11);
+    this.scene.add(this.rimLight);
+    this.scene.add(this.rimLight.target);
+
+    // Image-based lighting: bake a theme-tinted env map BEFORE any scene material
+    // exists so they all compile with the envMap variant (arena.ts rebakes per act —
+    // a texture swap, never null↔texture, so it never triggers a whole-scene relink).
+    this.envBaker = new EnvironmentBaker(this.renderer);
+    this.scene.environment = this.envBaker.bake(0x0b0820, 0x251440, 0xfff2e0, 0x37e0ff, 0x55ccff);
 
     this.buildPost();
     window.addEventListener("resize", () => this.onResize());
@@ -226,6 +248,12 @@ export class Stage {
   /** Brightness/gamma: `mult` scales the base ACES exposure (1.0 = default). */
   setExposure(mult: number): void {
     this.renderer.toneMappingExposure = 1.32 * mult;
+  }
+
+  /** Rebake the IBL env map from a theme palette (arena.ts drives this per act). Just
+   *  swaps the env texture — same envMap material variant, so no whole-scene relink. */
+  applyEnvironment(topHex: number, bottomHex: number, keyHex: number, rimHex: number, emberHex: number): void {
+    this.scene.environment = this.envBaker.bake(topHex, bottomHex, keyHex, rimHex, emberHex);
   }
 
   private onResize(): void {

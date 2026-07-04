@@ -37,6 +37,7 @@ node scripts/smoke-meta.mjs      # fresh profile → gated drafts → win → un
 node scripts/smoke-crash.mjs     # cooldown sweep + crash-radius ring
 node scripts/smoke-release.mjs   # hero select, obstacles, v2 save/continue, armory purchase (CLEARS profile)
 node scripts/smoke-cutscene.mjs  # story intro + boss entrance cutscene (letterbox, dolly, skip)
+node scripts/smoke-interlude.mjs # mid-act causeway: hero FROZEN until the act's words come and go, then may cross (__rh3debug.interlude/interludeLocked)
 node scripts/smoke-telegraph.mjs # sentinel beam + boss dash telegraph alignment
 node scripts/smoke-shields.mjs   # Bastion/Mirror shields drain + break under damage; flank bypass; freeze tint
 node scripts/smoke-counter.mjs   # perfect-dodge COUNTER window: armed strike consumes it + pays tempo

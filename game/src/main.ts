@@ -366,6 +366,9 @@ let interlude: {
   onDone: () => void;
   t: number;
   labelAcc: number;
+  /** True while the act's story banners are still playing — the hero is held at
+   * the causeway mouth and the lights are inert until the words come and go. */
+  locked: boolean;
 } | null = null;
 
 /** Tear the interlude scene down. `chosen` applies that pad's boon; null = skipped. */
@@ -373,6 +376,7 @@ function finishInterlude(chosen: "mend" | "shards" | null, proceed = true): void
   if (!interlude) return;
   const it = interlude;
   interlude = null;
+  ctx.input.enabled = true; // the words-lock may have disabled it; the next node needs movement
   it.timers.forEach((t) => window.clearTimeout(t));
   it.skipBtn.remove();
   ctx.stage.scene.remove(it.group);
@@ -406,6 +410,20 @@ function updateInterlude(dt: number): void {
   const it = interlude;
   it.t += dt;
   it.labelAcc -= dt;
+  // While the act's words play, the hero is paused at the causeway mouth: no
+  // crossing until the story has come and gone. Re-assert the freeze every frame
+  // so a pause→resume (which flips input.enabled back on) can't unlock movement
+  // early; the lights stay dim and inert. A release timer flips `locked` when the
+  // last banner finishes (see playActTransition).
+  if (it.locked) {
+    ctx.input.enabled = false;
+    for (const pad of it.pads) {
+      pad.mat.opacity = 0.16 + Math.abs(Math.sin(it.t * 2.0 + pad.x)) * 0.12; // not yet yours
+      pad.ring.rotation.z += dt * 0.6;
+    }
+    return;
+  }
+  ctx.input.enabled = true;
   for (const pad of it.pads) {
     pad.mat.opacity = 0.45 + Math.abs(Math.sin(it.t * 2.4 + pad.x)) * 0.35;
     pad.ring.rotation.z += dt * 1.2;
@@ -437,7 +455,7 @@ function takeInterludePad(pad: { x: number; z: number; kind: "mend" | "shards"; 
 
 function playActTransition(node: { act: number; actName: string; theme: keyof typeof THEMES }, onDone: () => void): void {
   state = "playing"; // a real playable beat — the hero walks the causeway
-  ctx.input.enabled = true;
+  ctx.input.enabled = false; // held frozen until the act's words come and go (see release timer)
   hud.setVisible(true);
   hud.setLetterbox(true);
   ctx.music.duckTo(0.7);
@@ -493,14 +511,25 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   // The story drifts past as banners while the hero walks.
   const timers: number[] = [];
   const lines = [...(ACT_STORY[node.act] ?? [])];
+  const LINE_START = 4200, LINE_GAP = 6200, LAMENT_MS = 8200; // last line uses banner--lament (8.2s dwell)
   timers.push(window.setTimeout(() => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long"), 500));
   lines.forEach((line, i) => {
-    timers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), 4200 + i * 6200));
+    timers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), LINE_START + i * LINE_GAP));
   });
-  // Soft-lock guard: if nothing is chosen in 45s, cross without a gift.
+  // Release the hero only once the last word has fully come and gone: the final
+  // banner appears at LINE_START + (n-1)*GAP and takes LAMENT_MS to play out.
+  const wordsEndMs = lines.length ? LINE_START + (lines.length - 1) * LINE_GAP + LAMENT_MS : 3200;
+  timers.push(window.setTimeout(() => {
+    if (!interlude) return;
+    interlude.locked = false; // updateInterlude re-enables input + lights the pads next frame
+    ctx.sfx.cardReady();
+    hud.banner("STEP INTO A LIGHT", "", "banner--clear");
+    for (const pad of interlude.pads) ctx.fx.ring(pad.x, pad.z, { radius: 2.0, color: pad.color, duration: 0.6 });
+  }, wordsEndMs));
+  // Soft-lock guard: if nothing is chosen in 45s (past the words), cross without a gift.
   timers.push(window.setTimeout(() => finishInterlude(null), 45000));
 
-  interlude = { pads, group, timers, skipBtn, onDone, t: 0, labelAcc: 0.4 };
+  interlude = { pads, group, timers, skipBtn, onDone, t: 0, labelAcc: 0.4, locked: true };
 }
 
 /** Present the current fork: a forced node auto-enters; a choice fork opens the map. */
@@ -1730,7 +1759,10 @@ ctx.stage.renderer.setAnimationLoop(() => {
     ctx.projectiles.update(dt);
     ctx.hostiles.update(dt);
     ctx.features.update(dt);
-    ctx.run.update();
+    // The causeway interlude is a non-combat beat with no loaded node; don't let
+    // wave/clear logic tick under it. (In the real flow run-state is already
+    // "cleared" here so update() no-ops — this just keeps the beat self-contained.)
+    if (!interlude) ctx.run.update();
     ctx.player.update(dt);
     // Sword ribbon while the blade is actually moving (chain or card swings)
     ctx.player.getBladePoints(trailTip, trailBase);
@@ -1998,6 +2030,15 @@ void boot();
     },
     /** Load any node kind: combat/elite/shop/treasure/rest/event. */
     room(kind: string, act = 1): boolean { return ctx.run.debugLoadNode(kind as DebugNode, act); },
+    /** Play a mid-act story interlude (the causeway) — for the words-lock smoke.
+     *  The hero is frozen until the act's banners come and go, then may cross. */
+    interlude(act = 2): boolean {
+      playActTransition({ act, actName: "TRIAL OF WORDS", theme: "dusk" }, () => ctx.run.debugLoadNode("combat", act));
+      return true;
+    },
+    /** Words-lock state of an active interlude: true while the banners play, false
+     *  once the hero may cross, null when no interlude is running. */
+    interludeLocked(): boolean | null { return interlude ? interlude.locked : null; },
     /** Dolly the cinematic camera onto a point (small zoom = closer). */
     frame(x = 0, z = 0, zoom = 0.5): void { ctx.cam.cinematic(x, z, zoom); },
     /** Hand the camera back to gameplay follow. */
