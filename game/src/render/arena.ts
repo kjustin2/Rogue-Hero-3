@@ -682,10 +682,10 @@ export class Arena {
     // widening toward the floor, angled with the key light, drifting slowly. One
     // shared additive material (re-tinted per act) — cheap, never near screen-fill.
     this.shaftMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(THEMES.rift.ember), transparent: true, opacity: 0.05,
+      color: new THREE.Color(THEMES.rift.ember), transparent: true, opacity: 0.035,
       blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
     });
-    const shaftGeo = new THREE.CylinderGeometry(0.2, 2.6, 24, 12, 1, true);
+    const shaftGeo = new THREE.CylinderGeometry(0.15, 1.6, 24, 12, 1, true);
     for (let i = 0; i < 4; i++) {
       const s = new THREE.Mesh(shaftGeo, this.shaftMat);
       const a = (i / 4) * Math.PI * 2 + 0.6;
@@ -1092,6 +1092,6 @@ export class Arena {
       s.mesh.position.x = s.baseX + Math.sin(s.phase) * 1.2;
       s.mesh.position.z = s.baseZ + Math.cos(s.phase * 0.7) * 1.0;
     }
-    this.shaftMat.opacity = (0.045 + Math.sin(this.t * 0.5) * 0.014 + h * 0.02) * lit;
+    this.shaftMat.opacity = (0.032 + Math.sin(this.t * 0.5) * 0.01 + h * 0.015) * lit;
   }
 }
