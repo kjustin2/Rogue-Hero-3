@@ -75,7 +75,7 @@ function buildPool(scene: THREE.Scene, geo: THREE.BufferGeometry, tex: THREE.Can
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.visible = false;
-    mesh.renderOrder = -2; // ground marks: under contact shadows (-1), well under everything else
+    mesh.renderOrder = -3; // deepest ground layer: decals(-3) < contact(-2) < enemy glow(-1)
     scene.add(mesh);
     pool.push({ mesh, mat, t: 0, dur: 0, peak: 0 });
   }

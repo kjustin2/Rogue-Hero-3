@@ -30,7 +30,7 @@ export class ContactShadows {
     for (let i = 0; i < max; i++) {
       const m = new THREE.Mesh(this.geo, this.mat);
       m.rotation.x = -Math.PI / 2;
-      m.renderOrder = -1; // under everything on the floor
+      m.renderOrder = -2; // stable stack: decals(-3) < contact(-2) < enemy glow(-1) — no flicker
       m.visible = false;
       this.group.add(m);
       this.pool.push(m);

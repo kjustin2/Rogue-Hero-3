@@ -458,8 +458,11 @@ function positionInterludeBadges(): void {
   const w = window.innerWidth, h = window.innerHeight;
   for (const pad of interlude.pads) {
     interludeScratch.set(pad.x, 3.4, pad.z).project(ctx.stage.camera);
-    const sx = (interludeScratch.x * 0.5 + 0.5) * w;
-    const sy = (-interludeScratch.y * 0.5 + 0.5) * h;
+    // Clamp into the visible band: the lights sit far up the causeway and often
+    // project off the top edge at the spawn, so pin the badge on-screen (it tracks
+    // the light once it comes into view) — the choice must be readable from the start.
+    const sx = Math.max(w * 0.15, Math.min(w * 0.85, (interludeScratch.x * 0.5 + 0.5) * w));
+    const sy = Math.max(h * 0.18, Math.min(h * 0.68, (-interludeScratch.y * 0.5 + 0.5) * h));
     pad.badge.style.left = `${sx}px`;
     pad.badge.style.top = `${sy}px`;
   }
@@ -2083,6 +2086,7 @@ void boot();
   const debug = {
     /** Cut to a named scenario. Returns true if the name was recognized. */
     scenario(name: string, opts: ScenarioOpts = {}): boolean {
+      finishInterlude(null, false); // a debug jump must not leave interlude badges/timers lingering
       const parts = String(name).split(":");
       switch (parts[0]) {
         case "boss": return debug.boss(parts[1], parts[2], opts);
