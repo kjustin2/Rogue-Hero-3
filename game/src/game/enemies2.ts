@@ -364,8 +364,8 @@ export class Mirror extends Enemy {
     // Shoulder studs on the tower arms
     this.addMesh(new THREE.SphereGeometry(0.13, 6, 5), plateMat, -0.78, 1.5, 0.15);
     this.addMesh(new THREE.SphereGeometry(0.13, 6, 5), plateMat, 0.78, 1.5, 0.15);
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), plateMat, -0.45, 0.25, 0);
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), plateMat, 0.45, 0.25, 0);
+    this.legL = this.addLeg(0.5, 0.5, 0.5, plateMat, -0.45, 0.25, 0);
+    this.legR = this.addLeg(0.5, 0.5, 0.5, plateMat, 0.45, 0.25, 0);
 
     this.bubbleMat = new THREE.MeshBasicMaterial({
       color: 0x99ddff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide,
@@ -935,8 +935,8 @@ export class Brute extends Enemy {
     hr.rotation.z = -0.7;
     // Frontal plate ridge
     this.addMesh(new THREE.BoxGeometry(1.5, 0.2, 0.24), ironMat, 0, 1.0, 0.6);
-    this.addMesh(new THREE.BoxGeometry(0.4, 0.6, 0.4), armorMat, -0.5, 0.3, 0);
-    this.addMesh(new THREE.BoxGeometry(0.4, 0.6, 0.4), armorMat, 0.5, 0.3, 0);
+    this.legL = this.addLeg(0.4, 0.6, 0.4, armorMat, -0.5, 0.3, 0);
+    this.legR = this.addLeg(0.4, 0.6, 0.4, armorMat, 0.5, 0.3, 0);
     // Knuckle spikes on the battering fists
     for (const fx of [-0.5, 0.5]) {
       const k = this.addMesh(new THREE.ConeGeometry(0.08, 0.28, 4), ironMat, fx, 0.45, 0.22);

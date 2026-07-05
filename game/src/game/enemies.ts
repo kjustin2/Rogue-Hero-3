@@ -138,6 +138,14 @@ export abstract class Enemy {
   protected kb = new THREE.Vector2();
   protected hitFlash = 0;
   protected flashMats: FlashMat[] = [];
+  // Stepping legs (IDEAS-GRAPHICS #37): bipedal foes register a left/right hip-pivot
+  // group and the base gait driver swings them to actual ground speed — no sliding feet.
+  protected legL: THREE.Object3D | null = null;
+  protected legR: THREE.Object3D | null = null;
+  private gaitPhase = 0;
+  private gaitAmt = 0;
+  private gaitPrevX = NaN;
+  private gaitPrevZ = NaN;
   protected t = Math.random() * 10;
   /** While >0 the enemy deflects ALL damage — a telegraphed boss ward window. */
   protected invulnTime = 0;
@@ -244,6 +252,20 @@ export abstract class Enemy {
     m.castShadow = true;
     parent.add(m);
     return m;
+  }
+
+  /** A leg that STEPS: a hip-pivot group at the top of the leg, with the leg box
+   *  hanging below it, so a rotation.x reads as a stride. `centerY` is the old
+   *  box-center Y (drop-in for addMesh legs). Assign the result to legL/legR. */
+  protected addLeg(w: number, h: number, d: number, mat: THREE.Material, x: number, centerY: number, z: number): THREE.Group {
+    const g = new THREE.Group();
+    g.position.set(x, centerY + h / 2, z); // pivot at the hip
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    leg.position.y = -h / 2; // hang the leg below the hip pivot
+    leg.castShadow = true;
+    g.add(leg);
+    this.root.add(g);
+    return g;
   }
 
   protected addRoleSilhouette(kind: RoleSilhouette, color: number): void {
@@ -951,6 +973,21 @@ export abstract class Enemy {
       this.ctx.arena.resolveObstacles(this.pos, this.radius);
     }
 
+    // Stepping gait: advance the walk phase by ACTUAL ground distance moved so the
+    // registered legs swing in lockstep with displacement — feet never slide. The
+    // amplitude eases in with speed so a standing foe's legs settle straight.
+    if (this.legL && this.legR) {
+      const moved = Number.isNaN(this.gaitPrevX) ? 0 : Math.hypot(this.pos.x - this.gaitPrevX, this.pos.z - this.gaitPrevZ);
+      const spd = Math.min(dt > 0 ? moved / dt : 0, this.speed * 2);
+      this.gaitAmt += (Math.min(1, spd / Math.max(0.5, this.speed)) - this.gaitAmt) * Math.min(1, dt * 10);
+      this.gaitPhase += moved * 3.0; // one stride per ~2 units — locked to the ground
+      const sw = Math.sin(this.gaitPhase) * 0.62 * this.gaitAmt;
+      this.legL.rotation.x = sw;
+      this.legR.rotation.x = -sw;
+    }
+    this.gaitPrevX = this.pos.x;
+    this.gaitPrevZ = this.pos.z;
+
     // Dramatic geometry eruption (phase reveals): overshoot scale-in.
     if (this.eruptT > 0) {
       this.eruptT = Math.max(0, this.eruptT - dt);
@@ -1114,8 +1151,8 @@ export class Husk extends Enemy {
       const sp = this.addMesh(new THREE.ConeGeometry(0.09, 0.4 - i * 0.07, 4), boneMat, 0, 1.05 - i * 0.2, -0.25 - i * 0.16);
       sp.rotation.x = -0.5;
     }
-    this.addMesh(new THREE.BoxGeometry(0.22, 0.5, 0.25), bodyMat, -0.25, 0.25, 0);
-    this.addMesh(new THREE.BoxGeometry(0.22, 0.5, 0.25), bodyMat, 0.25, 0.25, 0);
+    this.legL = this.addLeg(0.22, 0.5, 0.25, bodyMat, -0.25, 0.25, 0);
+    this.legR = this.addLeg(0.22, 0.5, 0.25, bodyMat, 0.25, 0.25, 0);
     // Jagged bone shards bursting from the shoulders
     const shl = this.addMesh(new THREE.ConeGeometry(0.08, 0.32, 4), boneMat, -0.4, 1.05, 0);
     shl.rotation.z = 0.8;
