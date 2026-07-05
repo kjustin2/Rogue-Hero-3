@@ -107,16 +107,17 @@ export class Stage {
     this.keyLight.position.set(14, 26, 8);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(2048, 2048);
-    // Frustum matched to the play disc (ARENA_RADIUS≈19) instead of a loose ±30 box:
-    // ~35% more shadow-texel density for free. normalBias kills acne on the flat-
-    // shaded low-poly set-dressing. (IDEAS-GRAPHICS #7)
-    this.keyLight.shadow.camera.left = -23;
-    this.keyLight.shadow.camera.right = 23;
-    this.keyLight.shadow.camera.top = 23;
-    this.keyLight.shadow.camera.bottom = -23;
-    this.keyLight.shadow.camera.far = 70;
-    this.keyLight.shadow.bias = -0.0006;
-    this.keyLight.shadow.normalBias = 0.02;
+    // A LOOSE frustum (±30) with the original bias. The earlier "tighten to ±23 +
+    // normalBias" optimization caused hard self-shadow gashes on the flat-shaded
+    // low-poly set-dressing (crystals/rocks) and black-fill on rim objects that fell
+    // outside the tight box as the camera moved — the owner's "objects fill with
+    // black when moving" bug. Correctness over a few texels of density.
+    this.keyLight.shadow.camera.left = -30;
+    this.keyLight.shadow.camera.right = 30;
+    this.keyLight.shadow.camera.top = 30;
+    this.keyLight.shadow.camera.bottom = -30;
+    this.keyLight.shadow.camera.far = 80;
+    this.keyLight.shadow.bias = -0.0008;
     this.scene.add(this.keyLight);
     this.scene.add(this.keyLight.target);
 
