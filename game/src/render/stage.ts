@@ -6,7 +6,6 @@ import {
   EffectComposer,
   EffectPass,
   HueSaturationEffect,
-  NoiseEffect,
   RenderPass,
   SMAAEffect,
   VignetteEffect,
@@ -22,7 +21,7 @@ export type Quality = "low" | "medium" | "high";
  * Owns renderer, scene, post-processing chain and screen-level feedback
  * (hurt vignette pulse, aberration kick). The post chain is rebuilt per
  * quality preset:
- *  - high:   full res (≤2× dpr), 2048 PCF shadows, bloom + CA + grade + noise + SMAA
+ *  - high:   full res (≤2× dpr), 2048 PCF shadows, bloom + CA + grade + SMAA
  *  - medium: ≤1.5× dpr, 1024 shadows, bloom + grade + SMAA
  *  - low:    1× dpr, no shadows, vignette + grade only
  */
@@ -186,11 +185,11 @@ export class Stage {
     this.grade.setTint(this.tintColor, this.tintAmt);
     this.grade.saturation = this.satTarget;
     effects.push(this.grade);
-    if (this.quality === "high") {
-      const noise = new NoiseEffect({ premultiply: true });
-      noise.blendMode.opacity.value = 0.45;
-      effects.push(noise);
-    }
+    // NO film-grain NoiseEffect here: the pmndrs NoiseEffect shader is `rand(uv*(1.0+time))`
+    // with `time` incremented every frame, so it re-randomized the ENTIRE framebuffer each
+    // frame — a constant screen-wide shimmer in combat + cutscenes (the full chain), absent
+    // from the lean menu chain. That WAS the "flickering" bug. If a film-texture look is ever
+    // wanted, it must be a STATIC (uv-only, no time) grain — never the animated NoiseEffect.
     this.composer.addPass(new EffectPass(this.camera, ...effects));
     if (this.quality !== "low") {
       this.composer.addPass(new EffectPass(this.camera, new SMAAEffect()));

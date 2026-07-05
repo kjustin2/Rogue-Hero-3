@@ -1,25 +1,34 @@
-// FLICKER + BLOWOUT smoke. Stills miss motion glitches, so this captures two
-// filmstrips and gates on an automated metric that console-only smokes can't see:
-//   • pan   — slow camera pan over a frozen arena (z-fight / sweeping-additive / shafts)
-//   • act   — the between-acts theme crossfade (rim blow-to-white was the "act-load flicker")
-// GATE: per-frame fraction of near-WHITE pixels. A spike = additive-white screen-fill /
-// bloom blow-out — the owner's single most-repeated complaint class. Decodes each frame
-// in the browser (Image→canvas→getImageData), so no node PNG dependency.
-//   → shots/flicker/pan-NN.png / act-NN.png  +  a PASS/FAIL brightness report.
+// FLICKER smoke. Console-only smokes can't see motion glitches. Two gate classes:
+//
+//   SHIMMER (per-frame temporal flicker) — capture consecutive frames of a HELD static
+//   scene and diff them. A deterministic render of a still scene is near-identical
+//   frame-to-frame; animated film-grain / per-frame-random post FX re-randomize the whole
+//   framebuffer every frame and push the diff way up. This is the class that a 130ms-apart
+//   filmstrip is BLIND to — it caught nothing while the owner saw constant shimmer in
+//   combat + cutscenes (the animated pmndrs NoiseEffect). Forced to HIGH quality (grain is
+//   high-only) and measured in combat AND a dimmed cutscene state.
+//
+//   BLOWOUT (additive-white screen-fill) — pan the camera over the arena + run the
+//   act-load theme crossfade; fail if bright-desaturated (washed-to-white) pixels spike.
+//
+// All decoding is in-page (Image→canvas→getImageData), so no node PNG dependency.
 import { launchBrowser, bootGame, enterRun, sleep } from "./loop/lib.mjs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const OUT = "shots/flicker";
-// A frame is "blown out" past this fraction of bright-desaturated (washed-to-white) pixels.
-// The rim-blowout + additive sweeper-bar bugs each covered several percent; a clean frame
-// sits under ~0.4% (settled rim + small white HUD text). 2.5% catches a washout with wide
-// headroom without masking a regression.
+// Mean absolute per-channel diff (0..255) between consecutive frames of a FROZEN scene
+// (__rh3debug.freezeForTest). With the world frozen the only thing that can change is a
+// per-frame-random post effect: the animated film grain measured ~2.2 (A/B), a clean render
+// is pixel-identical at ~0.15 (compression noise). 1.0 sits between with wide margin both ways.
+const SHIMMER_GATE = 1.0;
+// Fraction of bright-desaturated (washed-to-white) pixels that counts as an additive-white
+// blow-out. Clean sits under ~0.4%; 2.5% catches a washout with headroom.
 const WHITE_GATE = 0.025;
 mkdirSync(OUT, { recursive: true });
 const { browser, page, errors } = await launchBrowser();
 
-// Capture a frame AND measure its near-white fraction (decoded in-page — no deps).
+// Capture a frame AND measure its washed-to-white fraction (decoded in-page — no deps).
 const grab = async (name) => {
   const buf = await page.screenshot({ path: join(OUT, `${name}.png`) });
   const b64 = Buffer.from(buf).toString("base64");
@@ -32,10 +41,6 @@ const grab = async (name) => {
     const g = cv.getContext("2d");
     g.drawImage(img, 0, 0);
     const d = g.getImageData(0, 0, cv.width, cv.height).data;
-    // "Blown out" = bright AND desaturated (channels bunched near white). Catches an
-    // additive FX washed toward white by bloom + ACES — including the pale ~200-227 bars a
-    // strict >235 test misses — while ignoring bright SATURATED colors (a hot cyan/green FX
-    // keeps a low min channel) and dark pixels.
     let w = 0;
     for (let i = 0; i < d.length; i += 4) {
       const mn = Math.min(d[i], d[i + 1], d[i + 2]);
@@ -47,25 +52,75 @@ const grab = async (name) => {
   return { name, white };
 };
 
+// Mean absolute per-channel diff between CONSECUTIVE frames of a held scene — the
+// per-frame-flicker detector. Captures `frames` screenshots ~gapMs apart and averages the
+// consecutive diffs. Saves the first frame for eyeballing.
+const shimmer = async (name, frames = 6, gapMs = 35) => {
+  const b64s = [];
+  for (let i = 0; i < frames; i++) {
+    const buf = i === 0
+      ? await page.screenshot({ path: join(OUT, `shimmer-${name}.png`) })
+      : await page.screenshot();
+    b64s.push(Buffer.from(buf).toString("base64"));
+    await sleep(gapMs);
+  }
+  return page.evaluate(async (imgs) => {
+    const decode = async (b) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + b;
+      await img.decode();
+      const cv = document.createElement("canvas");
+      cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+      const g = cv.getContext("2d");
+      g.drawImage(img, 0, 0);
+      return g.getImageData(0, 0, cv.width, cv.height).data;
+    };
+    let prev = await decode(imgs[0]);
+    let total = 0, pairs = 0;
+    for (let i = 1; i < imgs.length; i++) {
+      const cur = await decode(imgs[i]);
+      let sum = 0;
+      for (let p = 0; p < cur.length; p += 4)
+        sum += Math.abs(cur[p] - prev[p]) + Math.abs(cur[p + 1] - prev[p + 1]) + Math.abs(cur[p + 2] - prev[p + 2]);
+      total += sum / ((cur.length / 4) * 3);
+      pairs++;
+      prev = cur;
+    }
+    return total / pairs;
+  }, b64s);
+};
+
 await bootGame(page);
 await enterRun(page);
+// Force HIGH quality — the film grain (and CA) are high-only, so a medium/low boot would
+// hide the exact flicker we're gating. Rebuild settles in a frame or two.
+await page.evaluate(() => window.__rh3.stage.applyQuality?.("high"));
+await sleep(700);
 await page.evaluate(() => window.__rh3debug?.godmode?.());
-// FREEZE enemies (don't clear) — clearing empties the room, which pulls the camera back to
-// the "cleared" framing; the beam blow-out only shows at CLOSE combat framing, so we keep
-// the room in "fighting" state. Then force the sweeping-beam hazard in so the pan always
-// exercises it — its additive blade washing to white is the class the gate must catch.
-await page.evaluate(() => {
-  const c = window.__rh3;
-  for (const e of c.enemies.living()) e.freeze?.(9999);
-  c.features.clear?.();
-  c.features.setup({ feature: "sweeper" });
-});
-await sleep(400);
-await page.evaluate(() => window.__rh3.fx.clear?.());
 
+// ---- SHIMMER: FREEZE the whole world (dt=0) but keep rendering the full composer, so the
+// ONLY thing that can change frame-to-frame is a per-frame-RANDOM post effect (animated film
+// grain). A clean build renders a frozen scene pixel-identical → ~0; the grain re-randomized
+// every pixel → high. This is the class a 130ms filmstrip was blind to.
+await page.evaluate(() => { window.__rh3.fx.clear?.(); });
+await sleep(200);
+await page.evaluate(() => window.__rh3debug.freezeForTest(true));
+await sleep(150);
+const shCombat = await shimmer("combat");
+await page.evaluate(() => window.__rh3debug.freezeForTest(false));
+// Cutscene lighting: dim first (needs live updates to ease in), THEN freeze + measure.
+await page.evaluate(() => { window.__rh3.arena.cutsceneDim = 1; });
+await sleep(1100);
+await page.evaluate(() => window.__rh3debug.freezeForTest(true));
+await sleep(150);
+const shCut = await shimmer("cutscene");
+await page.evaluate(() => { window.__rh3debug.freezeForTest(false); window.__rh3.arena.cutsceneDim = 0; });
+await sleep(500);
+
+// ---- BLOWOUT: force the sweeper hazard in, pan the camera, then the act crossfade.
+await page.evaluate(() => { const c = window.__rh3; c.features.clear?.(); c.features.setup({ feature: "sweeper" }); });
+await sleep(300);
 const samples = { pan: [], act: [] };
-
-// --- Filmstrip A: slow camera pan over the arena.
 for (let i = 0; i < 14; i++) {
   const a = (i / 14) * Math.PI * 0.85 - 0.4;
   const px = Math.sin(a) * 7, pz = Math.cos(a) * 5 - 1;
@@ -79,24 +134,27 @@ for (let i = 0; i < 14; i++) {
   await page.evaluate(() => window.__rh3.fx.clear?.());
   samples.pan.push(await grab(`pan-${String(i).padStart(2, "0")}`));
 }
-
-// --- Filmstrip B: act-loading theme crossfade (rim must not blow to white).
 await page.evaluate(() => { window.__rh3menus?.clear?.(); window.__rh3debug?.interlude?.(3); });
 for (let i = 0; i < 14; i++) {
   await sleep(120);
   samples.act.push(await grab(`act-${String(i).padStart(2, "0")}`));
 }
 
-// --- Report + gate.
+// ---- Report + gate.
 let failed = false;
+const shBad = (v) => v > SHIMMER_GATE;
+for (const [label, v] of [["combat", shCombat], ["cutscene", shCut]]) {
+  const bad = shBad(v);
+  failed = failed || bad;
+  console.log(`shimmer ${label}: ${v.toFixed(2)} /255 per-frame  ${bad ? "✗ FLICKER" : "ok"}`);
+}
 for (const [seq, arr] of Object.entries(samples)) {
   const worst = arr.reduce((m, s) => (s.white > m.white ? s : m), arr[0]);
-  const pct = (x) => (x * 100).toFixed(1) + "%";
   const bad = worst.white > WHITE_GATE;
   failed = failed || bad;
-  console.log(`${seq}: peak white ${pct(worst.white)} @ ${worst.name}  ${bad ? "✗ BLOWOUT" : "ok"}`);
+  console.log(`${seq}: peak white ${(worst.white * 100).toFixed(1)}% @ ${worst.name}  ${bad ? "✗ BLOWOUT" : "ok"}`);
 }
 console.log(errors.length ? `ERRORS: ${errors.slice(0, 5).join("\n")}` : "NO CONSOLE ERRORS");
-console.log(failed ? "FLICKER GATE: FAIL (additive-white blow-out)" : "FLICKER GATE: PASS");
+console.log(failed ? "FLICKER GATE: FAIL" : "FLICKER GATE: PASS");
 await browser.close();
 process.exit(failed || errors.length ? 1 : 0);

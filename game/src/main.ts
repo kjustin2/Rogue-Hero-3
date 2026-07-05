@@ -1804,6 +1804,9 @@ const trailBase = new THREE.Vector3();
 const perf = new PerfMonitor(ctx, () => state);
 /** Latches once the frame loop has thrown so the recovery log fires only on the first hit. */
 let loopErrorLogged = false;
+/** Test-only: when true the frame loop freezes all updates (dt=0) but keeps rendering the
+ *  full composer, so a shimmer test can isolate per-frame-random post FX. Set via __rh3debug. */
+let frozenForTest = false;
 
 ctx.stage.renderer.setAnimationLoop(() => {
   const now = performance.now();
@@ -1813,8 +1816,14 @@ ctx.stage.renderer.setAnimationLoop(() => {
   // the ticks we keep, so latency tracks the cap — not vsync. Never gate boot.
   const fpsCap = menus.settings.fpsCap;
   if (fpsCap > 0 && !booting && now - last < 1000 / fpsCap - 1) return;
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const renderDt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  // Test-only world freeze (__rh3debug.freezeForTest): pass dt=0 to every sim/camera/arena
+  // update so the scene is pixel-identical frame-to-frame, while the composer still renders
+  // with a real dt. Any remaining frame-to-frame change is then a PER-FRAME-RANDOM post
+  // effect (e.g. animated film grain) — exactly what the flicker shimmer test isolates. It's
+  // a no-op in normal play (frozenForTest stays false).
+  const dt = frozenForTest ? 0 : renderDt;
 
   // The entire frame body — INCLUDING the perf instrument — is guarded. Three's
   // setAnimationLoop never re-requests once its callback throws, so a single
@@ -1919,7 +1928,7 @@ ctx.stage.renderer.setAnimationLoop(() => {
     const fullPath = ctx.playing || state === "cutscene" || state === "dead" || state === "victory";
     ctx.stage.setLowCost(!fullPath);
     if (fullPath) {
-      ctx.stage.render(dt);
+      ctx.stage.render(renderDt);
       menuRenderAccum = 0;
     } else {
       menuRenderAccum += dt;
@@ -2163,6 +2172,9 @@ void boot();
     killEnemies(): void { for (const e of ctx.enemies.living()) if (e.kind !== "boss") e.takeDamage(99999); },
     /** Skip an active intro/phase cutscene. */
     skipCutscene(): void { skipCutscene(); },
+    /** Test-only: freeze all world/camera updates (dt=0) while still rendering the full
+     *  composer, so the flicker shimmer test can isolate per-frame-random post FX. */
+    freezeForTest(on = true): boolean { frozenForTest = on; return frozenForTest; },
     /** The active boss instance (or null). */
     boss0() { return livingBoss(); },
     /** Current top-level UI screen. */
