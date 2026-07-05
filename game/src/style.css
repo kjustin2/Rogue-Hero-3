@@ -2338,6 +2338,38 @@ body.rh-no-anim .menu-sigil {
   border: 1px solid color-mix(in srgb, var(--accent, #fff) 45%, transparent);
   background: rgba(10, 12, 22, 0.7);
 }
+/* Per-hero signature-card mastery level (how many of this hero's unique cards are unlocked). */
+.hero-sig {
+  margin-top: 9px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hero-sig__lv {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  color: var(--accent, #fff);
+  white-space: nowrap;
+}
+.hero-sig__pips { display: flex; gap: 4px; }
+.hero-sig__pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.hero-sig__pip--on {
+  background: var(--accent, #fff);
+  border-color: var(--accent, #fff);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent, #fff) 70%, transparent);
+}
+.hero-sig__count {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.45);
+}
 
 /* --- armory --- */
 .armory-shards {

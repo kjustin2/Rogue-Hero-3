@@ -82,6 +82,23 @@ export const CARDS: CardDef[] = [
   { id: "hemorrhage", name: "Hemorrhage", desc: "Rupture every wound near you — each bleed erupts all at once.", upDesc: "A wider rupture that hits harder per wound.", cooldown: 8, color: "#ff4d66", glow: 0xff4d66, icon: "❥", rarity: "rare", tempo: 6 },
 ];
 
+/**
+ * Each hero's SIGNATURE card collection — surfaced as a per-hero "mastery level" on the
+ * hero-select screen (how many of these you've unlocked). Each list leads with the hero's
+ * exclusive card(s) (see the `hero` lock) and fills out with thematically-fitting shared
+ * cards, so every hero starts with one and climbs to five as milestones open the rest.
+ * Display / progression ONLY — this does NOT gate drafting (that's the per-card `hero`
+ * field in deck.ts). A card may suit more than one hero.
+ */
+export const HERO_SIGNATURE_CARDS: Record<string, string[]> = {
+  blade: ["tempo-edge", "dash-strike", "blade-cyclone", "riposte", "blade-spirit"],
+  bulwark: ["shield-bash", "bulwark-breaker", "aegis", "seismic-slam", "warcry"],
+  sparkmage: ["singularity", "chain-lightning", "storm-conduit", "spectral-volley", "thunderclap"],
+  reaver: ["rend-boomerang", "cleave", "bleeding-edge", "hemorrhage", "ember-wave"],
+  tempest: ["tempest-storm", "phase-step", "frost-lattice", "seeker-swarm", "blade-cyclone"],
+  revenant: ["grave-harvest", "cleave", "soul-harvest", "leech-orb", "bleeding-edge"],
+};
+
 /** Build-archetype tags per card — assigned once below so the literals stay readable. */
 const CARD_TAGS: Record<string, string[]> = {
   "dash-strike": ["mobility", "force"], "arc-bolt": ["arcane"], "cleave": ["force"],

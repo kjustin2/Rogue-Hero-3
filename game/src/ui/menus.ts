@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { Ctx, RunStats } from "../game/ctx";
 import type { CardDef } from "../game/cards";
 import type { RelicDef } from "../game/relics";
-import { CARDS, cardById } from "../game/cards";
+import { CARDS, cardById, HERO_SIGNATURE_CARDS } from "../game/cards";
 import { RELICS } from "../game/relics";
 import { HEROES, type HeroDef } from "../game/heroes";
 import { COSMETICS } from "../game/cosmetics";
@@ -571,6 +571,22 @@ export class Menus {
         const c = cardById(id);
         return `<span class="hero-hand__icon" style="--accent:${c.color}" title="${c.name}">${c.icon}</span>`;
       }).join("");
+      // Per-hero SIGNATURE level: how many of this hero's unique cards you've unlocked.
+      const sig = HERO_SIGNATURE_CARDS[hero.id] ?? [];
+      const sigLvl = sig.filter((id) => this.ctx.profile.isUnlocked(`card:${id}`)).length;
+      const sigPips = sig.map((id) => {
+        const on = this.ctx.profile.isUnlocked(`card:${id}`);
+        const c = cardById(id);
+        const hint = on ? c.name : `${c.name} — locked: ${this.ctx.profile.unlockHintFor(`card:${id}`)}`;
+        return `<span class="hero-sig__pip${on ? " hero-sig__pip--on" : ""}" title="${hint}"></span>`;
+      }).join("");
+      const sigRow = sig.length
+        ? `<div class="hero-sig" title="Signature cards unlocked for ${hero.name}">
+             <span class="hero-sig__lv">SIGNATURE&nbsp;·&nbsp;LV ${sigLvl}</span>
+             <span class="hero-sig__pips">${sigPips}</span>
+             <span class="hero-sig__count">${sigLvl}/${sig.length}</span>
+           </div>`
+        : "";
       el.innerHTML = unlocked
         ? `
           ${heroFigure(hero, true)}
@@ -585,6 +601,7 @@ export class Menus {
           </div>
           <div class="hero-passive"><b>${hero.passiveName}</b> — ${hero.passiveDesc}</div>
           <div class="hero-hand">${handIcons}</div>
+          ${sigRow}
           ${(this.ctx.profile.data.heroWins[hero.id] ?? 0) > 0 ? `<div class="hero-mastery">★ ${this.ctx.profile.data.heroWins[hero.id]} WIN${this.ctx.profile.data.heroWins[hero.id] === 1 ? "" : "S"}${(this.ctx.profile.data.heroBestWinDepth[hero.id] ?? 0) > 0 ? ` · BEST DEPTH ${this.ctx.profile.data.heroBestWinDepth[hero.id]}` : ""}</div>` : ""}`
         : `
           ${heroFigure(hero, false)}

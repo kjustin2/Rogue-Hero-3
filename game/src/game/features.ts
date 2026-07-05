@@ -283,8 +283,9 @@ export class MapFeatures {
       const sp = 3.2 + this.ctx.rng.range(0, 1.6);
       const mat = new THREE.MeshBasicMaterial({ color: 0xc24bff, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
       const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.85, 0), mat);
-      // A bright inner pip so the orb reads as a charged core, not a flat shell.
-      const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
+      // A bright inner pip so the orb reads as a charged core, not a flat shell. Tinted
+      // (not pure white) so the additive core doesn't bloom into a white blob.
+      const coreMat = new THREE.MeshBasicMaterial({ color: 0xe0b8ff, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
       const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.34, 0), coreMat);
       mesh.add(core);
       // Outward spikes turn the orb into a menacing spiked mine, not a soft ball.
@@ -309,15 +310,21 @@ export class MapFeatures {
   private makeSweeper(): void {
     const { x, z } = this.spot(4);
     const len = 5.8;
-    const mat = new THREE.MeshBasicMaterial({ color: 0x49d0ff, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false });
+    // The blade BODY is NORMAL-blended (not additive): a full-length additive cyan bar
+    // piles up under the bloom + ACES highlight-desaturation at close combat framing and
+    // clips to near-white (the owner's "white bar sweeping the screen" #1 FX complaint —
+    // de-whitening the color alone didn't fix it, the additive sum was the mechanism). A
+    // solid translucent bar reads clearly as a hazard and can't bloom-clip to white.
+    const mat = new THREE.MeshBasicMaterial({ color: 0x49d0ff, transparent: true, opacity: 0.5, depthWrite: false });
     const bar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.45, len), mat);
     bar.position.set(x, 0.5, z);
-    // A hot white core down the spine of the beam so it reads as a charged blade.
-    const coreMat = new THREE.MeshBasicMaterial({ color: 0xeaffff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
-    const core = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, len), coreMat);
+    // A thin cyan spine — the ONLY additive part of the blade, kept low so it glows without
+    // clipping. The hot accent that reads as "charged" lives in the small hub, not the bar.
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0x8fe0ff, transparent: true, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false });
+    const core = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, len), coreMat);
     bar.add(core);
     // A glowing emitter hub the beam pivots around so it reads as a powered turret.
-    const hubMat = new THREE.MeshBasicMaterial({ color: 0xbfeeff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
+    const hubMat = new THREE.MeshBasicMaterial({ color: 0xbfeeff, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
     const hub = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 0), hubMat);
     hub.position.set(x, 0.5, z);
     this.ctx.stage.scene.add(bar, hub);
@@ -491,10 +498,10 @@ export class MapFeatures {
       s.cd -= dt;
       s.angle += s.speed * dt;
       s.bar.rotation.y = s.angle;
-      s.mat.opacity = 0.26 + Math.abs(Math.sin(this.t * 4)) * 0.12;
-      s.coreMat.opacity = 0.7 + Math.abs(Math.sin(this.t * 8)) * 0.25;
+      s.mat.opacity = 0.44 + Math.abs(Math.sin(this.t * 4)) * 0.1; // normal-blend body — solid, breathing
+      s.coreMat.opacity = 0.22 + Math.abs(Math.sin(this.t * 8)) * 0.08; // low additive spine (won't clip)
       s.hub.rotation.y += dt * 1.6;
-      s.hubMat.opacity = 0.65 + Math.abs(Math.sin(this.t * 6)) * 0.28;
+      s.hubMat.opacity = 0.42 + Math.abs(Math.sin(this.t * 6)) * 0.14;
       const rx = p.x - s.x;
       const rz = p.z - s.z;
       const along = rx * Math.sin(s.angle) + rz * Math.cos(s.angle);

@@ -213,33 +213,6 @@ export const THEMES: Record<string, ArenaTheme> = {
   },
 };
 
-/** Alpha-feather for the light shafts: bright center column tapering to zero at the
- *  circumferential (u) edges + softened at the top/bottom (v) ends, so the shaft reads
- *  as a soft volumetric beam instead of a hard-edged translucent cone. */
-function makeShaftTexture(): THREE.CanvasTexture {
-  const w = 32, h = 96;
-  const cv = document.createElement("canvas");
-  cv.width = w; cv.height = h;
-  const g = cv.getContext("2d")!;
-  const hg = g.createLinearGradient(0, 0, w, 0);
-  hg.addColorStop(0, "rgba(255,255,255,0)");
-  hg.addColorStop(0.5, "rgba(255,255,255,1)");
-  hg.addColorStop(1, "rgba(255,255,255,0)");
-  g.fillStyle = hg;
-  g.fillRect(0, 0, w, h);
-  // Fade the shaft toward its floor end so it doesn't cut off in a hard ring.
-  g.globalCompositeOperation = "destination-in";
-  const vg = g.createLinearGradient(0, 0, 0, h);
-  vg.addColorStop(0, "rgba(0,0,0,0.75)");
-  vg.addColorStop(0.4, "rgba(0,0,0,1)");
-  vg.addColorStop(1, "rgba(0,0,0,0.15)");
-  g.fillStyle = vg;
-  g.fillRect(0, 0, w, h);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 /**
  * The arena: a floating obsidian disc in a void — emissive grid floor,
  * glowing rim, crystal monoliths marking bounds, floating rocks, gradient sky.
@@ -254,14 +227,13 @@ export class Arena {
   private floorTextureTheme = THEMES.rift.name;
   private crystalMats: THREE.MeshStandardMaterial[] = [];
   private rocks: { mesh: THREE.Mesh; baseY: number; spin: number; bob: number; phase: number }[] = [];
-  // Standing volumetric light shafts (IDEAS-GRAPHICS #24): a few slow-drifting
-  // additive god-ray columns angled with the key light, tinted per act.
-  private shaftMat!: THREE.MeshBasicMaterial;
-  private shafts: { mesh: THREE.Mesh; phase: number; baseX: number; baseZ: number }[] = [];
   private dressings: Record<Dressing, THREE.Group | null> = { rift: null, spire: null, forge: null, void: null };
   private sharedGeos = new Map<string, THREE.BufferGeometry>();
   private t = 0;
   private themeLerp = 1;
+  // True only while crossfading between DIFFERENT themes (act boundaries) — same-theme
+  // room loads still crossfade colors (a no-op) but must NOT trigger the emissive dip.
+  private themeChanging = false;
   private fromTheme: ArenaTheme = THEMES.rift;
   private toTheme: ArenaTheme = THEMES.rift;
 
@@ -711,25 +683,6 @@ export class Arena {
       });
     }
 
-    // --- Standing light shafts (IDEAS-GRAPHICS #24): additive god-ray columns
-    // widening toward the floor, angled with the key light, drifting slowly. One
-    // shared additive material (re-tinted per act) — cheap, never near screen-fill.
-    this.shaftMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(THEMES.rift.ember), transparent: true, opacity: 0.035,
-      map: makeShaftTexture(), // feather the circumferential edges so it reads as a soft beam
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide, fog: false,
-    });
-    const shaftGeo = new THREE.CylinderGeometry(0.15, 1.6, 24, 12, 1, true);
-    for (let i = 0; i < 4; i++) {
-      const s = new THREE.Mesh(shaftGeo, this.shaftMat);
-      const a = (i / 4) * Math.PI * 2 + 0.6;
-      const r = 5 + Math.random() * 8;
-      s.position.set(Math.cos(a) * r, 9, Math.sin(a) * r);
-      s.rotation.set(0.28, Math.random() * Math.PI, -0.42); // lean with the key light
-      s.renderOrder = 2;
-      scene.add(s);
-      this.shafts.push({ mesh: s, phase: Math.random() * Math.PI * 2, baseX: s.position.x, baseZ: s.position.z });
-    }
   }
 
   private getFloorTexture(theme: ArenaTheme): THREE.CanvasTexture {
@@ -980,20 +933,14 @@ export class Arena {
   }
 
   applyTheme(theme: ArenaTheme, instant = false): void {
+    this.themeChanging = !instant && this.toTheme.name !== theme.name;
     this.fromTheme = instant ? theme : this.currentBlend();
     this.toTheme = theme;
     this.themeLerp = instant ? 1 : 0;
     this.blendSettled = false;
-    // Capture BEFORE applyFloorTexture (which updates floorTextureTheme) so we only
-    // pay the env rebake on a real theme change, not every same-theme room.
-    const themeChanged = this.floorTextureTheme !== theme.name;
     this.applyFloorTexture(theme);
-    // Rebake the IBL env map only on an act-theme boundary (IDEAS-GRAPHICS #1) —
-    // a PMREM cubemap render is not free, and consecutive same-theme combat rooms
-    // shouldn't pay it. A texture swap, so no whole-scene shader relink.
-    if (themeChanged) {
-      this.stage.applyEnvironment(theme.skyTop, theme.skyBottom, theme.key, theme.rim, theme.ember);
-    }
+    // Env IBL is baked ONCE at boot (stage.ts) and never rebaked per act: swapping
+    // scene.environment mid-crossfade popped reflections (read as an act-load flicker).
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
     this.setDressing(theme.dressing);
     // Sky style is per-act, not per-dressing: abyss + hollow share the "void" dressing
@@ -1073,7 +1020,6 @@ export class Arena {
       }
     }
     this.mixTo(this.rockMat.emissive, f.crystal, t.crystal, k);
-    this.mixTo(this.shaftMat.color, f.ember, t.ember, k);
   }
 
   /** Target 0/1 — set by the tempo system while the player holds Critical. */
@@ -1103,7 +1049,13 @@ export class Arena {
     // Breathing rim + crystals + a slow grid pulse so the floor never reads as static.
     // At Critical tempo the whole arena breathes faster and hotter with the player.
     const h = this.heat;
-    const lit = 1 - this.dim * 0.62;
+    // A theme cross-lerp desaturates the bright emissives (rim goes cyan→periwinkle→
+    // magenta) and at full breathe intensity that midpoint blooms to pure WHITE — the
+    // "act-loading flicker". Hold the emissives down through the crossfade (deepest at
+    // the start, easing back to full) so the rim rotates hue cleanly instead of blowing
+    // out. Hidden behind the spawn flash, so no visible step when the crossfade begins.
+    const xf = (this.blendSettled || !this.themeChanging) ? 1 : 0.5 + 0.5 * this.themeLerp;
+    const lit = (1 - this.dim * 0.62) * xf;
     // Tempo drives the real lights + fog, not just emissive skin (IDEAS-GRAPHICS #9/#28):
     // Critical brightens the room and thins the air for a clarity payoff; a boss dim
     // darkens the key + thickens the fog for dread.
@@ -1125,13 +1077,5 @@ export class Arena {
       r.mesh.rotation.y += r.spin * dt;
       r.mesh.position.y = r.baseY + Math.sin(this.t * 0.4 + r.phase) * r.bob;
     }
-
-    // Light shafts drift slowly and breathe; dimmed with the arena during boss holds.
-    for (const s of this.shafts) {
-      s.phase += dt * 0.15;
-      s.mesh.position.x = s.baseX + Math.sin(s.phase) * 1.2;
-      s.mesh.position.z = s.baseZ + Math.cos(s.phase * 0.7) * 1.0;
-    }
-    this.shaftMat.opacity = (0.032 + Math.sin(this.t * 0.5) * 0.01 + h * 0.015) * lit;
   }
 }

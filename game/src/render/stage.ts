@@ -275,12 +275,6 @@ export class Stage {
     this.renderer.toneMappingExposure = 1.32 * mult;
   }
 
-  /** Rebake the IBL env map from a theme palette (arena.ts drives this per act). Just
-   *  swaps the env texture — same envMap material variant, so no whole-scene relink. */
-  applyEnvironment(topHex: number, bottomHex: number, keyHex: number, rimHex: number, emberHex: number): void {
-    this.scene.environment = this.envBaker.bake(topHex, bottomHex, keyHex, rimHex, emberHex);
-  }
-
   private onResize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
