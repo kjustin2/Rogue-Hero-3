@@ -863,6 +863,9 @@ export class Bastion extends Enemy {
     }
     if (this.slamWindup < 0) {
       const d = this.seek(p.pos.x, p.pos.z, dt);
+      // A slow, heavy stomp bob so "the walking wall" reads as ponderous mass hauling
+      // itself forward, not a statue gliding on rails (its legs step; this adds weight).
+      this.pos.y = Math.abs(Math.sin(this.t * 2.2)) * 0.05;
       this.slamTimer -= dt;
       if (d < 3.0 && this.slamTimer <= 0) {
         this.slamWindup = 0.6;

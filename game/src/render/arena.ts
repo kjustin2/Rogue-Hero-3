@@ -106,7 +106,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "forge",
     dressing: "forge",
     fog: 0x140805,
-    fogDensity: 0.024,
+    fogDensity: 0.019,
     skyTop: 0x130404,
     skyBottom: 0x6a2408,
     hemiSky: 0xffaa66,
@@ -121,7 +121,7 @@ export const THEMES: Record<string, ArenaTheme> = {
     name: "core",
     dressing: "forge",
     fog: 0x180603,
-    fogDensity: 0.028,
+    fogDensity: 0.021,
     skyTop: 0x150303,
     skyBottom: 0x7a1205,
     hemiSky: 0xff8855,
@@ -212,6 +212,33 @@ export const THEMES: Record<string, ArenaTheme> = {
     gridEmissive: 0x123a52,
   },
 };
+
+/** Alpha-feather for the light shafts: bright center column tapering to zero at the
+ *  circumferential (u) edges + softened at the top/bottom (v) ends, so the shaft reads
+ *  as a soft volumetric beam instead of a hard-edged translucent cone. */
+function makeShaftTexture(): THREE.CanvasTexture {
+  const w = 32, h = 96;
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  const g = cv.getContext("2d")!;
+  const hg = g.createLinearGradient(0, 0, w, 0);
+  hg.addColorStop(0, "rgba(255,255,255,0)");
+  hg.addColorStop(0.5, "rgba(255,255,255,1)");
+  hg.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = hg;
+  g.fillRect(0, 0, w, h);
+  // Fade the shaft toward its floor end so it doesn't cut off in a hard ring.
+  g.globalCompositeOperation = "destination-in";
+  const vg = g.createLinearGradient(0, 0, 0, h);
+  vg.addColorStop(0, "rgba(0,0,0,0.75)");
+  vg.addColorStop(0.4, "rgba(0,0,0,1)");
+  vg.addColorStop(1, "rgba(0,0,0,0.15)");
+  g.fillStyle = vg;
+  g.fillRect(0, 0, w, h);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 /**
  * The arena: a floating obsidian disc in a void — emissive grid floor,
@@ -683,7 +710,8 @@ export class Arena {
     // shared additive material (re-tinted per act) — cheap, never near screen-fill.
     this.shaftMat = new THREE.MeshBasicMaterial({
       color: new THREE.Color(THEMES.rift.ember), transparent: true, opacity: 0.035,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false,
+      map: makeShaftTexture(), // feather the circumferential edges so it reads as a soft beam
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide, fog: false,
     });
     const shaftGeo = new THREE.CylinderGeometry(0.15, 1.6, 24, 12, 1, true);
     for (let i = 0; i < 4; i++) {
@@ -950,10 +978,16 @@ export class Arena {
     this.toTheme = theme;
     this.themeLerp = instant ? 1 : 0;
     this.blendSettled = false;
+    // Capture BEFORE applyFloorTexture (which updates floorTextureTheme) so we only
+    // pay the env rebake on a real theme change, not every same-theme room.
+    const themeChanged = this.floorTextureTheme !== theme.name;
     this.applyFloorTexture(theme);
-    // Rebake the IBL env map for the new act (IDEAS-GRAPHICS #1) — a one-shot behind
-    // the spawn flash; a texture swap, so no whole-scene shader relink.
-    this.stage.applyEnvironment(theme.skyTop, theme.skyBottom, theme.key, theme.rim, theme.ember);
+    // Rebake the IBL env map only on an act-theme boundary (IDEAS-GRAPHICS #1) —
+    // a PMREM cubemap render is not free, and consecutive same-theme combat rooms
+    // shouldn't pay it. A texture swap, so no whole-scene shader relink.
+    if (themeChanged) {
+      this.stage.applyEnvironment(theme.skyTop, theme.skyBottom, theme.key, theme.rim, theme.ember);
+    }
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
     this.setDressing(theme.dressing);
     // Sky style is per-act, not per-dressing: abyss + hollow share the "void" dressing

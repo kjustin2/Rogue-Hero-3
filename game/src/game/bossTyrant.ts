@@ -243,10 +243,15 @@ export class RiftTyrant extends Enemy {
     const frac = this.hp / this.maxHp;
     const targetPhase = frac <= 0.33 ? 3 : frac <= 0.66 ? 2 : 1;
     if (!killed && targetPhase > this.phase) {
+      const from = this.phase;
       this.phase = targetPhase;
       this.state = "phaseShift";
       this.timer = 1.2;
-      this.applyPhaseLook(this.phase);
+      // Walk intervening phases so a two-threshold hit still fires each phase's content.
+      for (let p = from + 1; p <= targetPhase; p++) {
+        this.applyPhaseLook(p);
+        if (p === 2) this.summonAdds(2);
+      }
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 9, color: RIFT_VIOLET, duration: 0.75 });
       this.ctx.fx.burst({
@@ -263,8 +268,6 @@ export class RiftTyrant extends Enemy {
       const dz = p.pos.z - this.pos.z;
       const len = Math.hypot(dx, dz) || 1;
       this.ctx.controller.push((dx / len) * 8, (dz / len) * 8);
-      // Phase 2 wakes a pair of rift husks
-      if (this.phase === 2) this.summonAdds(2);
     }
     return killed;
   }

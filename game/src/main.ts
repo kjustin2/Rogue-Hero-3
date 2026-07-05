@@ -138,7 +138,9 @@ ctx.trail = new SwordTrail(ctx.stage.scene);
 ctx.tele = new Telegraphs(ctx.stage.scene);
 ctx.floaters = new Floaters(ctx.stage.camera);
 ctx.arena = new Arena(ctx.stage);
-ctx.decals = new Decals(ctx.stage.scene, ctx.stage.quality === "low" ? 8 : 12);
+// ponytail: fixed 12/type — stage.quality is still its "high" default here (settings
+// apply later), so the old low→8 branch never fired; 4 flat quads isn't worth the wiring.
+ctx.decals = new Decals(ctx.stage.scene, 12);
 const contactShadows = new ContactShadows(ctx.stage.scene);
 // Reused scratch so placing a blob under the hero + every living enemy each frame
 // allocates nothing (the object pool is mutated in place).
@@ -279,8 +281,11 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   unmakerFading = false;
   spareHold = 0;
   chosenMercy = false;
-  ascendantRank = 0;
-  ctx.combat.runRankMult = 1;
+  ctx.stage.setMood("neutral"); // retry/continue must not inherit the last run's death/victory grade
+  // Re-derive Ascendant Rank from the (possibly restored) kill count so a resumed run
+  // doesn't reset to 0 and replay already-earned milestone heals/banners on the next kills.
+  ascendantRank = ASCENDANT_THRESHOLDS.filter((t) => ctx.stats.kills >= t).length;
+  ctx.combat.runRankMult = 1 + ascendantRank * 0.06;
   ctx.combat.emberRevive = false;
   runResolved = false;
   woundActive = false;
@@ -725,6 +730,7 @@ function quitToDesktop(): void {
 function toMenu(): void {
   finishInterlude(null, false); // quitting mid-causeway: tear the scene down, don't load the node
   clearEmberAlly();
+  ctx.decals.clear();
   ctx.stage.setMood("neutral"); // clear any death/victory grade
   state = "menu";
   pendingRoomReward = null;

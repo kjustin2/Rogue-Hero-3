@@ -219,11 +219,23 @@ export class SpireCaster extends Enemy {
     const frac = this.hp / this.maxHp;
     const targetPhase = frac <= 0.35 ? 3 : frac <= 0.7 ? 2 : 1;
     if (!killed && targetPhase > this.phase) {
+      const from = this.phase;
       this.phase = targetPhase;
       this.state = "phaseShift";
       this.timer = 1.2;
       this.channelsSinceShift = 0;
-      this.applyPhaseLook(this.phase);
+      // Walk every intervening phase so a single hit crossing two thresholds still
+      // fires each phase's one-time look + escalation, not just the final target's.
+      for (let p = from + 1; p <= targetPhase; p++) {
+        this.applyPhaseLook(p);
+        if (p === 2) {
+          this.spawnEchoes();
+          for (let i = 0; i < 2; i++) {
+            const a = Math.random() * Math.PI * 2;
+            this.ctx.enemies.spawn("wisp", Math.sin(a) * 8, Math.cos(a) * 8, 1.2);
+          }
+        }
+      }
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 8, color: 0x3effd2, duration: 0.7 });
       this.ctx.fx.burst({
@@ -234,13 +246,6 @@ export class SpireCaster extends Enemy {
       this.ctx.cam.addTrauma(0.45);
       this.ctx.stage.punch(0.3);
       this.ctx.sfx.bossRoar();
-      if (this.phase === 2) {
-        this.spawnEchoes();
-        for (let i = 0; i < 2; i++) {
-          const a = Math.random() * Math.PI * 2;
-          this.ctx.enemies.spawn("wisp", Math.sin(a) * 8, Math.cos(a) * 8, 1.2);
-        }
-      }
     }
     return killed;
   }

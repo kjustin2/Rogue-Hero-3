@@ -274,7 +274,8 @@ export class Relics {
       p.shield = Math.max(p.shield, 10);
       this.ctx.events.emit("SHIELD_GAINED", { amount: 10 });
     }
-    if (this.has("tempo-engine")) this.ctx.tempo.gain(70 - this.ctx.tempo.value);
+    // Floor tempo at 70 (never DRAIN a player who entered already hotter than 70).
+    if (this.has("tempo-engine") && this.ctx.tempo.value < 70) this.ctx.tempo.gain(70 - this.ctx.tempo.value);
     if (this.has("tyrant-ward")) {
       const p = this.ctx.player;
       p.shield = Math.max(p.shield, 8);

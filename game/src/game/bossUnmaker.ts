@@ -292,13 +292,20 @@ export class Unmaker extends Enemy {
     const frac = this.hp / this.maxHp;
     const targetPhase = frac <= 0.12 ? 4 : frac <= 0.33 ? 3 : frac <= 0.66 ? 2 : 1;
     if (!killed && targetPhase > this.phase) {
+      const from = this.phase;
       this.phase = targetPhase;
       if (this.phase === 4) {
+        // A hit that jumps straight to the fade must not lose earlier phases' reveals.
+        for (let p = from + 1; p <= 3; p++) this.applyPhaseLook(p);
         this.enterFading();
       } else {
         this.state = "phaseShift";
         this.timer = 1.3;
-        this.applyPhaseLook(this.phase);
+        // Walk intervening phases so a two-threshold hit still fires each phase's content.
+        for (let p = from + 1; p <= targetPhase; p++) {
+          this.applyPhaseLook(p);
+          if (p === 2) this.summonAdds(3);
+        }
         this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
         // A collapse-then-detonate the instant the star tears to its next tier: the void
         // implodes into the core, a pillar of star-light erupts, then it blasts outward.
@@ -321,7 +328,6 @@ export class Unmaker extends Enemy {
         const dz = p.pos.z - this.pos.z;
         const len = Math.hypot(dx, dz) || 1;
         this.ctx.controller.push((dx / len) * 9, (dz / len) * 9);
-        if (this.phase === 2) this.summonAdds(3);
       }
     }
     return killed;

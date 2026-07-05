@@ -233,10 +233,20 @@ export class Colossus extends Enemy {
     const frac = this.hp / this.maxHp;
     const targetPhase = frac <= 0.35 ? 3 : frac <= 0.7 ? 2 : 1;
     if (!killed && targetPhase > this.phase) {
+      const from = this.phase;
       this.phase = targetPhase;
       this.state = "phaseShift";
       this.timer = 1.3;
-      this.applyPhaseLook(this.phase);
+      // Walk intervening phases so a two-threshold hit still fires each phase's content.
+      for (let p = from + 1; p <= targetPhase; p++) {
+        this.applyPhaseLook(p);
+        if (p === 2) {
+          for (let i = 0; i < 2; i++) {
+            const a = Math.random() * Math.PI * 2;
+            this.ctx.enemies.spawn("leaper", this.pos.x + Math.sin(a) * 9, this.pos.z + Math.cos(a) * 9, 1.2);
+          }
+        }
+      }
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 10, color: 0xff5522, duration: 0.8 });
       this.ctx.fx.burst({
@@ -247,12 +257,6 @@ export class Colossus extends Enemy {
       this.ctx.cam.addTrauma(0.55);
       this.ctx.stage.punch(0.35);
       this.ctx.sfx.bossRoar();
-      if (this.phase === 2) {
-        for (let i = 0; i < 2; i++) {
-          const a = Math.random() * Math.PI * 2;
-          this.ctx.enemies.spawn("leaper", this.pos.x + Math.sin(a) * 9, this.pos.z + Math.cos(a) * 9, 1.2);
-        }
-      }
     }
     return killed;
   }

@@ -1237,6 +1237,7 @@ export class Spitter extends Enemy {
   readonly kind: EnemyKind = "spitter";
   private fireTimer = 1.6;
   private windup = -1;
+  private lockedAngle = 0; // aim locked + telegraphed at windup start, fired along it
   private orb: THREE.Mesh;
   private orbMat: THREE.MeshStandardMaterial;
   private strafeDir = Math.random() < 0.5 ? 1 : -1;
@@ -1298,6 +1299,10 @@ export class Spitter extends Enemy {
       if (this.fireTimer <= 0 && d < 16) {
         this.windup = 0.38;
         this.fireTimer = 2.3;
+        // Lock the shot angle NOW and draw the lane so the player can read + dodge it
+        // (fairness contract — every enemy attack telegraphs), like Wisp/Tether do.
+        this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 16, 0.5, 0.38, 0x55bbff);
       }
     } else {
       this.setIntentPose(1 - Math.max(0, this.windup) / 0.38);
@@ -1308,8 +1313,8 @@ export class Spitter extends Enemy {
         this.windup = -1;
         this.orbMat.emissiveIntensity = 2.2;
         this.orb.scale.setScalar(1);
-        const ang = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-        this.ctx.hostiles.fire(this.pos.x, this.pos.z, ang, { speed: 9, dmg: 8, color: 0x55bbff, radius: 0.3 });
+        // Fire along the LOCKED angle (matches the telegraphed lane), not a fresh recompute.
+        this.ctx.hostiles.fire(this.pos.x, this.pos.z, this.lockedAngle, { speed: 9, dmg: 8, color: 0x55bbff, radius: 0.3 });
         this.ctx.sfx.enemyShoot();
       }
     }

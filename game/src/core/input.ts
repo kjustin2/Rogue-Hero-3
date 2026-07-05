@@ -112,9 +112,14 @@ export class Input {
   padId = "";
   padMapping = "";
   private padIndex = -1;
-  private padHeld: boolean[] = [];
-  private padPressed: boolean[] = [];
-  private padAxes: number[] = [];
+  // Fixed-size, reset in place each frame — never reallocated (this poll runs every
+  // frame in every state, so `= []` here was a continuous GC-pressure source).
+  private padHeld: boolean[] = new Array(24).fill(false);
+  private padPressed: boolean[] = new Array(24).fill(false);
+  private padAxes: number[] = new Array(4).fill(0);
+  private readonly aimHit = new THREE.Vector3();
+  private readonly moveScratch = { x: 0, z: 0 };
+  private readonly aimScratch = { x: 0, z: 0 };
   private lastKbm = 0;
   private lastPad = -1;
 
@@ -188,7 +193,7 @@ export class Input {
     }
     this.gamepadConnected = on;
     if (on && gp) { this.padIndex = gp.index; this.padId = gp.id; this.padMapping = gp.mapping; }
-    if (!on) { this.padHeld = []; this.padAxes = []; this.padPressed = []; }
+    if (!on) { this.padHeld.fill(false); this.padAxes.fill(0); this.padPressed.fill(false); }
     this.onGamepadChange?.(on, on ? (gp?.id ?? this.padId) : this.padId);
   }
 
@@ -229,15 +234,18 @@ export class Input {
     return (PAD_ACTION.pause ?? []).some((b) => this.padPressed[b]);
   }
 
-  /** Combined keyboard/stick movement direction, magnitude 0..1 (analog from a stick). */
+  /** Combined keyboard/stick movement direction, magnitude 0..1 (analog from a stick).
+   *  Returns a SHARED scratch object (read it immediately; every gameplay frame calls this). */
   moveVector(): { x: number; z: number } {
-    if (!this.enabled) return { x: 0, z: 0 };
+    const out = this.moveScratch;
+    if (!this.enabled) { out.x = 0; out.z = 0; return out; }
     const gx = this.padAxes[0] ?? 0;
     const gz = this.padAxes[1] ?? 0;
     if (Math.hypot(gx, gz) > DEADZONE) {
       const len = Math.hypot(gx, gz);
       const m = Math.min(1, len);
-      return { x: (gx / len) * m, z: (gz / len) * m };
+      out.x = (gx / len) * m; out.z = (gz / len) * m;
+      return out;
     }
     let x = 0, z = 0;
     if (this.actionDown("left")) x -= 1;
@@ -246,16 +254,18 @@ export class Input {
     if (this.actionDown("down")) z += 1;
     const len = Math.hypot(x, z);
     if (len > 1) { x /= len; z /= len; }
-    return { x, z };
+    out.x = x; out.z = z;
+    return out;
   }
 
-  /** Right-stick aim direction (world XZ), or null when centered. */
+  /** Right-stick aim direction (world XZ), or null when centered. Shared scratch. */
   aimDir(): { x: number; z: number } | null {
     const x = this.padAxes[2] ?? 0;
     const z = this.padAxes[3] ?? 0;
     if (Math.hypot(x, z) < DEADZONE) return null;
     const len = Math.hypot(x, z) || 1;
-    return { x: x / len, z: z / len };
+    this.aimScratch.x = x / len; this.aimScratch.z = z / len;
+    return this.aimScratch;
   }
 
   get usingGamepad(): boolean {
@@ -308,18 +318,18 @@ export class Input {
       if (this.padIndex >= 0 && pads[this.padIndex]) gp = pads[this.padIndex];
       if (!gp) for (const p of pads) if (p && p.connected) { gp = p; break; }
     }
-    this.padPressed = [];
+    this.padPressed.fill(false);
     if (!gp) {
       // Backstop the disconnect event (some setups never fire it).
       if (this.gamepadConnected) this.setPadConnected(false);
-      this.padHeld = [];
-      this.padAxes = [];
+      this.padHeld.fill(false);
+      this.padAxes.fill(0);
       return;
     }
     // Backstop the connect event (e.g. a pad already held down before page load).
     if (!this.gamepadConnected) this.setPadConnected(true, gp);
     else { this.padIndex = gp.index; this.padId = gp.id; this.padMapping = gp.mapping; }
-    this.padAxes = Array.from(gp.axes);
+    for (let i = 0; i < this.padAxes.length; i++) this.padAxes[i] = gp.axes[i] ?? 0;
     let activity = false;
     for (let i = 0; i < gp.buttons.length; i++) {
       const p = gp.buttons[i].pressed;
@@ -340,14 +350,13 @@ export class Input {
   updateAim(camera: THREE.Camera, planeY = 0): void {
     this.groundPlane.constant = -planeY;
     this.ray.setFromCamera(this.pointer, camera);
-    const hit = new THREE.Vector3();
-    if (this.ray.ray.intersectPlane(this.groundPlane, hit)) {
-      this.aimPoint.copy(hit);
+    if (this.ray.ray.intersectPlane(this.groundPlane, this.aimHit)) {
+      this.aimPoint.copy(this.aimHit);
     }
   }
 
   endFrame(): void {
     this.pressedThisFrame.clear();
-    this.mousePressed = [false, false, false];
+    this.mousePressed[0] = this.mousePressed[1] = this.mousePressed[2] = false;
   }
 }

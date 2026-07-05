@@ -2088,8 +2088,11 @@ export class CardCaster {
     if (this.aegisTimer > 0) {
       this.aegisTimer -= dt;
       if (this.aegisTimer <= 0 && this.ctx.player.shield > 0) {
-        this.ctx.player.shield = 0;
-        this.ctx.events.emit("SHIELD_BROKEN", {});
+        // Only remove Aegis's OWN contribution, not shield another source (War Cry,
+        // Bulwark relics, ward-pulse) topped the shared pool up with in the meantime.
+        const amt = this.aegisUpgraded ? 40 : 25;
+        this.ctx.player.shield = Math.max(0, this.ctx.player.shield - amt);
+        if (this.ctx.player.shield <= 0) this.ctx.events.emit("SHIELD_BROKEN", {});
       }
     }
 

@@ -178,7 +178,7 @@ export class Particles {
           // reads as a highlight, not a wash.
           float corona = smoothstep(1.0, 0.15, d);
           float core = pow(clamp(1.0 - d, 0.0, 1.0), 6.0);
-          vec3 col = mix(vColor * (1.0 + (1.0 - d) * 1.4), vec3(1.0), core * 0.85);
+          vec3 col = mix(vColor * (1.0 + (1.0 - d) * 1.4), vec3(1.0), core * 0.7);
 
           // Shape atlas: carve the corona into one of 4 baked masks picked per-
           // particle at spawn (mote's cell is solid white, so shape=0 is a no-op).
@@ -187,6 +187,12 @@ export class Particles {
           float mask = texture2D(uAtlas, (gl_PointCoord + cell) * 0.5).r;
 
           gl_FragColor = vec4(col, corona * vFade * mask);
+          // A custom ShaderMaterial gets the tonemap/colorspace helpers injected but
+          // must CALL them (like telegraphs.ts does), else the >1.0 corona/core values
+          // bypass the ACES shoulder every lit surface gets and hard-clip to flat white
+          // when additive bursts stack. Roll them off so overlaps grade instead of clip.
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });

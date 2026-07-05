@@ -112,9 +112,11 @@ export class RunManager {
         this.ctx.events.emit("RUN_VICTORY", {});
         return;
       }
-      // Mid-act boss: pop surviving adds, heal (scaled by Ascension), clear flow
+      // Mid-act boss: pop surviving adds, heal (scaled by Ascension), clear flow.
+      // clearNonBosses() also purges the PENDING spawn queue, so an add the boss
+      // queued moments before dying can't materialize during the reward window.
       this.state = "cleared";
-      for (const e of this.ctx.enemies.living()) if (e.kind !== "boss") e.takeDamage(99999);
+      this.ctx.enemies.clearNonBosses();
       this.ctx.hostiles.clear();
       this.heal(this.ctx.player.maxHp - this.ctx.player.hp);
       this.ctx.events.emit("ROOM_CLEARED", { index: this.position, reward: this.currentNode?.reward ?? "card" });
@@ -192,6 +194,7 @@ export class RunManager {
     ctx.projectiles.clear();
     ctx.hostiles.clear();
     ctx.caster.clear();
+    ctx.decals.clear(); // a fresh room must not inherit the last room's scorch/crack marks
 
     ctx.arena.applyTheme(THEMES[node.theme]);
     ctx.arena.setObstacles(node.obstacles ?? [], THEMES[node.theme].crystal);

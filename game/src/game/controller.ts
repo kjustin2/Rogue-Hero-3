@@ -202,16 +202,16 @@ export class Controller {
   }
 
   // ------------------------------------------------------------- lock-on / auto-aim
-  private livingTargets(): Enemy[] {
-    return this.ctx.enemies.living().filter((e) => e.alive && e.hp > 0);
-  }
+  // living() is already alive-filtered; iterate it directly with an inline hp>0 check
+  // rather than allocating a second filtered array every gamepad frame.
 
   /** Ensure a live target, picking the nearest if we have none. Returns whether one exists. */
   private acquireTarget(): boolean {
     if (!this.target || !this.target.alive || this.target.hp <= 0) {
       const p = this.ctx.player.pos;
       let best: Enemy | null = null, bd = Infinity;
-      for (const e of this.livingTargets()) {
+      for (const e of this.ctx.enemies.living()) {
+        if (e.hp <= 0) continue;
         const d = (e.pos.x - p.x) ** 2 + (e.pos.z - p.z) ** 2;
         if (d < bd) { bd = d; best = e; }
       }
@@ -220,10 +220,10 @@ export class Controller {
     return !!this.target;
   }
 
-  /** [Y] — cycle to the next enemy by distance (wraps). */
+  /** [Y] — cycle to the next enemy by distance (wraps). Edge-triggered, so a sort is fine. */
   private cycleTarget(): void {
     const p = this.ctx.player.pos;
-    const list = this.livingTargets().sort(
+    const list = this.ctx.enemies.living().filter((e) => e.hp > 0).sort(
       (a, b) => ((a.pos.x - p.x) ** 2 + (a.pos.z - p.z) ** 2) - ((b.pos.x - p.x) ** 2 + (b.pos.z - p.z) ** 2)
     );
     if (!list.length) { this.target = null; return; }
@@ -236,7 +236,8 @@ export class Controller {
   private targetTowardDir(ax: number, az: number): void {
     const p = this.ctx.player.pos;
     let best: Enemy | null = null, bestDot = 0.35; // require reasonable alignment to switch
-    for (const e of this.livingTargets()) {
+    for (const e of this.ctx.enemies.living()) {
+      if (e.hp <= 0) continue;
       const ex = e.pos.x - p.x, ez = e.pos.z - p.z;
       const el = Math.hypot(ex, ez) || 1;
       const dot = (ex / el) * ax + (ez / el) * az;

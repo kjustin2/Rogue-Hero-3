@@ -108,13 +108,17 @@ export class WoundBoss extends Enemy {
     const frac = this.hp / this.maxHp;
     const targetPhase = frac <= 0.33 ? 3 : frac <= 0.66 ? 2 : 1;
     if (!killed && targetPhase > this.phase) {
+      const from = this.phase;
       this.phase = targetPhase;
       this.state = "phaseShift";
       this.timer = 1.2;
       this.speed = 3.2 + this.phase * 0.5;
       this.setBossScale(1 + (this.phase - 1) * 0.07);
-      if (this.phase === 2) this.eruptReveal(this.phaseSpurs.slice(0, 3));
-      else this.eruptReveal(this.phaseSpurs.slice(3));
+      // Walk intervening phases so a two-threshold hit still reveals each phase's spurs.
+      for (let p = from + 1; p <= targetPhase; p++) {
+        if (p === 2) this.eruptReveal(this.phaseSpurs.slice(0, 3));
+        else this.eruptReveal(this.phaseSpurs.slice(3));
+      }
       // Breaking a phase pries your card back out of it — then it swallows another.
       this.returnStolen();
       this.stealCard();
@@ -318,8 +322,11 @@ export class WoundBoss extends Enemy {
     }
 
     // Its CRASH: at the peak it cashes its heat out exactly like you do — dodge it.
-    // Never interrupt a wind-up ward mid-cast (its punish + invuln would strand).
-    if (this.bossTempo >= 100 && this.state !== "crashTell" && this.state !== "phaseShift" && this.state !== "guard") {
+    // Never interrupt a wind-up mid-cast — a preempted castTell/rakeTell keeps its own
+    // countdown and would land a SECOND nova moments after the crash (double damage).
+    // Tempo clamps at 100 and only resets after the crash fires, so this just defers
+    // the crash to the next tick once the boss exits the cast — no attack is lost.
+    if (this.bossTempo >= 100 && this.state !== "crashTell" && this.state !== "phaseShift" && this.state !== "guard" && this.state !== "castTell" && this.state !== "rakeTell") {
       this.state = "crashTell";
       this.timer = 0.9;
       this.ctx.tele.circle(this.pos.x, this.pos.z, 7.2, 0.9, 0xffffff);
