@@ -191,6 +191,13 @@ export const MILESTONES: Milestone[] = [
   { id: "slayer-950", desc: "Slay 950 enemies", unlocks: ["card:rift-hook"], check: (p) => p.kills >= 950 },
   { id: "veteran-25", desc: "Brave the Rift 25 times", unlocks: ["card:blade-spirit"], check: (p) => p.runs >= 25 },
   { id: "slayer-3400", desc: "Slay 3400 enemies", unlocks: ["card:hemorrhage"], check: (p) => p.kills >= 3400 },
+  // --- Expansion VII: each hero's 2nd SIGNATURE card, earned by living that hero's identity.
+  { id: "sig-blade", desc: "Crash your tempo 110 times", unlocks: ["card:tempo-surge"], check: (p) => p.crashes >= 110 },
+  { id: "sig-bulwark", desc: "Slay 700 enemies", unlocks: ["card:hammer-drop"], check: (p) => p.kills >= 700 },
+  { id: "sig-sparkmage", desc: "Reach a 24-kill streak", unlocks: ["card:arc-overload"], check: (p, run) => p.bestStreak >= 24 || (!!run && run.bestStreak >= 24) },
+  { id: "sig-reaver", desc: "Slay 1500 enemies", unlocks: ["card:feral-leap"], check: (p) => p.kills >= 1500 },
+  { id: "sig-tempest", desc: "260 lifetime perfect dodges", unlocks: ["card:gale-burst"], check: (p) => p.perfectDodges >= 260 },
+  { id: "sig-revenant", desc: "Slay 2000 enemies", unlocks: ["card:soul-drain"], check: (p) => p.kills >= 2000 },
   // --- Run-start blessings: locked at first, earned slowly through play.
   { id: "bless-vigor", desc: "Brave the Rift 5 times", unlocks: ["blessing:vigor"], check: (p) => p.runs >= 5 },
   { id: "bless-arsenal", desc: "Defeat the Spire Caster", unlocks: ["blessing:arsenal"], check: (p) => p.actsCleared >= 2 },

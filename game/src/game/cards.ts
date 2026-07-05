@@ -80,6 +80,15 @@ export const CARDS: CardDef[] = [
   { id: "rift-hook", name: "Rift Hook", desc: "Lash rift-tethers into the pack ahead and yank it to your feet.", upDesc: "Hooks all around you, hits harder, and chills what arrives.", cooldown: 8, color: "#9a8fff", glow: 0x9a8fff, icon: "☍", rarity: "uncommon", tempo: 7 },
   { id: "blade-spirit", name: "Blade Spirit", desc: "Summon a spectral blade that orbits you, cutting all it crosses.", upDesc: "A faster, fiercer blade that lingers longer.", cooldown: 10, color: "#8fe8ff", glow: 0x8fe8ff, icon: "❂", rarity: "uncommon", tempo: 6 },
   { id: "hemorrhage", name: "Hemorrhage", desc: "Rupture every wound near you — each bleed erupts all at once.", upDesc: "A wider rupture that hits harder per wound.", cooldown: 8, color: "#ff4d66", glow: 0xff4d66, icon: "❥", rarity: "rare", tempo: 6 },
+  // --- Expansion VII: a second SIGNATURE card for every hero — hero-locked, each a mechanic
+  // that no other card has (tempo-set, leap-crater, screen-wide stun, wound-scaled pounce,
+  // knockback i-frame nova, wound-scaled reap).
+  { id: "tempo-surge", name: "Tempo Surge", desc: "Vault your Tempo skyward and release the built pressure as a shock — the hotter you were, the harder it hits.", upDesc: "A bigger surge and a wider, fiercer shock.", cooldown: 9, color: "#5fe0ff", glow: 0x5fe0ff, icon: "⇡", rarity: "rare", tempo: 0, hero: "blade" },
+  { id: "hammer-drop", name: "Hammer Drop", desc: "Leap to the cursor and crater the ground — a heavy blast, a hard knock-up, and a shield per foe caught.", upDesc: "Wider crater, harder launch, a stouter shield.", cooldown: 9, color: "#ffaa55", glow: 0xffaa55, icon: "⤓", rarity: "rare", tempo: 8, hero: "bulwark" },
+  { id: "arc-overload", name: "Overload", desc: "Discharge into every foe on the field at once, stunning them where they stand.", upDesc: "Hits harder and stuns for longer.", cooldown: 12, color: "#c98fff", glow: 0xc98fff, icon: "⌁", rarity: "rare", tempo: 10, hero: "sparkmage" },
+  { id: "feral-leap", name: "Feral Leap", desc: "Pounce the marked foe — the nearer you are to death, the harder it lands, and it feeds you.", upDesc: "Deadlier when wounded, and lifesteals more.", cooldown: 8, color: "#ff5a52", glow: 0xff5a52, icon: "⇟", rarity: "rare", tempo: 8, hero: "reaver" },
+  { id: "gale-burst", name: "Gale Burst", desc: "Erupt a ring of wind — everything near is hurled far away and you flicker untouchable.", upDesc: "Bigger blast, farther throw, longer i-frames.", cooldown: 9, color: "#7df3d0", glow: 0x7df3d0, icon: "❈", rarity: "uncommon", tempo: 9, hero: "tempest" },
+  { id: "soul-drain", name: "Soul Drain", desc: "Reap the souls around you — each one mends more the nearer you are to death.", upDesc: "A wider reap that mends far more when wounded.", cooldown: 9, color: "#6affb0", glow: 0x6affb0, icon: "⚱", rarity: "rare", tempo: 7, hero: "revenant" },
 ];
 
 /**
@@ -91,12 +100,12 @@ export const CARDS: CardDef[] = [
  * field in deck.ts). A card may suit more than one hero.
  */
 export const HERO_SIGNATURE_CARDS: Record<string, string[]> = {
-  blade: ["tempo-edge", "dash-strike", "blade-cyclone", "riposte", "blade-spirit"],
-  bulwark: ["shield-bash", "bulwark-breaker", "aegis", "seismic-slam", "warcry"],
-  sparkmage: ["singularity", "chain-lightning", "storm-conduit", "spectral-volley", "thunderclap"],
-  reaver: ["rend-boomerang", "cleave", "bleeding-edge", "hemorrhage", "ember-wave"],
-  tempest: ["tempest-storm", "phase-step", "frost-lattice", "seeker-swarm", "blade-cyclone"],
-  revenant: ["grave-harvest", "cleave", "soul-harvest", "leech-orb", "bleeding-edge"],
+  blade: ["tempo-edge", "tempo-surge", "blade-cyclone", "riposte", "blade-spirit"],
+  bulwark: ["shield-bash", "bulwark-breaker", "hammer-drop", "seismic-slam", "warcry"],
+  sparkmage: ["singularity", "arc-overload", "chain-lightning", "storm-conduit", "spectral-volley"],
+  reaver: ["rend-boomerang", "feral-leap", "bleeding-edge", "hemorrhage", "ember-wave"],
+  tempest: ["tempest-storm", "gale-burst", "phase-step", "frost-lattice", "seeker-swarm"],
+  revenant: ["grave-harvest", "soul-drain", "soul-harvest", "leech-orb", "gravity-well"],
 };
 
 /** Build-archetype tags per card — assigned once below so the literals stay readable. */
@@ -116,6 +125,8 @@ const CARD_TAGS: Record<string, string[]> = {
   "grave-harvest": ["bleed", "heal"], "bulwark-breaker": ["guard", "force"],
   "thunderclap": ["lightning", "force"], "frost-lattice": ["frost"],
   "rift-hook": ["force", "arcane"], "blade-spirit": ["summon", "force"], "hemorrhage": ["bleed"],
+  "tempo-surge": ["force"], "hammer-drop": ["force", "guard"], "arc-overload": ["lightning", "arcane"],
+  "feral-leap": ["mobility", "heal"], "gale-burst": ["mobility", "force"], "soul-drain": ["heal", "bleed"],
 };
 for (const c of CARDS) c.tags = CARD_TAGS[c.id] ?? [];
 
@@ -640,6 +651,107 @@ export class CardCaster {
             fx.burst({ x: player.pos.x, y: 1, z: player.pos.z, count: 26, color: [0x5fe0ff, 0xffffff], speed: [3, 11], up: 0.6, size: [0.4, 0.9], life: [0.25, 0.6], gravity: -3, drag: 2.6 });
           }, swings * 65 + 40);
         }
+        return true;
+      }
+
+      case "tempo-surge": {
+        // Blade: dump built Tempo into a shock whose damage scales with how hot you were.
+        const before = this.ctx.tempo.value;
+        this.ctx.tempo.gain(upgraded ? 55 : 40);
+        const R = upgraded ? 5.5 : 4.5;
+        const dmg = (upgraded ? 22 : 16) + Math.round(before * 0.22);
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < R + e.radius) combat.dealDamage(e, dmg, { kbX: dx, kbZ: dz, kb: 5, heavy: true, countCombo: true });
+        }
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0x5fe0ff, duration: 0.45 });
+        fx.burst({ x: player.pos.x, y: 1, z: player.pos.z, count: 28, color: [0x5fe0ff, 0xffffff], speed: [4, 12], up: 0.6, size: [0.35, 0.8], life: [0.25, 0.6], gravity: -3, drag: 2.6 });
+        this.ctx.cam.addTrauma(0.22); this.ctx.cam.pulseFov(0.5);
+        return true;
+      }
+
+      case "hammer-drop": {
+        // Bulwark: leap to the cursor, crater-slam, and gain a shield per foe caught.
+        const dx = aim.x - player.pos.x, dz = aim.z - player.pos.z;
+        const len = Math.hypot(dx, dz) || 1, dist = Math.min(upgraded ? 8 : 6, len);
+        this.ctx.controller.grantIframes(0.35);
+        player.pos.x += (dx / len) * dist; player.pos.z += (dz / len) * dist;
+        player.spawnGhost();
+        const R = upgraded ? 5.5 : 4.2, dmg = upgraded ? 48 : 36;
+        let hit = 0;
+        for (const e of enemies.living()) {
+          const ex = e.pos.x - player.pos.x, ez = e.pos.z - player.pos.z;
+          if (Math.hypot(ex, ez) < R + e.radius) { combat.dealDamage(e, dmg, { kbX: ex, kbZ: ez, kb: 9, heavy: true, countCombo: true }); hit++; }
+        }
+        player.shield = Math.max(player.shield, (upgraded ? 20 : 12) + hit * 4);
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0xffaa55, duration: 0.5 });
+        fx.burst({ x: player.pos.x, y: 0.6, z: player.pos.z, count: 34, color: [0xffaa55, 0xffe0a0], speed: [5, 13], up: 0.3, size: [0.4, 0.9], life: [0.3, 0.7], gravity: -4, drag: 2.4 });
+        this.ctx.cam.addTrauma(0.35); this.ctx.stage.punch(0.4);
+        return true;
+      }
+
+      case "arc-overload": {
+        // Sparkmage: zap and stun EVERY foe on the field at once.
+        const dmg = upgraded ? 34 : 24, stun = upgraded ? 1.6 : 1.0;
+        for (const e of enemies.living()) {
+          combat.dealDamage(e, dmg, { kbX: 0, kbZ: 0, kb: 0, countCombo: true });
+          e.freeze(stun);
+          fx.burst({ x: e.pos.x, y: 1, z: e.pos.z, count: 8, color: [0xc98fff, 0xffffff], speed: [2, 7], up: 0.5, size: [0.25, 0.6], life: [0.15, 0.4], gravity: -1, drag: 3 });
+        }
+        fx.ring(player.pos.x, player.pos.z, { radius: 8, color: 0xc98fff, duration: 0.4 });
+        this.ctx.cam.addTrauma(0.2); this.ctx.stage.punch(0.5);
+        return true;
+      }
+
+      case "feral-leap": {
+        // Reaver: pounce the aimed foe; damage scales with YOUR missing HP, and it heals you.
+        let tgt: Enemy | null = null, best = Infinity;
+        for (const e of enemies.living()) { const d = Math.hypot(e.pos.x - aim.x, e.pos.z - aim.z); if (d < best) { best = d; tgt = e; } }
+        if (!tgt) return false;
+        const sx = player.pos.x, sz = player.pos.z;
+        this.ctx.controller.grantIframes(0.3);
+        const dx = tgt.pos.x - sx, dz = tgt.pos.z - sz, len = Math.hypot(dx, dz) || 1;
+        const dist = Math.max(0, len - 1.4);
+        player.pos.x += (dx / len) * dist; player.pos.z += (dz / len) * dist;
+        player.spawnGhost();
+        const missing = 1 - (player.maxHp > 0 ? player.hp / player.maxHp : 1);
+        const dmg = Math.round((upgraded ? 40 : 30) * (1 + missing * (upgraded ? 1.6 : 1.2)));
+        combat.dealDamage(tgt, dmg, { kbX: dx, kbZ: dz, kb: 5, heavy: true, countCombo: true });
+        player.hp = Math.min(player.maxHp, player.hp + (upgraded ? 10 : 6));
+        fx.ring(tgt.pos.x, tgt.pos.z, { radius: 2.4, color: 0xff5a52, duration: 0.4 });
+        fx.burst({ x: tgt.pos.x, y: 1, z: tgt.pos.z, count: 22, color: [0xff5a52, 0xffb0a0], speed: [4, 11], up: 0.5, size: [0.3, 0.7], life: [0.2, 0.5], gravity: -2, drag: 3 });
+        this.ctx.cam.addTrauma(0.28);
+        return true;
+      }
+
+      case "gale-burst": {
+        // Tempest: knock the whole pack far back and flicker untouchable.
+        const R = upgraded ? 6.5 : 5, dmg = upgraded ? 20 : 14, kb = upgraded ? 16 : 12;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < R + e.radius) combat.dealDamage(e, dmg, { kbX: dx, kbZ: dz, kb, heavy: true, countCombo: true });
+        }
+        this.ctx.controller.grantIframes(upgraded ? 0.8 : 0.5);
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0x7df3d0, duration: 0.5 });
+        fx.burst({ x: player.pos.x, y: 1, z: player.pos.z, count: 30, color: [0x7df3d0, 0xffffff], speed: [6, 14], up: 0.4, size: [0.3, 0.7], life: [0.2, 0.5], gravity: -1, drag: 2.2 });
+        this.ctx.cam.addTrauma(0.2); this.ctx.cam.pulseFov(0.5);
+        return true;
+      }
+
+      case "soul-drain": {
+        // Revenant: reap nearby foes; each mends more the nearer you are to death.
+        const R = upgraded ? 5.5 : 4.2, dmg = upgraded ? 26 : 18;
+        const missing = 1 - (player.maxHp > 0 ? player.hp / player.maxHp : 1);
+        const healPer = Math.round((upgraded ? 5 : 3) * (1 + missing * 1.5));
+        let reaped = 0;
+        for (const e of enemies.living()) {
+          const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+          if (Math.hypot(dx, dz) < R + e.radius) { combat.dealDamage(e, dmg, { kbX: dx, kbZ: dz, kb: 3, countCombo: true }); reaped++; }
+        }
+        if (reaped > 0) player.hp = Math.min(player.maxHp, player.hp + healPer * reaped);
+        fx.ring(player.pos.x, player.pos.z, { radius: R, color: 0x6affb0, duration: 0.5 });
+        fx.burst({ x: player.pos.x, y: 1, z: player.pos.z, count: 26, color: [0x6affb0, 0xffffff], speed: [3, 9], up: 0.6, size: [0.3, 0.7], life: [0.3, 0.7], gravity: -2, drag: 2.8 });
+        this.ctx.cam.addTrauma(0.16);
         return true;
       }
 
