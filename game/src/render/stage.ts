@@ -102,6 +102,10 @@ export class Stage {
 
     this.hemiLight = new THREE.HemisphereLight(0x8899ff, 0x140a18, 0.95);
     this.scene.add(this.hemiLight);
+    // A dim ambient FLOOR so no surface — especially away-facing faces on the dark
+    // void debris/dressing — can ever bottom out to pure black as the camera moves
+    // ("objects fill with black when moving"). Subtle enough not to flatten the key.
+    this.scene.add(new THREE.AmbientLight(0x2b3446, 0.28));
 
     this.keyLight = new THREE.DirectionalLight(0xfff2e0, 1.6);
     this.keyLight.position.set(14, 26, 8);

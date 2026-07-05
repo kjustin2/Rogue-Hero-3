@@ -280,7 +280,9 @@ export class Arena {
     build: (group: THREE.Group, accent: THREE.MeshStandardMaterial, dark: THREE.MeshStandardMaterial) => void
   ): THREE.Group {
     const root = new THREE.Group();
-    const dark = new THREE.MeshStandardMaterial({ color: 0x10131c, roughness: 0.85, flatShading: true });
+    // Self-emissive floor so away-facing structural dressing (pillars/obelisks/slabs)
+    // never drops to pure black against the void as the camera moves.
+    const dark = new THREE.MeshStandardMaterial({ color: 0x10131c, emissive: 0x161a26, emissiveIntensity: 0.55, roughness: 0.85, flatShading: true });
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2 + 0.31;
       const group = new THREE.Group();
@@ -682,8 +684,12 @@ export class Arena {
     // Faint act-tinted emissive so the drifting rocks pick up the scene's color
     // (molten warmth in the forge, cold rift light in the void) instead of reading
     // as flat black silhouettes. Re-tinted per theme in applyBlendColors.
+    // A real emissive FLOOR (0.16 → 0.42): with the env map added, a rock's faint
+    // env-specular flips bright↔dark as the camera moves, and the old dark floor let
+    // the "dark" side read as pure black against the starfield ("objects fill with
+    // black when moving"). A solid emissive floor keeps every face a lit crystal.
     this.rockMat = new THREE.MeshStandardMaterial({
-      color: 0x15151f, emissive: new THREE.Color(THEMES.rift.crystal), emissiveIntensity: 0.16,
+      color: 0x15151f, emissive: new THREE.Color(THEMES.rift.crystal), emissiveIntensity: 0.42,
       roughness: 0.9, flatShading: true,
     });
     const rockMat = this.rockMat;
