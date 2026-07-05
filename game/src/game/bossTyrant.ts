@@ -78,6 +78,8 @@ export class RiftTyrant extends Enemy {
   private lockAngle = 0;
   /** 0→1 wind-up read: the caged core blazes and the halo spins up while charging. */
   private chargeAmt = 0;
+  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
+  private dimTimer = 0;
   private coreMat: THREE.MeshStandardMaterial;
   private haloMat: THREE.MeshStandardMaterial;
   private plateMat: THREE.MeshStandardMaterial;
@@ -253,21 +255,29 @@ export class RiftTyrant extends Enemy {
         if (p === 2) this.summonAdds(2);
       }
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
+      // Layered rift shockwave: a bright violet flare inside a slow wide collapsing wave.
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 6, color: 0xffffff, duration: 0.3 });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 9, color: RIFT_VIOLET, duration: 0.75 });
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 13, color: RIFT_CYAN, duration: 1.15, startRadius: 3 });
       this.ctx.fx.burst({
         x: this.pos.x, y: 2.2, z: this.pos.z,
-        count: 48, color: [RIFT_CYAN, RIFT_VIOLET, 0xffffff],
-        speed: [4, 13], up: 0.8, size: [0.4, 1.0], life: [0.4, 0.9], gravity: -4, drag: 2.5,
+        count: 72, color: [RIFT_CYAN, RIFT_VIOLET, 0xffffff],
+        speed: [4, 15], up: 0.8, size: [0.4, 1.1], life: [0.4, 0.95], gravity: -4, drag: 2.5,
       });
-      this.ctx.cam.addTrauma(0.5);
-      this.ctx.stage.punch(0.3);
+      this.ctx.cam.addTrauma(0.68);
+      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.09);
+      this.ctx.cam.pulseFov(0.85);
+      this.ctx.stage.punch(0.45);
       this.ctx.sfx.bossRoar();
+      // The room holds its breath a beat, then snaps back to full light.
+      this.ctx.arena.cutsceneDim = 1;
+      this.dimTimer = 0.65;
       // Rift implosion shoves the player outward
       const p = this.ctx.player;
       const dx = p.pos.x - this.pos.x;
       const dz = p.pos.z - this.pos.z;
       const len = Math.hypot(dx, dz) || 1;
-      this.ctx.controller.push((dx / len) * 8, (dz / len) * 8);
+      this.ctx.controller.push((dx / len) * 9, (dz / len) * 9);
     }
     return killed;
   }
@@ -278,6 +288,9 @@ export class RiftTyrant extends Enemy {
   }
 
   die(): void {
+    // Safety net: a killing blow landing inside the phase-shift dim window must not
+    // leave the arena stuck dark — tick() stops running the instant alive flips false.
+    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
     this.disposeExtras();
     this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
@@ -502,6 +515,11 @@ export class RiftTyrant extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
+    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
+    if (this.dimTimer > 0) {
+      this.dimTimer -= dt;
+      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
+    }
 
     // Wind-up read: while charging any attack, the caged core blazes, the halo spins
     // up, and the shoulder vents gape — then it all settles back between volleys.

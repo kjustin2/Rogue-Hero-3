@@ -110,6 +110,8 @@ export class Unmaker extends Enemy {
   private flash = 0;
   /** Cadence accumulator for the inward energy-gather rings shown while charging. */
   private gatherAcc = 0;
+  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
+  private dimTimer = 0;
   // Rotating sweep-lance state.
   private sweepAngle = 0;
   private sweepDir = 1;
@@ -308,26 +310,33 @@ export class Unmaker extends Enemy {
         }
         this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
         // A collapse-then-detonate the instant the star tears to its next tier: the void
-        // implodes into the core, a pillar of star-light erupts, then it blasts outward.
+        // implodes into the core, a pillar of star-light erupts, then it blasts outward in
+        // three staggered rings — a fast bright inner flare inside a slow wide outer wave.
         this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 1.6, color: VOID_WHITE, duration: 0.3, startRadius: 15, y: 1.8 });
         this.ctx.fx.beam(this.pos.x, this.pos.z, VOID_WHITE);
-        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 12, color: VOID_VIOLET, duration: 0.85 });
-        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 6, color: VOID_WHITE, duration: 0.6 });
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 6, color: VOID_WHITE, duration: 0.55 });
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 12, color: VOID_VIOLET, duration: 0.9 });
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 17, color: 0x3a1a5a, duration: 1.3, startRadius: 4 });
         this.ctx.fx.burst({
           x: this.pos.x, y: 2.4, z: this.pos.z,
-          count: 72, color: [VOID_WHITE, VOID_VIOLET, 0xffffff],
-          speed: [4, 17], up: 0.9, size: [0.4, 1.2], life: [0.4, 1.05], gravity: -4, drag: 2.5,
+          count: 108, color: [VOID_WHITE, VOID_VIOLET, 0xffffff],
+          speed: [4, 18], up: 0.9, size: [0.4, 1.25], life: [0.4, 1.1], gravity: -4, drag: 2.5,
         });
-        this.detonate(2.4);
-        this.ctx.cam.addTrauma(0.55);
-        this.ctx.stage.punch(0.35);
+        this.detonate(3.0);
+        this.ctx.cam.addTrauma(0.75);
+        this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.1);
+        this.ctx.cam.pulseFov(1.0);
+        this.ctx.stage.punch(0.5);
         this.ctx.sfx.bossRoar();
+        // The room holds its breath a beat, then snaps back to full light.
+        this.ctx.arena.cutsceneDim = 1;
+        this.dimTimer = 0.7;
         // Collapse shoves the player outward.
         const p = this.ctx.player;
         const dx = p.pos.x - this.pos.x;
         const dz = p.pos.z - this.pos.z;
         const len = Math.hypot(dx, dz) || 1;
-        this.ctx.controller.push((dx / len) * 9, (dz / len) * 9);
+        this.ctx.controller.push((dx / len) * 10, (dz / len) * 10);
       }
     }
     return killed;
@@ -339,6 +348,9 @@ export class Unmaker extends Enemy {
   }
 
   die(): void {
+    // Safety net: a killing blow landing inside the phase-shift dim window must not
+    // leave the arena stuck dark — tick() stops running the instant alive flips false.
+    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
     this.disposeExtras();
     this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
@@ -766,6 +778,11 @@ export class Unmaker extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
+    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
+    if (this.dimTimer > 0) {
+      this.dimTimer -= dt;
+      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
+    }
 
     // Wind-up read: the core swells white-hot and the rings/debris spin up while charging.
     const charging = this.phase < 4 && (this.state.endsWith("Tell") || this.state === "beamTrack" || this.state === "guard" || this.state === "sweeping" || this.state === "pulseAura");

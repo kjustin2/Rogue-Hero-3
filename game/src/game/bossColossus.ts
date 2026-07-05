@@ -80,6 +80,8 @@ export class Colossus extends Enemy {
   private fistAnim = 0;
   /** 0→1 wind-up read: the core blazes and the heat vents gape while charging. */
   private chargeAmt = 0;
+  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
+  private dimTimer = 0;
   // Per-phase appearance escalation (built once, revealed on transition).
   private p2Plates: THREE.Object3D[] = [];
   private p3Crown: THREE.Object3D[] = [];
@@ -248,15 +250,29 @@ export class Colossus extends Enemy {
         }
       }
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
+      // Layered molten shockwave: a fast bright flare inside a slow wide magma wave.
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 6, color: 0xffffcc, duration: 0.3 });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 10, color: 0xff5522, duration: 0.8 });
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 14, color: 0x7a1c08, duration: 1.2, startRadius: 3 });
       this.ctx.fx.burst({
         x: this.pos.x, y: 3.0, z: this.pos.z,
-        count: 50, color: [0xff5522, 0xffaa44, 0xffffff],
-        speed: [4, 14], up: 0.9, size: [0.5, 1.2], life: [0.4, 0.9], gravity: -5, drag: 2.5,
+        count: 75, color: [0xff5522, 0xffaa44, 0xffffff],
+        speed: [4, 16], up: 0.9, size: [0.5, 1.3], life: [0.4, 0.95], gravity: -5, drag: 2.5,
       });
-      this.ctx.cam.addTrauma(0.55);
-      this.ctx.stage.punch(0.35);
+      this.ctx.cam.addTrauma(0.7);
+      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.09);
+      this.ctx.cam.pulseFov(0.9);
+      this.ctx.stage.punch(0.48);
       this.ctx.sfx.bossRoar();
+      // The room holds its breath a beat, then snaps back to full light.
+      this.ctx.arena.cutsceneDim = 1;
+      this.dimTimer = 0.7;
+      // The mountain's fresh cracks exhale outward — a shove off the slag.
+      const player = this.ctx.player;
+      const dx = player.pos.x - this.pos.x;
+      const dz = player.pos.z - this.pos.z;
+      const len = Math.hypot(dx, dz) || 1;
+      this.ctx.controller.push((dx / len) * 7, (dz / len) * 7);
     }
     return killed;
   }
@@ -267,6 +283,9 @@ export class Colossus extends Enemy {
   }
 
   die(): void {
+    // Safety net: a killing blow landing inside the phase-shift dim window must not
+    // leave the arena stuck dark — tick() stops running the instant alive flips false.
+    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
     this.disposeExtras();
     this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
@@ -471,6 +490,11 @@ export class Colossus extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
+    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
+    if (this.dimTimer > 0) {
+      this.dimTimer -= dt;
+      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
+    }
     this.facePlayer(dt * 0.7);
     // Wind-up read: the core blazes white-hot and the vents gape as it loads a blow.
     const charging = this.state === "novaTell" || this.state === "tectonicTell" || this.state === "guard";

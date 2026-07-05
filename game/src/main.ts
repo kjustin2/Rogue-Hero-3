@@ -385,17 +385,33 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
  * resolve it instantly (no boon).
  */
 let interlude: {
-  pads: { x: number; z: number; kind: "mend" | "shards"; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; label: string; color: number }[];
+  pads: { x: number; z: number; kind: "mend" | "shards"; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; label: string; color: number; badge: HTMLElement }[];
   group: THREE.Group;
   timers: number[];
+  /** Just the story-banner timers — cleared when the words are skipped early. */
+  wordTimers: number[];
   skipBtn: HTMLElement;
+  hint: HTMLElement;
   onDone: () => void;
+  onAdvance: (e: Event) => void;
   t: number;
-  labelAcc: number;
   /** True while the act's story banners are still playing — the hero is held at
    * the causeway mouth and the lights are inert until the words come and go. */
   locked: boolean;
 } | null = null;
+
+/** Skip the remaining story banners and release the hero to the choice (click / key
+ *  during the words, or the release timer firing). Does NOT skip the whole interlude —
+ *  the player still walks into a light for its boon. */
+function releaseInterludeWords(): void {
+  if (!interlude || !interlude.locked) return;
+  interlude.wordTimers.forEach((t) => window.clearTimeout(t)); // no more words after this
+  interlude.locked = false;
+  interlude.hint.remove();
+  ctx.sfx.cardReady();
+  hud.banner("STEP INTO A LIGHT", "", "banner--clear");
+  for (const pad of interlude.pads) ctx.fx.ring(pad.x, pad.z, { radius: 2.0, color: pad.color, duration: 0.6 });
+}
 
 /** Tear the interlude scene down. `chosen` applies that pad's boon; null = skipped. */
 function finishInterlude(chosen: "mend" | "shards" | null, proceed = true): void {
@@ -405,6 +421,10 @@ function finishInterlude(chosen: "mend" | "shards" | null, proceed = true): void
   ctx.input.enabled = true; // the words-lock may have disabled it; the next node needs movement
   it.timers.forEach((t) => window.clearTimeout(t));
   it.skipBtn.remove();
+  it.hint.remove();
+  for (const pad of it.pads) pad.badge.remove();
+  window.removeEventListener("pointerdown", it.onAdvance);
+  window.removeEventListener("keydown", it.onAdvance);
   ctx.stage.scene.remove(it.group);
   it.group.traverse((o) => {
     if (o instanceof THREE.Mesh) {
@@ -430,30 +450,42 @@ function finishInterlude(chosen: "mend" | "shards" | null, proceed = true): void
   if (proceed) it.onDone();
 }
 
+const interludeScratch = new THREE.Vector3();
+/** Peg each light's persistent DOM badge above its beam by projecting the world
+ *  position to screen — so the player always sees what each light does, even while moving. */
+function positionInterludeBadges(): void {
+  if (!interlude) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  for (const pad of interlude.pads) {
+    interludeScratch.set(pad.x, 3.4, pad.z).project(ctx.stage.camera);
+    const sx = (interludeScratch.x * 0.5 + 0.5) * w;
+    const sy = (-interludeScratch.y * 0.5 + 0.5) * h;
+    pad.badge.style.left = `${sx}px`;
+    pad.badge.style.top = `${sy}px`;
+  }
+}
+
 /** Per-frame interlude tick (runs inside the playing branch of the loop). */
 function updateInterlude(dt: number): void {
   if (!interlude) return;
   const it = interlude;
   it.t += dt;
-  it.labelAcc -= dt;
+  positionInterludeBadges();
   // While the act's words play, the hero is paused at the causeway mouth: no
-  // crossing until the story has come and gone. Re-assert the freeze every frame
-  // so a pause→resume (which flips input.enabled back on) can't unlock movement
-  // early; the lights stay dim and inert. A release timer flips `locked` when the
-  // last banner finishes (see playActTransition).
+  // crossing until the story has come and gone (or the player clicks to skip them).
+  // Re-assert the freeze every frame so a pause→resume can't unlock movement early.
   if (it.locked) {
     ctx.input.enabled = false;
     for (const pad of it.pads) {
-      pad.mat.opacity = 0.16 + Math.abs(Math.sin(it.t * 2.0 + pad.x)) * 0.12; // not yet yours
+      pad.mat.opacity = 0.28 + Math.abs(Math.sin(it.t * 2.0 + pad.x)) * 0.14;
       pad.ring.rotation.z += dt * 0.6;
     }
     return;
   }
   ctx.input.enabled = true;
   for (const pad of it.pads) {
-    pad.mat.opacity = 0.45 + Math.abs(Math.sin(it.t * 2.4 + pad.x)) * 0.35;
+    pad.mat.opacity = 0.55 + Math.abs(Math.sin(it.t * 2.4 + pad.x)) * 0.4;
     pad.ring.rotation.z += dt * 1.2;
-    if (it.labelAcc <= 0) ctx.floaters.spawn(pad.x, 1.7, pad.z, pad.label, "label");
     if (ctx.player.alive && Math.hypot(ctx.player.pos.x - pad.x, ctx.player.pos.z - pad.z) < 1.6) {
       takeInterludePad(pad);
       return;
@@ -467,7 +499,6 @@ function updateInterlude(dt: number): void {
     takeInterludePad(best);
     return;
   }
-  if (it.labelAcc <= 0) it.labelAcc = 1.1;
 }
 
 function takeInterludePad(pad: { x: number; z: number; kind: "mend" | "shards"; color: number }): void {
@@ -508,54 +539,78 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   ctx.cam.mode = "follow";
   ctx.cam.snapTo(0, 13);
 
-  // Two lights at the bridge's end — the choice tiles.
+  // Two lights at the bridge's end — the choice tiles. Big, bright beams + a
+  // persistent screen badge over each so it's unmistakable what each gift does.
   const group = new THREE.Group();
   const pads: NonNullable<typeof interlude>["pads"] = [];
   const padDefs = [
-    { x: -2.8, z: -14, kind: "mend" as const, color: 0x7dffb0, label: "MEND +30" },
-    { x: 2.8, z: -14, kind: "shards" as const, color: 0xffd24a, label: "◆ 45" },
+    { x: -3.4, z: -14, kind: "mend" as const, color: 0x7dffb0, label: "MEND", title: "✚ MEND", sub: "restore 30 HP" },
+    { x: 3.4, z: -14, kind: "shards" as const, color: 0xffd24a, label: "SHARDS", title: "◆ SHARDS", sub: "gain 45 shards" },
   ];
+  const makeBadge = (color: number, title: string, sub: string): HTMLElement => {
+    const el = document.createElement("div");
+    const hex = "#" + color.toString(16).padStart(6, "0");
+    el.style.cssText = `position:fixed;transform:translate(-50%,-50%);pointer-events:none;z-index:40;text-align:center;white-space:nowrap;font-family:var(--font-display,'Cinzel',serif);`;
+    el.innerHTML =
+      `<div style="font-size:30px;font-weight:700;letter-spacing:4px;color:${hex};text-shadow:0 0 16px ${hex},0 0 32px ${hex},0 2px 8px #000;">${title}</div>` +
+      `<div style="font-size:15px;letter-spacing:3px;margin-top:3px;color:#eef4ff;text-shadow:0 0 8px ${hex},0 1px 4px #000;font-family:var(--font-body,sans-serif);">${sub}</div>`;
+    document.body.appendChild(el);
+    return el;
+  };
   for (const d of padDefs) {
     const mat = new THREE.MeshBasicMaterial({ color: d.color, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 1.3, 28), mat);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.7, 1.7, 32), mat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(d.x, 0.05, d.z);
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.85, 4.6, 14, 1, true), mat);
-    beam.position.set(d.x, 2.3, d.z);
-    group.add(ring, beam);
-    pads.push({ x: d.x, z: d.z, kind: d.kind, ring, mat, label: d.label, color: d.color });
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.7, 28), mat);
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(d.x, 0.04, d.z);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 1.15, 6.2, 18, 1, true), mat);
+    beam.position.set(d.x, 3.1, d.z);
+    group.add(ring, disc, beam);
+    pads.push({ x: d.x, z: d.z, kind: d.kind, ring, mat, label: d.label, color: d.color, badge: makeBadge(d.color, d.title, d.sub) });
   }
   ctx.stage.scene.add(group);
 
-  // Skip affordance (same class the old cutscene used — smokes click it too).
+  // Skip affordance (skips the WHOLE interlude, no boon — same class the old cutscene used).
   const skipBtn = document.createElement("button");
   skipBtn.className = "story-skip";
   skipBtn.textContent = "SKIP ▸";
   document.body.appendChild(skipBtn);
   skipBtn.addEventListener("click", () => finishInterlude(null));
 
+  // A click / Space / Enter anywhere else during the words SKIPS THROUGH THE WORDS
+  // (releases the hero to the choice) without skipping the boon — read at your pace.
+  const hint = document.createElement("div");
+  hint.style.cssText = `position:fixed;left:50%;bottom:16%;transform:translateX(-50%);z-index:41;pointer-events:none;color:rgba(223,232,255,0.72);font-size:14px;letter-spacing:2px;text-shadow:0 1px 4px #000;`;
+  hint.textContent = "click / space to skip the words ▸";
+  document.body.appendChild(hint);
+  const onAdvance = (e: Event): void => {
+    if (!interlude || !interlude.locked) return;
+    if (e.target === skipBtn) return; // that button skips the whole beat
+    if (e.type === "keydown" && !["Space", "Enter", "KeyE"].includes((e as KeyboardEvent).code)) return;
+    releaseInterludeWords();
+  };
+  window.addEventListener("pointerdown", onAdvance);
+  window.addEventListener("keydown", onAdvance);
+
   // The story drifts past as banners while the hero walks.
   const timers: number[] = [];
+  const wordTimers: number[] = [];
   const lines = [...(ACT_STORY[node.act] ?? [])];
   const LINE_START = 4200, LINE_GAP = 6200, LAMENT_MS = 8200; // last line uses banner--lament (8.2s dwell)
-  timers.push(window.setTimeout(() => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long"), 500));
+  wordTimers.push(window.setTimeout(() => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long"), 500));
   lines.forEach((line, i) => {
-    timers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), LINE_START + i * LINE_GAP));
+    wordTimers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), LINE_START + i * LINE_GAP));
   });
-  // Release the hero only once the last word has fully come and gone: the final
-  // banner appears at LINE_START + (n-1)*GAP and takes LAMENT_MS to play out.
+  // Release the hero once the last word has come and gone (or a click gets there first).
   const wordsEndMs = lines.length ? LINE_START + (lines.length - 1) * LINE_GAP + LAMENT_MS : 3200;
-  timers.push(window.setTimeout(() => {
-    if (!interlude) return;
-    interlude.locked = false; // updateInterlude re-enables input + lights the pads next frame
-    ctx.sfx.cardReady();
-    hud.banner("STEP INTO A LIGHT", "", "banner--clear");
-    for (const pad of interlude.pads) ctx.fx.ring(pad.x, pad.z, { radius: 2.0, color: pad.color, duration: 0.6 });
-  }, wordsEndMs));
+  timers.push(window.setTimeout(() => releaseInterludeWords(), wordsEndMs));
   // Soft-lock guard: if nothing is chosen in 45s (past the words), cross without a gift.
   timers.push(window.setTimeout(() => finishInterlude(null), 45000));
+  timers.push(...wordTimers);
 
-  interlude = { pads, group, timers, skipBtn, onDone, t: 0, labelAcc: 0.4, locked: true };
+  interlude = { pads, group, timers, wordTimers, skipBtn, hint, onDone, onAdvance, t: 0, locked: true };
 }
 
 /** Present the current fork: a forced node auto-enters; a choice fork opens the map. */

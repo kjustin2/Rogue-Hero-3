@@ -73,6 +73,8 @@ export class SpireCaster extends Enemy {
   private channelsSinceShift = 0;
   /** 0→1 wind-up read: orbs pull inward and the core surges while charging an attack. */
   private chargeAmt = 0;
+  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
+  private dimTimer = 0;
   // Per-phase appearance escalation (built once, revealed on transition).
   private shardRing: THREE.Group;
   private p2Shards: THREE.Object3D[] = [];
@@ -237,15 +239,29 @@ export class SpireCaster extends Enemy {
         }
       }
       this.ctx.events.emit("BOSS_PHASE", { phase: this.phase, line: PHASE_LINES[this.phase - 1] });
+      // Layered jade shockwave: a fast bright inner flare inside a slow wide outer wave.
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 5, color: 0xffffff, duration: 0.3 });
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 8, color: 0x3effd2, duration: 0.7 });
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 12, color: 0x1a5f6e, duration: 1.1, startRadius: 3 });
       this.ctx.fx.burst({
         x: this.pos.x, y: 2.2, z: this.pos.z,
-        count: 46, color: [0x3effd2, 0xbfffe8, 0xffffff],
-        speed: [4, 12], up: 0.8, size: [0.4, 1.0], life: [0.4, 0.9], gravity: -3, drag: 2.5,
+        count: 68, color: [0x3effd2, 0xbfffe8, 0xffffff],
+        speed: [4, 14], up: 0.8, size: [0.4, 1.1], life: [0.4, 0.95], gravity: -3, drag: 2.5,
       });
-      this.ctx.cam.addTrauma(0.45);
-      this.ctx.stage.punch(0.3);
+      this.ctx.cam.addTrauma(0.65);
+      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.08);
+      this.ctx.cam.pulseFov(0.8);
+      this.ctx.stage.punch(0.42);
       this.ctx.sfx.bossRoar();
+      // The room holds its breath a beat, then snaps back to full light.
+      this.ctx.arena.cutsceneDim = 1;
+      this.dimTimer = 0.6;
+      // A crystalline shockwave shoves the player back off the crown.
+      const player = this.ctx.player;
+      const dx = player.pos.x - this.pos.x;
+      const dz = player.pos.z - this.pos.z;
+      const len = Math.hypot(dx, dz) || 1;
+      this.ctx.controller.push((dx / len) * 6, (dz / len) * 6);
     }
     return killed;
   }
@@ -260,6 +276,9 @@ export class SpireCaster extends Enemy {
   }
 
   die(): void {
+    // Safety net: a killing blow landing inside the phase-shift dim window must not
+    // leave the arena stuck dark — tick() stops running the instant alive flips false.
+    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
     this.disposeExtras();
     this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
@@ -448,6 +467,11 @@ export class SpireCaster extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     this.blinkCd -= dt;
+    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
+    if (this.dimTimer > 0) {
+      this.dimTimer -= dt;
+      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
+    }
     // Wind-up read: while charging a lance/channel/ward, the orbs spin up and pull
     // inward and the whole crown brightens — then it all snaps loose on the fire.
     const charging = this.state === "track" || this.state === "channel" || this.state === "guard";

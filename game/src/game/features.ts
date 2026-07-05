@@ -54,10 +54,29 @@ interface FlameVent {
 const SPIKE_PERIOD = 3.2; // full cycle: dormant → warn → erupt → retract
 const SPIKE_WARN = 0.75;   // telegraph window before the spikes are live
 const SPIKE_LIVE = 0.95;   // window the spikes are up and biting
+// How deep the spike group parks at rest. The tallest scaled cone reaches ~2.375
+// above the group origin, so anything shallower than that leaves its tip poking
+// up through the floor even when the trap reads as fully dormant.
+const SPIKE_PARK_Y = -2.6;
+// Collar torus offset from the spike group's Y (rises in lockstep with the spikes,
+// landing just above the floor when live instead of floating high above them).
+const SPIKE_COLLAR_LIFT = 0.1;
 
 const VENT_PERIOD = 3.0; // full cycle: dormant → warn → erupt → cool
 const VENT_WARN = 0.7;    // telegraph window before the geyser fires
 const VENT_LIVE = 0.85;   // window the flame column is up and biting
+
+// Minimum center-to-center distance enforced between features placed in the same
+// room (in addition to the player-spawn exclusion in `spot()`). Without this,
+// 3-5 vents/spikes/hazards could all land within the same corner of the arena.
+const FEATURE_MIN_SEP = 6.5;
+
+// Ground-plane decal layering: a stable, distinct Y + renderOrder per archetype so
+// coplanar circles/rings sort deterministically (by draw order) instead of by
+// camera-distance, which was causing them to flicker/re-sort as the camera moved.
+// Bottom to top: base < glow < ring < warn < plate.
+const DECAL_Y = { base: 0.02, glow: 0.03, ring: 0.04, warn: 0.05, plate: 0.06 } as const;
+const DECAL_ORDER = { base: 0, glow: 1, ring: 2, warn: 3, plate: 4 } as const;
 
 /**
  * Per-node arena mechanics: burning rift pits, teleporter pads, spike traps, fire
@@ -88,39 +107,48 @@ export class MapFeatures {
     else if (node.feature === "flamevent") this.makeFlameVents();
   }
 
-  /** A spot away from the player's south spawn. */
-  private spot(minR = 5): { x: number; z: number } {
+  /** A spot away from the player's south spawn, and (when `taken` is passed) away
+   *  from every other feature already placed in this room — this is what keeps a
+   *  batch of vents/spikes/hazards spread around the arena instead of clumping. */
+  private spot(minR = 5, taken: { x: number; z: number }[] = []): { x: number; z: number } {
     const { rng } = this.ctx;
     for (let i = 0; i < 24; i++) {
       const a = rng.range(0, Math.PI * 2);
       const r = rng.range(minR, ARENA_RADIUS - 4);
       const x = Math.sin(a) * r;
       const z = Math.cos(a) * r;
-      if (Math.hypot(x - 0, z - ARENA_RADIUS * 0.55) > 6.5) return { x, z };
+      if (Math.hypot(x - 0, z - ARENA_RADIUS * 0.55) <= 6.5) continue;
+      if (taken.some((t) => Math.hypot(x - t.x, z - t.z) < FEATURE_MIN_SEP)) continue;
+      return { x, z };
     }
     return { x: 0, z: -6 };
   }
 
   private makeHazards(): void {
     const n = 2 + this.ctx.rng.int(0, 1);
+    const taken: { x: number; z: number }[] = [];
     for (let i = 0; i < n; i++) {
-      const { x, z } = this.spot();
+      const { x, z } = this.spot(5, taken);
+      taken.push({ x, z });
       const r = 2 + this.ctx.rng.range(0, 1.3);
       // Scorched dark base so the pit reads as burnt ground, not a flat decal.
       const baseMat = new THREE.MeshBasicMaterial({ color: 0x190a06, transparent: true, opacity: 0.82, depthWrite: false });
       const base = new THREE.Mesh(new THREE.CircleGeometry(r * 1.1, 30), baseMat);
       base.rotation.x = -Math.PI / 2;
-      base.position.set(x, 0.025, z);
+      base.position.set(x, DECAL_Y.base, z);
+      base.renderOrder = DECAL_ORDER.base;
       // Molten inner glow, animated each frame.
       const glowMat = new THREE.MeshBasicMaterial({ color: 0xff5a1e, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false });
       const glow = new THREE.Mesh(new THREE.CircleGeometry(r, 30), glowMat);
       glow.rotation.x = -Math.PI / 2;
-      glow.position.set(x, 0.05, z);
+      glow.position.set(x, DECAL_Y.glow, z);
+      glow.renderOrder = DECAL_ORDER.glow;
       // Bright molten rim.
       const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8a3a, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
       const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.24, r + 0.1, 30), ringMat);
       ring.rotation.x = -Math.PI / 2;
-      ring.position.set(x, 0.06, z);
+      ring.position.set(x, DECAL_Y.ring, z);
+      ring.renderOrder = DECAL_ORDER.ring;
       this.ctx.stage.scene.add(base, glow, ring);
       // Flickering flame tongues clustered in the pit (shared geo/mat per pit).
       const flameMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -193,25 +221,34 @@ export class MapFeatures {
 
   private makeSpikes(): void {
     const n = 3 + this.ctx.rng.int(0, 2);
+    const taken: { x: number; z: number }[] = [];
     for (let i = 0; i < n; i++) {
-      const { x, z } = this.spot(4);
+      const { x, z } = this.spot(4, taken);
+      taken.push({ x, z });
       const r = 1.7 + this.ctx.rng.range(0, 0.7);
       // Outline ring marking the bite zone.
       const plateMat = new THREE.MeshBasicMaterial({ color: 0xffb33a, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
       const plate = new THREE.Mesh(new THREE.RingGeometry(r - 0.2, r, 28), plateMat);
       plate.rotation.x = -Math.PI / 2;
-      plate.position.set(x, 0.045, z);
+      plate.position.set(x, DECAL_Y.plate, z);
+      plate.renderOrder = DECAL_ORDER.plate;
       // Filled warning glow that floods in during the telegraph window.
       const warnMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
       const warn = new THREE.Mesh(new THREE.CircleGeometry(r - 0.2, 26), warnMat);
       warn.rotation.x = -Math.PI / 2;
-      warn.position.set(x, 0.05, z);
-      // A glowing iron collar that rises with the spikes.
+      warn.position.set(x, DECAL_Y.warn, z);
+      warn.renderOrder = DECAL_ORDER.warn;
+      // A glowing iron collar that rises with the spikes (parked deep below the
+      // floor at rest, alongside SPIKE_PARK_Y — see the +SPIKE_COLLAR_LIFT offset
+      // in update(), which was previously mismatched and left the collar floating
+      // near the floor even when the trap was fully dormant).
       const collarMat = new THREE.MeshStandardMaterial({ color: 0x3a3038, metalness: 0.7, roughness: 0.35, emissive: 0x000000, emissiveIntensity: 0 });
       const collar = new THREE.Mesh(new THREE.TorusGeometry(r * 0.7, 0.1, 6, 22), collarMat);
       collar.rotation.x = Math.PI / 2;
-      collar.position.set(x, -1.6, z);
-      // A tight cluster of sharp metal cones — a big central fang plus a ring of smaller ones.
+      collar.position.set(x, SPIKE_PARK_Y + SPIKE_COLLAR_LIFT, z);
+      // A cluster of sharp metal cones — a big central fang plus a tighter ring of
+      // smaller ones (fewer, less jittered than before so the trap reads as a clean
+      // arrangement of blades rather than a scattered tangle).
       const spikes = new THREE.Group();
       const spikeMat = new THREE.MeshStandardMaterial({ color: 0x70757f, metalness: 0.65, roughness: 0.3, emissive: 0x110000, emissiveIntensity: 0 });
       const spikeGeo = new THREE.ConeGeometry(0.2, 1.7, 6);
@@ -219,18 +256,18 @@ export class MapFeatures {
       center.scale.set(1.25, 1.5, 1.25);
       center.position.set(0, 1.1, 0);
       spikes.add(center);
-      const ring = 6 + this.ctx.rng.int(0, 2);
+      const ring = 5 + this.ctx.rng.int(0, 1);
       for (let k = 0; k < ring; k++) {
-        const a = (k / ring) * Math.PI * 2 + this.ctx.rng.range(0, 0.4);
-        const rr = r * (0.35 + this.ctx.rng.range(0, 0.4));
+        const a = (k / ring) * Math.PI * 2 + this.ctx.rng.range(0, 0.16);
+        const rr = r * (0.42 + this.ctx.rng.range(0, 0.28));
         const cone = new THREE.Mesh(spikeGeo, spikeMat);
-        const s = 0.6 + this.ctx.rng.range(0, 0.6);
+        const s = 0.68 + this.ctx.rng.range(0, 0.4);
         cone.scale.set(s, 0.7 + s, s);
         cone.position.set(Math.sin(a) * rr, 0.75, Math.cos(a) * rr);
         cone.rotation.set(Math.cos(a) * 0.18, a, -Math.sin(a) * 0.18);
         spikes.add(cone);
       }
-      spikes.position.set(x, -1.7, z); // parked below the floor
+      spikes.position.set(x, SPIKE_PARK_Y, z); // parked well below the floor
       this.ctx.stage.scene.add(plate, warn, collar, spikes);
       this.spikes.push({ x, z, r, plate, plateMat, warn, warnMat, collar, collarMat, spikes, spikeMat, spikeGeo, phase: (i / n) * SPIKE_PERIOD, cd: 0 });
     }
@@ -238,8 +275,10 @@ export class MapFeatures {
 
   private makeDrifters(): void {
     const n = 2 + this.ctx.rng.int(0, 1);
+    const taken: { x: number; z: number }[] = [];
     for (let i = 0; i < n; i++) {
-      const { x, z } = this.spot(6);
+      const { x, z } = this.spot(6, taken);
+      taken.push({ x, z });
       const a = this.ctx.rng.range(0, Math.PI * 2);
       const sp = 3.2 + this.ctx.rng.range(0, 1.6);
       const mat = new THREE.MeshBasicMaterial({ color: 0xc24bff, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -288,24 +327,32 @@ export class MapFeatures {
 
   private makeFlameVents(): void {
     const n = 3 + this.ctx.rng.int(0, 1);
+    const taken: { x: number; z: number }[] = [];
     for (let i = 0; i < n; i++) {
-      const { x, z } = this.spot(4);
+      const { x, z } = this.spot(4, taken);
+      taken.push({ x, z });
       const r = 1.5 + this.ctx.rng.range(0, 0.5);
       // The vent mouth: a dark iron rim flush with the floor that glows as it heats.
+      // Sat clearly above the warn decal's Y and shrunk in from the rim's inner
+      // radius so the two never occupy the same footprint (the previous 0.92r warn
+      // disc could reach into the torus tube on the largest vents and z-fight it).
       const rimMat = new THREE.MeshStandardMaterial({ color: 0x241008, emissive: 0x140600, emissiveIntensity: 1, metalness: 0.6, roughness: 0.5 });
       const rim = new THREE.Mesh(new THREE.TorusGeometry(r, 0.15, 6, 22), rimMat);
       rim.rotation.x = Math.PI / 2;
-      rim.position.set(x, 0.08, z);
+      rim.position.set(x, 0.09, z);
+      rim.renderOrder = DECAL_ORDER.ring;
       // Floor glow that floods in as the geyser charges.
       const warnMat = new THREE.MeshBasicMaterial({ color: 0xff6a1e, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false });
-      const warn = new THREE.Mesh(new THREE.CircleGeometry(r * 0.92, 24), warnMat);
+      const warn = new THREE.Mesh(new THREE.CircleGeometry(r * 0.78, 24), warnMat);
       warn.rotation.x = -Math.PI / 2;
-      warn.position.set(x, 0.05, z);
+      warn.position.set(x, DECAL_Y.warn, z);
+      warn.renderOrder = DECAL_ORDER.warn;
       // The flame column itself — parked flat, roars upward on the erupt beat.
       const colMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
       const column = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.55, r * 0.85, 4.4, 16, 1, true), colMat);
       column.position.set(x, 2.2, z);
       column.scale.y = 0.001;
+      column.renderOrder = DECAL_ORDER.plate;
       this.ctx.stage.scene.add(rim, warn, column);
       this.vents.push({ x, z, r, rim, rimMat, warn, warnMat, column, colMat, phase: (i / n) * VENT_PERIOD, cd: 0, emberAcc: 0 });
     }
@@ -372,9 +419,9 @@ export class MapFeatures {
       const live = c >= SPIKE_WARN && c < SPIKE_WARN + SPIKE_LIVE;
       s.plateMat.opacity = live ? 0.6 : warning ? 0.16 + (c / SPIKE_WARN) * 0.3 : 0.12;
       s.warnMat.opacity = warning ? (c / SPIKE_WARN) * 0.4 : live ? 0.35 : 0;
-      const targetY = live ? 0.0 : warning && c > SPIKE_WARN - 0.16 ? -1.1 : -1.7;
+      const targetY = live ? 0.0 : warning && c > SPIKE_WARN - 0.16 ? -1.1 : SPIKE_PARK_Y;
       s.spikes.position.y += (targetY - s.spikes.position.y) * Math.min(1, dt * 18);
-      s.collar.position.y = s.spikes.position.y + 1.55;
+      s.collar.position.y = s.spikes.position.y + SPIKE_COLLAR_LIFT;
       s.spikeMat.emissive.setHex(live ? 0xff4422 : 0x000000);
       s.spikeMat.emissiveIntensity = live ? 0.9 : 0;
       s.collarMat.emissive.setHex(live ? 0xff5a22 : 0x000000);

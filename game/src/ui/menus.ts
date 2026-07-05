@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import type { Ctx, RunStats } from "../game/ctx";
 import type { CardDef } from "../game/cards";
 import type { RelicDef } from "../game/relics";
@@ -414,7 +415,82 @@ export class Menus {
    * loader means the player's first real "New Run" opens instantly. No flicker — boot
    * skips the visible render while `booting` holds.
    */
+  /** Data-URL 3D portraits of each hero mesh, baked once at boot (see bakeHeroPortraits). */
+  private heroPortraits: Record<string, string> = {};
+
+  /**
+   * Render a real 3D portrait of every hero's actual in-game mesh (lit by the live
+   * rig + env map) to a data URL, once, under the boot loader — so the hero-select
+   * cards show the gorgeous procedural knights instead of crude CSS silhouettes.
+   * Hijacks the live player (applies each hero, frames it, reads back the pixels) and
+   * restores it afterward. Isolates the hero: hides every non-light scene object and
+   * clears the background/fog so the portrait is transparent.
+   */
+  bakeHeroPortraits(): void {
+    const { stage, player, profile } = this.ctx;
+    const renderer = stage.renderer, scene = stage.scene;
+    if (!renderer || !player) return;
+    const SIZE = 384;
+    let rt: THREE.WebGLRenderTarget | null = null;
+    const prevVis: [THREE.Object3D, boolean][] = scene.children.map((c) => [c, c.visible]);
+    const prevBg = scene.background, prevFog = scene.fog, prevTarget = renderer.getRenderTarget();
+    const prevAlpha = renderer.getClearAlpha();
+    const prevHero = player.hero?.id;
+    const equipped = profile.data.equipped;
+    try {
+      rt = new THREE.WebGLRenderTarget(SIZE, SIZE, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+      rt.texture.colorSpace = THREE.SRGBColorSpace; // display-ready sRGB, not raw linear
+      const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 60);
+      cam.position.set(1.9, 2.55, 4.7);
+      cam.lookAt(0, 1.25, 0);
+      // Isolate the hero: keep only lights + the player root; drop bg/fog.
+      for (const c of scene.children) c.visible = c === player.root || (c as THREE.Light).isLight === true;
+      scene.background = null;
+      scene.fog = null;
+      renderer.setClearAlpha(0);
+      renderer.setRenderTarget(rt);
+      const buf = new Uint8Array(SIZE * SIZE * 4);
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = SIZE;
+      const g = canvas.getContext("2d")!;
+      const img = g.createImageData(SIZE, SIZE);
+      const prevPos = player.pos.clone(), prevRootY = player.root.rotation.y;
+      for (const hero of HEROES) {
+        player.applyHero(hero, equipped.cape, equipped.blade);
+        player.pos.set(0, 0, 0);
+        player.root.position.set(0, 0, 0);
+        player.facing = 0.42; // a slight 3/4 turn toward the camera
+        player.animMoveAmount = player.animMoveX = player.animMoveZ = 0;
+        player.update(0.1); player.update(0.1); player.update(0.1); // settle the idle pose + facing
+        player.root.position.set(0, 0, 0);
+        renderer.clear();
+        renderer.render(scene, cam);
+        renderer.readRenderTargetPixels(rt, 0, 0, SIZE, SIZE, buf);
+        for (let y = 0; y < SIZE; y++) { // GL pixels are bottom-up — flip into the ImageData
+          const src = (SIZE - 1 - y) * SIZE * 4, dst = y * SIZE * 4;
+          img.data.set(buf.subarray(src, src + SIZE * 4), dst);
+        }
+        g.putImageData(img, 0, 0);
+        this.heroPortraits[hero.id] = canvas.toDataURL("image/png");
+      }
+      player.pos.copy(prevPos);
+      player.root.rotation.y = prevRootY;
+    } catch { /* headless / lost ctx: fall back to the CSS figures */ } finally {
+      renderer.setRenderTarget(prevTarget);
+      renderer.setClearAlpha(prevAlpha);
+      for (const [c, v] of prevVis) c.visible = v;
+      scene.background = prevBg;
+      scene.fog = prevFog;
+      rt?.dispose();
+      // Restore the menu's live hero mesh.
+      const restore = HEROES.find((h) => h.id === prevHero) ?? HEROES[0];
+      player.applyHero(restore, equipped.cape, equipped.blade);
+      player.root.position.set(player.pos.x, 0, player.pos.z);
+    }
+  }
+
   warmHeroSelect(): void {
+    this.bakeHeroPortraits();
     this.renderHeroSelect();
     void document.body.offsetHeight; // force the layout/paint now, while hidden
     this.showMain();
@@ -469,7 +545,14 @@ export class Menus {
     const heroFrag = document.createDocumentFragment();
     const bars = (n: number) =>
       Array.from({ length: 5 }, (_, i) => `<span class="hbar${i < n ? " hbar--on" : ""}"></span>`).join("");
-    const heroFigure = (hero: HeroDef) => `
+    const heroFigure = (hero: HeroDef, unlocked: boolean) => {
+      // Unlocked heroes show a real 3D render of their in-game mesh (baked at boot);
+      // locked ones stay a mystery CSS silhouette.
+      const portrait = unlocked ? this.heroPortraits[hero.id] : undefined;
+      if (portrait) {
+        return `<div class="hero-card__figure hero-card__figure--portrait" aria-hidden="true"><img class="hero-portrait" src="${portrait}" alt=""></div>`;
+      }
+      return `
       <div class="hero-card__figure hero-card__figure--${hero.id}" aria-hidden="true">
         <span class="hero-fig__cape"></span>
         <span class="hero-fig__body"></span>
@@ -477,6 +560,7 @@ export class Menus {
         <span class="hero-fig__blade"></span>
         <span class="hero-fig__aura"></span>
       </div>`;
+    };
 
     for (const hero of HEROES) {
       const unlocked = this.ctx.profile.isUnlocked(`hero:${hero.id}`);
@@ -489,7 +573,7 @@ export class Menus {
       }).join("");
       el.innerHTML = unlocked
         ? `
-          ${heroFigure(hero)}
+          ${heroFigure(hero, true)}
           <div class="hero-card__icon">${hero.icon}</div>
           <div class="hero-card__name">${hero.name}</div>
           <div class="hero-card__title">${hero.title}</div>
@@ -503,7 +587,7 @@ export class Menus {
           <div class="hero-hand">${handIcons}</div>
           ${(this.ctx.profile.data.heroWins[hero.id] ?? 0) > 0 ? `<div class="hero-mastery">★ ${this.ctx.profile.data.heroWins[hero.id]} WIN${this.ctx.profile.data.heroWins[hero.id] === 1 ? "" : "S"}${(this.ctx.profile.data.heroBestWinDepth[hero.id] ?? 0) > 0 ? ` · BEST DEPTH ${this.ctx.profile.data.heroBestWinDepth[hero.id]}` : ""}</div>` : ""}`
         : `
-          ${heroFigure(hero)}
+          ${heroFigure(hero, false)}
           <div class="hero-card__icon">🔒</div>
           <div class="hero-card__name">???</div>
           <div class="hero-card__title">${hero.title}</div>
