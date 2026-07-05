@@ -168,7 +168,10 @@ app.whenReady().then(async () => {
     // 1) Menu / hero-select baselines.
     await phase("menu-idle", ms(2500), { setup: `window.__rh3debug.scenario("menu")` });
 
-    // 2) Enter a run so the debug scenarios have a live context.
+    // 2) Enter a run so the debug scenarios have a live context. Re-label first: the
+    // begin-run/hero-select/story-skip/room-load steps below are heavy one-time DOM
+    // builds, NOT idle frames — without this their GC pauses leak onto "menu-idle".
+    await js(`window.__rh3perf.setSpikeLabel("run-entry")`);
     await js(`localStorage.removeItem('rh3v2-runsave')`);
     await js(`(()=>{const b=[...document.querySelectorAll('button')].find(x=>/Begin Run|New Run/.test(x.textContent)); if(b)b.click();})()`);
     await sleep(700);
