@@ -28,9 +28,14 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   c = mix(vec3(l), c, 1.0 + uSat);
   // Mood / tempo tint — a gentle multiplicative push toward the driven color.
   c = mix(c, c * mix(vec3(1.0), uTint, 0.6), uTintAmt);
-  // Dither: break up banding on the smooth sky/fog gradients before the 8-bit output.
-  float d = fract(sin(dot(uv * vec2(1031.0, 1279.0), vec2(12.9898, 78.233))) * 43758.5453);
-  c += (d - 0.5) / 255.0;
+  // Ordered dither before the 8-bit write to kill banding on the dark sky/fog/floor
+  // gradients. The removed film grain used to mask this, so dither properly now: two
+  // decorrelated hashes summed → a triangular (flatter) distribution, ~1.3/255 amplitude.
+  // TIME-INDEPENDENT (uv only) so it can NEVER flicker — unlike the animated grain it replaces.
+  vec2 dp = uv * vec2(1031.0, 1279.0);
+  float d = fract(sin(dot(dp, vec2(12.9898, 78.233))) * 43758.5453)
+          + fract(sin(dot(dp, vec2(39.346, 11.135))) * 24634.6345);
+  c += (d - 1.0) * (1.3 / 255.0);
   outputColor = vec4(max(c, 0.0), inputColor.a);
 }
 `;

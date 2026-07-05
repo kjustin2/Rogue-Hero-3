@@ -2,7 +2,6 @@ import * as THREE from "three";
 import {
   BloomEffect,
   BrightnessContrastEffect,
-  ChromaticAberrationEffect,
   EffectComposer,
   EffectPass,
   HueSaturationEffect,
@@ -19,9 +18,9 @@ export type Quality = "low" | "medium" | "high";
 
 /**
  * Owns renderer, scene, post-processing chain and screen-level feedback
- * (hurt vignette pulse, aberration kick). The post chain is rebuilt per
+ * (hurt vignette pulse). The post chain is rebuilt per
  * quality preset:
- *  - high:   full res (≤2× dpr), 2048 PCF shadows, bloom + CA + grade + SMAA
+ *  - high:   full res (≤2× dpr), 2048 PCF shadows, bloom + grade + SMAA
  *  - medium: ≤1.5× dpr, 1024 shadows, bloom + grade + SMAA
  *  - low:    1× dpr, no shadows, vignette + grade only
  */
@@ -52,7 +51,6 @@ export class Stage {
    *  `postprocessing` leaves the output unrouted and the screen crushes to black. */
   private menuComposer!: EffectComposer;
   private vignette!: VignetteEffect;
-  private aberration: ChromaticAberrationEffect | null = null;
   private bloom: BloomEffect | null = null;
   /** Combined split-tone / tempo-tint / mood / dither grade (full chain only). */
   private grade!: GradeEffect;
@@ -67,7 +65,6 @@ export class Stage {
   /** 0..1 transient screen stress — pushed up by hits/crashes, decays fast. */
   private stress = 0;
   private baseVignette = 0.42;
-  private baseAberration = 0.0012;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -121,6 +118,10 @@ export class Stage {
     this.keyLight.shadow.camera.bottom = -30;
     this.keyLight.shadow.camera.far = 80;
     this.keyLight.shadow.bias = -0.0008;
+    // Soften the PCF kernel so the pillar/crystal shadow edges aren't hard, stair-stepped
+    // blobs that crawl as the camera moves (a baked artifact the film grain used to hide).
+    // Softness only — NOT a frustum tighten (that caused the black-fill glitch; see CLAUDE.md).
+    this.keyLight.shadow.radius = 4;
     this.scene.add(this.keyLight);
     this.scene.add(this.keyLight.target);
 
@@ -146,14 +147,20 @@ export class Stage {
     const w = window.innerWidth;
     const h = window.innerHeight;
 
+    // MSAA on the RenderPass target: true sub-pixel geometry AA. The high-contrast cyan
+    // edges on near-black were only 1px-jagged and CRAWLED/sizzled as the camera followed
+    // the player — the animated film grain used to mask that temporal edge crawl, so once
+    // the grain left it read as "glitching". SMAA (spatial post-AA) is not sub-pixel-stable
+    // enough to hold those edges under motion; hardware MSAA is. Scaled by preset.
+    const msaa = this.quality === "high" ? 4 : this.quality === "medium" ? 2 : 0;
+
     // --- Full combat chain ---
     this.composer?.dispose();
-    this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType });
+    this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
     const effects: Effect[] = [];
     this.bloom = null;
-    this.aberration = null;
 
     if (this.quality !== "low") {
       this.bloom = new BloomEffect({
@@ -165,14 +172,9 @@ export class Stage {
       });
       effects.push(this.bloom);
     }
-    if (this.quality === "high") {
-      this.aberration = new ChromaticAberrationEffect({
-        offset: new THREE.Vector2(this.baseAberration, this.baseAberration),
-        radialModulation: true,
-        modulationOffset: 0.35,
-      });
-      effects.push(this.aberration);
-    }
+    // NO ChromaticAberrationEffect: its red/cyan edge fringing crawled on every silhouette
+    // as the camera moved and read as a "glitch" (worst toward the screen edges via radial
+    // modulation). Removed entirely — the neon look holds without RGB-splitting the edges.
     this.vignette = new VignetteEffect({ darkness: this.baseVignette, offset: 0.32 });
     effects.push(this.vignette);
     // Subtle grade: a touch more saturation + contrast sells "finished"
@@ -203,7 +205,7 @@ export class Stage {
     // is both the look we want behind the menus and a big perf win. Built as its own
     // chain so the final pass actually routes to screen (see menuComposer doc).
     this.menuComposer?.dispose();
-    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType });
+    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
     this.menuComposer.addPass(new RenderPass(this.scene, this.camera));
     this.menuComposer.addPass(new EffectPass(
       this.camera,
@@ -306,10 +308,6 @@ export class Stage {
     this.stress = damp(this.stress, 0, 6, dt);
     const s = this.stress;
     this.vignette.darkness = this.baseVignette + s * 0.45;
-    if (this.aberration) {
-      const ab = this.baseAberration + s * 0.011;
-      this.aberration.offset.set(ab, ab);
-    }
     // Damp the grade toward its target tint / mood and push to the effect.
     this.tintColor.lerp(this.tintTarget, clamp01(dt * 4));
     this.tintAmt = damp(this.tintAmt, this.tintAmtTarget, 4, dt);
