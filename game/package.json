@@ -20,6 +20,7 @@
     "smoke:perf:stress": "node scripts/smoke-perf-stress.mjs",
     "smoke:polish": "node scripts/smoke-polish.mjs",
     "smoke:flicker": "node scripts/shot-flicker.mjs",
+    "glitch-hunt": "npm run build && electron scripts/glitch-hunt-electron.cjs",
     "smoke:cards": "node scripts/smoke-card-visuals.mjs",
     "smoke:display": "node scripts/smoke-display.mjs",
     "smoke:display-electron": "electron scripts/smoke-display-electron.cjs",

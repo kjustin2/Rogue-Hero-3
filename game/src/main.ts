@@ -15,6 +15,7 @@ import { Floaters } from "./render/floaters";
 import { Arena, THEMES } from "./render/arena";
 import { ContactShadows } from "./render/contactShadow";
 import { EffectsPanel } from "./debug/effectsToggle";
+import { setRimEnabled } from "./render/materialFx";
 import { Decals } from "./render/decals";
 import { Input } from "./core/input";
 import { EventBus } from "./core/events";
@@ -2071,7 +2072,8 @@ void boot();
     { id: "smaa", label: "SMAA (post anti-alias)", apply: (on) => ctx.stage.setDebug("smaa", on) },
     { id: "bloom", label: "Bloom (glow)", apply: (on) => ctx.stage.setDebug("bloom", on) },
     { id: "shadows", label: "Shadows", hint: "shadow-map flicker", apply: (on) => ctx.stage.setDebug("shadows", on) },
-    { id: "env", label: "Env reflections (IBL)", apply: (on) => ctx.stage.setDebug("env", on) },
+    { id: "env", label: "Env reflections (IBL)", hint: "view-dependent", apply: (on) => ctx.stage.setDebug("env", on) },
+    { id: "rim", label: "Rim edge-light (fresnel)", hint: "view-dependent, on edges", apply: (on) => setRimEnabled(on) },
     { id: "fog", label: "Fog", apply: (on) => ctx.stage.setDebug("fog", on) },
     { id: "grade", label: "Color grade + dither", apply: (on) => ctx.stage.setDebug("grade", on) },
     { id: "vignette", label: "Vignette", apply: (on) => ctx.stage.setDebug("vignette", on) },
