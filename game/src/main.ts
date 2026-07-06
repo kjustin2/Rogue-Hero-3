@@ -14,6 +14,7 @@ import { Telegraphs } from "./render/telegraphs";
 import { Floaters } from "./render/floaters";
 import { Arena, THEMES } from "./render/arena";
 import { ContactShadows } from "./render/contactShadow";
+import { EffectsPanel } from "./debug/effectsToggle";
 import { Decals } from "./render/decals";
 import { Input } from "./core/input";
 import { EventBus } from "./core/events";
@@ -2062,6 +2063,22 @@ void boot();
   w.__rh3perf = perf;
   if (new URLSearchParams(location.search).has("perf")) perf.hud(true);
   window.addEventListener("keydown", (e) => { if (e.code === "F8") perf.hud(); });
+  // Live effect-bisection panel (backtick `): strip every render feature and add them back
+  // one-by-one on REAL hardware to pinpoint a GPU-specific glitch software rendering can't
+  // show. Also exposed as window.__rh3fx for the harness.
+  const fxPanel = new EffectsPanel([
+    { id: "msaa", label: "MSAA (4× hardware anti-alias)", hint: "alters depth resolve", apply: (on) => ctx.stage.setDebug("msaa", on) },
+    { id: "smaa", label: "SMAA (post anti-alias)", apply: (on) => ctx.stage.setDebug("smaa", on) },
+    { id: "bloom", label: "Bloom (glow)", apply: (on) => ctx.stage.setDebug("bloom", on) },
+    { id: "shadows", label: "Shadows", hint: "shadow-map flicker", apply: (on) => ctx.stage.setDebug("shadows", on) },
+    { id: "env", label: "Env reflections (IBL)", apply: (on) => ctx.stage.setDebug("env", on) },
+    { id: "fog", label: "Fog", apply: (on) => ctx.stage.setDebug("fog", on) },
+    { id: "grade", label: "Color grade + dither", apply: (on) => ctx.stage.setDebug("grade", on) },
+    { id: "vignette", label: "Vignette", apply: (on) => ctx.stage.setDebug("vignette", on) },
+    { id: "contact", label: "Contact shadows (ground blobs)", apply: (on) => contactShadows.setVisible(on) },
+  ]);
+  w.__rh3fx = fxPanel;
+  window.addEventListener("keydown", (e) => { if (e.code === "Backquote") fxPanel.toggleOpen(); });
   // Current top-level UI screen, for the automation/capture harness so it can
   // tell menu/draft/pause/end states apart without guessing from the DOM.
   w.__rh3state = () => state;

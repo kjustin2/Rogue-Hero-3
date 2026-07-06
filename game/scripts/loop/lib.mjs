@@ -91,7 +91,8 @@ export async function ensureServer({ log = console.log } = {}) {
 // ───────────────────────────────────────────────────────────────── browser ──
 
 export async function launchBrowser() {
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  // --mute-audio: never blast the soundtrack through the system during test runs.
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: ["--mute-audio"] });
   const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
   const page = await context.newPage();
   const errors = [];

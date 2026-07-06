@@ -2371,6 +2371,39 @@ body.rh-no-anim .menu-sigil {
   color: rgba(255, 255, 255, 0.45);
 }
 
+/* ---- Debug effect-bisection panel (backtick ` key) ---- */
+.fxpanel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 99999;
+  width: 330px;
+  padding: 12px 14px;
+  background: rgba(8, 10, 18, 0.95);
+  border: 1px solid rgba(120, 200, 255, 0.45);
+  border-radius: 8px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  color: #cfe6ff;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.65);
+}
+.fxpanel__title { font-weight: 700; letter-spacing: 1px; color: #7fd8ff; margin-bottom: 6px; }
+.fxpanel__key { float: right; opacity: 0.6; border: 1px solid #456; border-radius: 3px; padding: 0 5px; }
+.fxpanel__how { font-size: 11px; line-height: 1.45; color: #8fb0cc; margin-bottom: 9px; }
+.fxpanel__btns { display: flex; gap: 8px; margin-bottom: 9px; }
+.fxpanel__btns button {
+  flex: 1; padding: 6px 0; cursor: pointer; font: inherit; font-weight: 700; letter-spacing: 0.5px;
+  background: #16283a; color: #cfe6ff; border: 1px solid #2f5a7a; border-radius: 5px;
+}
+.fxpanel__btns button:hover { background: #1e3a52; border-color: #4f8ab0; }
+.fxpanel__rows { display: flex; flex-direction: column; gap: 2px; }
+.fxpanel__row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
+.fxpanel__row:hover { background: rgba(120, 200, 255, 0.08); }
+.fxpanel__row--off .fxpanel__label { color: #6a7a88; text-decoration: line-through; }
+.fxpanel__label { flex: 1; }
+.fxpanel__hint { font-size: 10px; color: #e0a0a0; opacity: 0.85; }
+.fxpanel input[type="checkbox"] { width: 15px; height: 15px; accent-color: #37e0ff; cursor: pointer; }
+
 /* --- armory --- */
 .armory-shards {
   font-size: 14px;

@@ -14,6 +14,10 @@ export class ContactShadows {
   private pool: THREE.Mesh[] = [];
   private mat: THREE.MeshBasicMaterial;
   private geo = new THREE.PlaneGeometry(1, 1);
+  private disabled = false;
+
+  /** Debug bisection toggle (effectsToggle panel). */
+  setVisible(on: boolean): void { this.disabled = !on; this.group.visible = on; }
 
   constructor(scene: THREE.Scene, max = 48) {
     const tex = makeBlobTexture();
@@ -41,6 +45,7 @@ export class ContactShadows {
 
   /** Place one blob per actor: {x,z,radius}. Extra pool entries hide. */
   update(actors: { x: number; z: number; radius: number; y?: number }[]): void {
+    if (this.disabled) return;
     for (let i = 0; i < this.pool.length; i++) {
       const m = this.pool[i];
       const a = actors[i];

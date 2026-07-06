@@ -66,6 +66,7 @@ app.whenReady().then(async () => {
       backgroundThrottling: false,
     },
   });
+  win.webContents.setAudioMuted(true); // no soundtrack during test runs
 
   win.webContents.on("console-message", (_e, level, message) => { if (level >= 3) fails.push("CONSOLE: " + message); });
   win.webContents.on("render-process-gone", (_e, d) => fails.push("RENDERER GONE: " + d.reason));

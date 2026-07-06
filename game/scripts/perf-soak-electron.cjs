@@ -72,6 +72,7 @@ app.whenReady().then(async () => {
     show: false, backgroundColor: "#05070a",
     webPreferences: { backgroundThrottling: false, offscreen: false },
   });
+  win.webContents.setAudioMuted(true); // never blast the soundtrack during a background soak
   // A hidden window throttles the render loop to ~1fps, making perf meaningless. We
   // need real frames at full rate, so show the window WITHOUT focusing it: it paints
   // exactly like the player's session but never grabs editor focus or the cursor.

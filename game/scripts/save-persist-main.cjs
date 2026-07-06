@@ -38,6 +38,7 @@ function serve() {
   }
 
   const win = new BrowserWindow({ show: false });
+  win.webContents.setAudioMuted(true); // no soundtrack during test runs
   await win.loadURL("http://127.0.0.1:" + PORT + "/");
 
   let code = 0;

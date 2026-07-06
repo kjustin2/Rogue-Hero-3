@@ -81,6 +81,7 @@ app.whenReady().then(async () => {
     backgroundColor: "#05070a",
     webPreferences: { backgroundThrottling: false, offscreen: false },
   });
+  win.webContents.setAudioMuted(true); // no soundtrack during test runs
 
   win.webContents.on("console-message", (_e, level, message) => {
     if (level >= 3) errors.push("CONSOLE: " + message);

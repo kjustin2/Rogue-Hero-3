@@ -718,8 +718,11 @@ export class CardCaster {
         const dmg = Math.round((upgraded ? 40 : 30) * (1 + missing * (upgraded ? 1.6 : 1.2)));
         combat.dealDamage(tgt, dmg, { kbX: dx, kbZ: dz, kb: 5, heavy: true, countCombo: true });
         player.hp = Math.min(player.maxHp, player.hp + (upgraded ? 10 : 6));
+        // A hot WHITE core flash so the pounce reads distinctly even inside the red Critical-
+        // Tempo frame tint (where a pure-red burst would blend into the tempo ring).
+        fx.ring(tgt.pos.x, tgt.pos.z, { radius: 1.3, color: 0xffffff, duration: 0.2 });
         fx.ring(tgt.pos.x, tgt.pos.z, { radius: 2.4, color: 0xff5a52, duration: 0.4 });
-        fx.burst({ x: tgt.pos.x, y: 1, z: tgt.pos.z, count: 22, color: [0xff5a52, 0xffb0a0], speed: [4, 11], up: 0.5, size: [0.3, 0.7], life: [0.2, 0.5], gravity: -2, drag: 3 });
+        fx.burst({ x: tgt.pos.x, y: 1, z: tgt.pos.z, count: 24, color: [0xffffff, 0xff5a52], speed: [4, 12], up: 0.5, size: [0.3, 0.75], life: [0.2, 0.5], gravity: -2, drag: 3 });
         this.ctx.cam.addTrauma(0.28);
         return true;
       }

@@ -35,6 +35,10 @@ export class Stage {
   readonly hemiLight: THREE.HemisphereLight;
   readonly fog: THREE.FogExp2;
   private envBaker!: EnvironmentBaker;
+  private envTex: THREE.Texture | null = null;
+  /** Debug bisection toggles (effectsToggle panel) — default on; flipping rebuilds post. */
+  private msaaEnabled = true;
+  private smaaEnabled = true;
   quality: Quality = "high";
   /**
    * Resolution scale (render-target multiplier on the quality-capped device pixel
@@ -92,7 +96,12 @@ export class Stage {
     this.fog = new THREE.FogExp2(0x0a0a16, 0.016);
     this.scene.fog = this.fog;
 
-    this.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 220);
+    // Near plane raised from 0.5 → 2: with a top-down camera ~16-19 units from the action,
+    // a 0.5 near wasted almost all depth-buffer precision, so coplanar opaque surfaces
+    // Z-FOUGHT (surfaces "blink on/off when moving") on real GPUs — worse because the scene
+    // renders through an EffectComposer render target. Nothing is ever within 2 units of the
+    // camera, so this only tightens the near/far ratio (4× the precision) with zero clipping.
+    this.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 2, 220);
     this.camera.position.set(0, 16, 11);
     this.camera.lookAt(0, 0, 0);
 
@@ -136,7 +145,8 @@ export class Stage {
     // exists so they all compile with the envMap variant (arena.ts rebakes per act —
     // a texture swap, never null↔texture, so it never triggers a whole-scene relink).
     this.envBaker = new EnvironmentBaker(this.renderer);
-    this.scene.environment = this.envBaker.bake(0x0b0820, 0x251440, 0xfff2e0, 0x37e0ff, 0x55ccff);
+    this.envTex = this.envBaker.bake(0x0b0820, 0x251440, 0xfff2e0, 0x37e0ff, 0x55ccff);
+    this.scene.environment = this.envTex;
 
     this.buildPost();
     window.addEventListener("resize", () => this.onResize());
@@ -152,7 +162,7 @@ export class Stage {
     // the player — the animated film grain used to mask that temporal edge crawl, so once
     // the grain left it read as "glitching". SMAA (spatial post-AA) is not sub-pixel-stable
     // enough to hold those edges under motion; hardware MSAA is. Scaled by preset.
-    const msaa = this.quality === "high" ? 4 : this.quality === "medium" ? 2 : 0;
+    const msaa = this.msaaEnabled ? (this.quality === "high" ? 4 : this.quality === "medium" ? 2 : 0) : 0;
 
     // --- Full combat chain ---
     this.composer?.dispose();
@@ -193,7 +203,7 @@ export class Stage {
     // from the lean menu chain. That WAS the "flickering" bug. If a film-texture look is ever
     // wanted, it must be a STATIC (uv-only, no time) grain — never the animated NoiseEffect.
     this.composer.addPass(new EffectPass(this.camera, ...effects));
-    if (this.quality !== "low") {
+    if (this.smaaEnabled && this.quality !== "low") {
       this.composer.addPass(new EffectPass(this.camera, new SMAAEffect()));
     }
     this.composer.setSize(w, h);
@@ -302,6 +312,21 @@ export class Stage {
     if (mood === "dead") { this.tintTarget.set(0x5a6a88); this.tintAmtTarget = 0.5; this.satTarget = -0.32; }
     else if (mood === "victory") { this.tintTarget.set(0xffe6b0); this.tintAmtTarget = 0.35; this.satTarget = 0.18; }
     else { this.tintAmtTarget = 0; this.satTarget = 0; }
+  }
+
+  /** Live effect toggles for the debug bisection panel (effectsToggle.ts). Lets a player
+   *  strip render features one-by-one on real hardware to pinpoint a GPU-specific glitch. */
+  setDebug(name: "bloom" | "msaa" | "smaa" | "shadows" | "env" | "fog" | "grade" | "vignette", on: boolean): void {
+    switch (name) {
+      case "bloom": if (this.bloom) this.bloom.intensity = on ? 1.05 : 0; break;
+      case "grade": this.grade.blendMode.opacity.value = on ? 1 : 0; break;
+      case "vignette": this.vignette.blendMode.opacity.value = on ? 1 : 0; break;
+      case "shadows": this.keyLight.castShadow = on && !this.lowCost && this.quality !== "low"; break;
+      case "env": this.scene.environment = on ? this.envTex : null; break;
+      case "fog": this.scene.fog = on ? this.fog : null; break;
+      case "msaa": this.msaaEnabled = on; this.buildPost(); break;
+      case "smaa": this.smaaEnabled = on; this.buildPost(); break;
+    }
   }
 
   update(dt: number): void {
