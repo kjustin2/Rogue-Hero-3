@@ -77,6 +77,14 @@ export default {
     minContrast: 3.0, dupHamming: 6, settleMs: 1800,
   },
 
+  // Tutorial / FTUE oracle (qa/tutorial.mjs): completability + the required-but-
+  // never-taught gap. requiredVerbs = the verbs a real run demands; the tutorial
+  // teaches only move/attack/dodge/card/crash, so the rest is the reported gap.
+  tutorial: {
+    requiredVerbs: ["move", "attack", "dodge", "card", "crash", "perfectdodge", "draft", "hone", "relic", "shop", "shield", "tempo"],
+    stepBudgetFrames: 240,
+  },
+
   // Event-coverage matrix: emits counted by the typed bus (debug.coverage()).
   // Anything required that never fired during chaos+suite = untested content.
   coverage: {

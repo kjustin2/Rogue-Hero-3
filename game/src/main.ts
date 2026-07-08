@@ -2187,6 +2187,7 @@ void boot();
         case "enemy": return debug.enemy(parts[1], opts);
         case "room": return debug.room(parts[1], opts.act ?? 1);
         case "menu": toMenu(); return true;
+        case "tutorial": startTutorial(); return true;
         case "victory": ctx.events.emit("RUN_VICTORY", {}); return true;
         case "death": ctx.combat.damagePlayer(99999, ctx.player.pos.x, ctx.player.pos.z); return true;
         default: return false;
@@ -2478,6 +2479,17 @@ void boot();
      *  serialize/restore snapshot it). */
     rngState(): number { return ctx.rng.getState(); },
     setRngState(s: number): void { ctx.rng.setState(s); },
+    /** Training-Grounds FSM introspection for the tutorial-correctness oracle:
+     *  which step, what verb it teaches, the taught-so-far set, whether it's done,
+     *  and the current on-screen objective. `inTutorial` distinguishes the training
+     *  session from a real run. */
+    tutorial(): { inTutorial: boolean; active: boolean; step: number; verb: string; taught: string[]; done: boolean; objective: string } {
+      return {
+        inTutorial, active: tutorial.active, step: tutorial.currentStep,
+        verb: tutorial.verb, taught: tutorial.taughtSoFar, done: tutorial.done,
+        objective: tutorial.objective,
+      };
+    },
     /** The recognized scenario name patterns. */
     list(): string[] {
       return [

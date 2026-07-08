@@ -11,6 +11,12 @@ export interface EventMap {
   PLAYER_DIED: Record<string, never>;
   DODGE: Record<string, never>;
   PERFECT_DODGE: { x: number; z: number };
+  /** Player first moved a meaningful distance — makes the tutorial's move step
+   *  observable to the coverage bus (it otherwise advanced silently). */
+  MOVE: Record<string, never>;
+  /** A Training Grounds step began — the tutorial-correctness oracle reads the
+   *  verb it teaches from the bus instead of the source. */
+  TUTORIAL_STEP: { index: number; verb: string; taught: string };
   CARD_CAST: { id: string };
   CARD_PRIME: { slot: number; id: string; color: string };
   CARD_FAIL: { slot: number };

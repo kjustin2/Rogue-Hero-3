@@ -10,9 +10,19 @@ const STEPS: string[] = [
   "Attacks build TEMPO — you're hot now, press F to CRASH!",
 ];
 
+/** The verb each step certifies — the tutorial-correctness oracle reads this off
+ *  the bus (via TUTORIAL_STEP) and diffs it against the run's required verbs. */
+export const TUTORIAL_VERBS: string[] = ["move", "attack", "dodge", "card", "crash"];
+
 export class Tutorial {
   active = false;
   onComplete: () => void = () => {};
+  /** Read by the tutorial-correctness oracle (debug.tutorial()). */
+  get currentStep(): number { return this.step; }
+  get done(): boolean { return this.doneTimer >= 0; }
+  get taughtSoFar(): string[] { return TUTORIAL_VERBS.slice(0, Math.max(0, this.step + (this.doneTimer >= 0 ? 1 : 0))); }
+  get objective(): string { return this.doneTimer >= 0 ? "TRAINING COMPLETE" : (STEPS[this.step] ?? ""); }
+  get verb(): string { return TUTORIAL_VERBS[this.step] ?? ""; }
   private step = -1;
   private moved = 0;
   private doneTimer = -1;
@@ -32,11 +42,14 @@ export class Tutorial {
     this.step = 0;
     this.moved = 0;
     this.doneTimer = -1;
+    this.movedFired = false;
     this.flags = { hit: false, dodged: false, cast: false, crashed: false };
     this.lastX = this.ctx.player.pos.x;
     this.lastZ = this.ctx.player.pos.z;
     this.hud.setObjective(`TRAINING  ·  ${STEPS[0]}`);
+    this.ctx.events.emit("TUTORIAL_STEP", { index: 0, verb: TUTORIAL_VERBS[0], taught: TUTORIAL_VERBS[0] });
   }
+  private movedFired = false;
 
   stop(): void {
     this.active = false;
@@ -58,6 +71,9 @@ export class Tutorial {
     this.moved += Math.hypot(p.x - this.lastX, p.z - this.lastZ);
     this.lastX = p.x;
     this.lastZ = p.z;
+    // Make step 0 (move) observable to the coverage bus — it otherwise advanced
+    // on a silent distance threshold, invisible to coverage()/the oracle.
+    if (!this.movedFired && this.moved > 3) { this.movedFired = true; this.ctx.events.emit("MOVE", {}); }
 
     let advance = false;
     switch (this.step) {
@@ -78,5 +94,6 @@ export class Tutorial {
     // Entering the crash lesson: heat the player so CRASH is available immediately.
     if (this.step === 4) this.ctx.tempo.gain(95);
     this.hud.setObjective(`TRAINING  ·  ${STEPS[this.step]}`);
+    this.ctx.events.emit("TUTORIAL_STEP", { index: this.step, verb: TUTORIAL_VERBS[this.step], taught: TUTORIAL_VERBS[this.step] });
   }
 }

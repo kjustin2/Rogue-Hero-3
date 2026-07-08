@@ -102,6 +102,19 @@ await phase("coverage", true, async () => {
     : { status: "PASS", detail: `all ${cfg.coverage.required.length} required events fired` };
 });
 
+// 3b) TUTORIAL — "is it clear how to play?" completability (hard gate) + the
+// required-but-never-taught gap (WARN, owner-decides).
+await phase("tutorial", true, async () => {
+  const r = await node(["scripts/qa/tutorial.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "tutorial.json"), null);
+  if (!c) return { status: "FAIL", detail: `tutorial ${r.status}, no report`, evidence: r.tail };
+  if (c.failures) return { status: "FAIL", detail: `${c.failures} finding(s): ${c.results.findings.map((f) => `${f.type}@step${f.step}`).join(", ")}`, evidence: "artifacts/qa/tutorial.json" };
+  const gap = c.results.warnings ?? [];
+  return gap.length
+    ? { status: "WARN", detail: `completable, but ${gap.length} run-required verb(s) never taught: ${gap.join(", ")}`, evidence: "artifacts/qa/tutorial.json" }
+    : { status: "PASS", detail: `tutorial completable end-to-end; all run-required verbs taught` };
+});
+
 // 4a) DETERMINISM — the sim's golden-trace MR: same (seed, fixed tape) ⇒ same
 // simHash() every frame. The backbone the record-replay/autonomous tier stands on.
 await phase("determinism", true, async () => {
@@ -297,7 +310,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "determinism", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "stability", "coverage", "determinism", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

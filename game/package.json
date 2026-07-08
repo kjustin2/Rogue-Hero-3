@@ -17,6 +17,8 @@
     "qa:full": "node scripts/qa/qa-run.mjs --full --judge",
     "qa:chaos": "node scripts/qa/chaos.mjs",
     "qa:det-lint": "node scripts/qa/determinism-lint.mjs",
+    "qa:tutorial": "node scripts/qa/tutorial.mjs",
+    "qa:tutorial-selftest": "node scripts/qa/tutorial.mjs --selftest",
     "qa:determinism": "node scripts/qa/determinism.mjs",
     "qa:determinism-selftest": "node scripts/qa/determinism.mjs --selftest",
     "qa:collision": "node scripts/qa/collision-truth.mjs",
