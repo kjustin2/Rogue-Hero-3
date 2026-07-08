@@ -148,23 +148,24 @@ const results = [];
 let failures = 0;
 const fps = Math.round(1 / TT.dt);
 
-async function auditScene(scene, { faults = null } = {}) {
+async function auditScene(scene, { faults = null, restage = true } = {}) {
   const slug = scene.replace(/[^a-z0-9]+/gi, "-");
   const dir = join(OUT, slug + (faults ? "-fault" : ""));
   mkdirSync(dir, { recursive: true });
-  await gotoScenario(page, scene, { settle: TT.settleMs ?? 2200 });
+  if (restage) {
+    await gotoScenario(page, scene, { settle: TT.settleMs ?? 2200 });
+    // Capture hygiene (the shot-flicker recipe — a dirty capture is not a bug
+    // report): HIGH quality so grain-class effects are even present, godmode so
+    // a stray hit can't restage the frame, clear live particles/floaters, age.
+    await page.evaluate(`window.${S}.stage.applyQuality ? window.${S}.stage.applyQuality("high") : 0; 0`);
+    await page.evaluate(`window.${S}debug.godmode(); window.${S}.fx.clear ? window.${S}.fx.clear() : 0; 0`);
+    // Age the stage: entrance beams / spawn columns / timed room content resolve
+    // over several seconds and read as transients if measured too early.
+    await page.evaluate(`window.${S}debug.frames(60); 0`);
+    await new Promise((res) => setTimeout(res, 1200));
+    await page.evaluate(`window.${S}.fx.clear ? window.${S}.fx.clear() : 0; 0`);
+  }
   const r = { scene, findings: [] };
-
-  // Capture hygiene (the shot-flicker recipe — a dirty capture is not a bug
-  // report): HIGH quality so grain-class effects are even present, godmode so a
-  // stray hit can't restage the frame, clear live particles/floaters, settle.
-  await page.evaluate(`window.${S}.stage.applyQuality ? window.${S}.stage.applyQuality("high") : 0; 0`);
-  await page.evaluate(`window.${S}debug.godmode(); window.${S}.fx.clear ? window.${S}.fx.clear() : 0; 0`);
-  // Age the stage: entrance beams / spawn columns / timed room content resolve
-  // over several seconds and read as transients if measured too early.
-  await page.evaluate(`window.${S}debug.frames(60); 0`);
-  await new Promise((res) => setTimeout(res, 1200));
-  await page.evaluate(`window.${S}.fx.clear ? window.${S}.fx.clear() : 0; 0`);
 
   // 1) FROZEN pairs — shimmer + z-speckle, measured on the GL CANVAS ONLY.
   // page.screenshot() composites the DOM HUD, whose CSS animations (card shine,
@@ -369,18 +370,37 @@ if (!SELFTEST) {
   }
 } else {
   const scene = TT.scenes[0];
-  const clean = await auditScene(scene);
+  // The fault-proof needs a VERIFIED-QUIET baseline: some room rolls carry a
+  // long-lived per-frame transient (correctly a WARN in the plain audit), and a
+  // polluted stage poisons every no-restage fault measurement after it. Re-roll
+  // the stage until it measures quiet, then inject faults into THAT stage.
+  let clean = null;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    clean = await auditScene(scene);
+    if (!clean.findings.length && !clean.warn && clean.shimmerMae < 0.5) break;
+    log(`selftest baseline attempt ${attempt} not quiet (shimmer=${clean.shimmerMae}${clean.warn ? ", transient" : ""}) — re-rolling the stage`);
+    clean = null;
+  }
+  if (!clean) {
+    log("SELFTEST FAIL: could not roll a quiet baseline stage in 4 attempts");
+    failures++;
+    clean = { findings: [], shimmerMae: -1 };
+  }
   log(`selftest baseline: findings=${clean.findings.length} (must be 0)`);
   if (clean.findings.length) { failures++; for (const f of clean.findings) log(`  UNEXPECTED ${f.type}: ${f.detail}`); }
-  const sh = await auditScene(scene, { faults: "shimmer" });
+  // Fault runs REUSE the baseline's aged stage — re-staging re-rolls room
+  // content and re-enters through spawn-in, whose timed transients intermittently
+  // pollute the fault measurements (observed: a re-staged freeze-fault clip at
+  // 0.75 motionEnergy from a still-resolving spawn effect).
+  const sh = await auditScene(scene, { faults: "shimmer", restage: false });
   const shFired = sh.findings.some((f) => f.type === "SHIMMER");
   log(`selftest SHIMMER (random-opacity overlay): fired=${shFired} (mae=${sh.shimmerMae})`);
   if (!shFired) { log("SELFTEST FAIL: shimmer fault did not fire"); failures++; }
-  const fz = await auditScene(scene, { faults: "frozen" });
+  const fz = await auditScene(scene, { faults: "frozen", restage: false });
   const fzFired = fz.findings.some((f) => f.type === "FROZEN");
   log(`selftest FROZEN (world freeze during motion clip): fired=${fzFired} (motion=${fz.motionEnergy})`);
   if (!fzFired) { log("SELFTEST FAIL: freeze fault did not fire"); failures++; }
-  const pp = await auditScene(scene, { faults: "pop" });
+  const pp = await auditScene(scene, { faults: "pop", restage: false });
   const ppFired = pp.findings.some((f) => f.type === "POP" || f.type === "BLOWOUT-FRAME");
   log(`selftest POP (one-frame white flash): fired=${ppFired}`);
   if (!ppFired) { log("SELFTEST FAIL: pop fault did not fire"); failures++; }

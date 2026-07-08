@@ -63,10 +63,46 @@ RH3-specific lives in `scripts/qa/qa.config.mjs`; to port the tester to another 
 `scripts/qa/ + scripts/lib/guard.cjs + scripts/loop/lib.mjs + scripts/run-suite.mjs +
 scripts/shot-audit.mjs` and edit only the config.
 
+### The perception dimensions (2026-07-07 — all fault-injection PROVEN via `qa:selftest`)
+
+Four new deterministic senses run inside `npm run qa` (doctrine + portable recipes:
+/game-perception). Every one ships `--selftest`: inject the exact defect → must FIRE; clean
+build → must stay QUIET. `npm run qa:selftest` sweeps them; `qa:full` includes the sweep.
+
+- **collision-truth** (`qa:collision`) — render geometry ↔ collider set correspondence.
+  Meshes carry `userData.solidity` ("solid"|"ground"|"nonsolid"|"mover"|"fx") on themselves
+  or an ancestor — tag GROUP ROOTS at creation; an UNCLASSIFIED in-reach mesh is a FINDING
+  (a new prop with no tag and no collider is exactly the walk-through bug). UNCOVERED =
+  solid footprint no circle covers (walk-through); PHANTOM = circle with no solid mesh
+  (invisible wall). Audit uses `Box3.setFromObject(m, true)` — the loose AABB of a rotated
+  pillar manufactures phantom findings.
+- **reachability** (`qa:reach`) — player-radius flood-fill over `world()`: passable-but-
+  unreached pockets FAIL; collider pairs with a gap in (0, 2R) WARN (looks passable, isn't).
+- **temporal** (`qa:temporal`) — frozen-pair gates measured on the GL CANVAS ONLY
+  (`tick()` + `gl.readPixels` same-task; page screenshots composite DOM CSS animations —
+  card shine once read as 3918px of fake z-fighting). Age the freeze 3 ticks (one-frame
+  settle logic) and the stage ~60 frames + 1s (entrance FX). SHIMMER = frozen-pair MAE > 1.0
+  (clean 0.0–0.15); Z-SPECKLE = few+isolated diff pixels (depth-tie/sort instability). On a
+  finding it AUTO-BISECTS through `__rh3fx.setOne` and names the owner; fired-then-quiet =
+  TRANSIENT → WARN (timed content or wall-clock FX). Motion clips swept by ffmpeg
+  (freezedetect duration-fraction, scdet pops, signalstats black/flat/blowout, entropy) +
+  CAMBI banding (clean ~0.001–0.05, WARN > 1.0). FROZEN gates on in-page motionEnergy < 0.5
+  (healthy clips 4.9–11.6; a frozen world with DOM CSS still animating reads ~0.09).
+- **animation** (`qa:animation`) — from `recordMotion()`: FOOT-SKATE = contact-phase foot
+  slide per meter (contact = foot at its own height minimum; the lift signal alone
+  over-counts back-swing as planted — 1.34 vs the true 0.12). Gates: skate/m 0.35 (clean
+  0.12, drag-fault 1.1), jitter 60 m/s² (clean ~5, jolt-fault ~350), SPARC advisory. Drive
+  starts from the arena centre — blocked-walking poisons the ratio.
+
+**HARD RULE (found by the temporal gate, 2 shipped instances fixed): no private
+`requestAnimationFrame` / wall-clock animation loops in game code** — they defeat
+`freezeForTest`/`frames(n,dt)` and make every capture nondeterministic (the dodge-ghost +
+lightning-line fades did exactly this). All motion consumes the threaded dt.
+
 QA seam (in `main.ts` `__rh3debug`): **`frames(n, dt)`** deterministic stepper (exact sim frames —
 never wall-wait the headless clock), `tick(dt)`, **`frameErrors()`** (capped ring the frame-loop
 catch feeds — must stay EMPTY; a loop that survives a throwing frame otherwise looks healthy),
-**`coverage()`** (per-event emit counts from the typed bus), **`sceneCheck()`** (world-matrix NaN
+**`coverage()`** (per-event emit counts from the typed bus), **`world()`** (arena radius / player radius / collider circles — oracles read constants off the seam), **`flow()`** ({screen, goal, nextAction} — the articulability + comprehension ground truth), **`collisionAudit()`**, **`recordMotion()/motion()`** (the animation-metrics ring), **`sceneCheck()`** (world-matrix NaN
 scan + finite scene bounds + renderer.info gauges), **`contextLost()`**. The game also ships a
 **WebGL context-loss watchdog**: on restore it re-warms both composer paths (the program cache is
 dropped on restore — without re-warm the compile-hitch class returns); if no restore in 10s it

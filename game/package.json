@@ -24,6 +24,8 @@
     "qa:temporal-selftest": "node scripts/qa/temporal.mjs --selftest",
     "qa:animation": "node scripts/qa/animation-metrics.mjs",
     "qa:animation-selftest": "node scripts/qa/animation-metrics.mjs --selftest",
+    "qa:render-diag": "node scripts/qa/render-diag.mjs",
+    "qa:render-diag-selftest": "node scripts/qa/render-diag.mjs --selftest",
     "qa:selftest": "node scripts/qa/selftest.mjs",
     "qa:judge": "node scripts/qa/judge.mjs",
     "suite": "node scripts/run-suite.mjs",

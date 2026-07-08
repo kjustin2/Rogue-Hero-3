@@ -19,6 +19,7 @@ const SUITES = [
   ["reachability", ["scripts/qa/reachability.mjs", "--selftest"]],
   ["temporal", ["scripts/qa/temporal.mjs", "--selftest"]],
   ["animation", ["scripts/qa/animation-metrics.mjs", "--selftest"]],
+  ["render-diag", ["scripts/qa/render-diag.mjs", "--selftest"]],
 ];
 
 const results = [];

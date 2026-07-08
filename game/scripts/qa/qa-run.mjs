@@ -102,6 +102,66 @@ await phase("coverage", true, async () => {
     : { status: "PASS", detail: `all ${cfg.coverage.required.length} required events fired` };
 });
 
+// 4b) COLLISION-TRUTH — render geometry and the collider set must agree about
+// where solid matter is (walk-through props + invisible walls, both directions).
+await phase("collision-truth", true, async () => {
+  const r = await node(["scripts/qa/collision-truth.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "collision-truth.json"), null);
+  if (!c) return { status: "FAIL", detail: `collision-truth ${r.status}, no report`, evidence: r.tail };
+  const n = c.results.reduce((a, x) => a + x.unclassified.length + x.uncovered.length + x.phantom.length, 0);
+  return n
+    ? { status: "FAIL", detail: `${n} geometry↔collider disagreement(s) — see collision-truth.json`, evidence: "artifacts/qa/collision-truth.json" }
+    : { status: "PASS", detail: `scene and colliders agree in ${c.results.length} staged scenes` };
+});
+
+// 4c) REACHABILITY — nothing walkable may be sealed off; no sub-player gaps.
+await phase("reachability", true, async () => {
+  const r = await node(["scripts/qa/reachability.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "reachability.json"), null);
+  if (!c) return { status: "FAIL", detail: `reachability ${r.status}, no report`, evidence: r.tail };
+  const pockets = c.results.reduce((a, x) => a + x.pockets.length, 0);
+  const gaps = c.results.reduce((a, x) => a + x.narrowGaps.length, 0);
+  return pockets
+    ? { status: "FAIL", detail: `${pockets} unreachable pocket(s)${gaps ? `, ${gaps} narrow gap(s)` : ""}`, evidence: "artifacts/qa/reachability.json" }
+    : { status: gaps ? "WARN" : "PASS", detail: gaps ? `${gaps} sub-player gap(s) look passable but aren't` : "every passable cell reachable" };
+});
+
+// 4d) TEMPORAL — frozen-pair shimmer/z-speckle (GL-only) + fixed-tick clips swept
+// by ffmpeg no-reference filters + CAMBI banding; transients auto-classified.
+await phase("temporal", true, async () => {
+  const r = await node(["scripts/qa/temporal.mjs"], { minutes: 14 });
+  const c = readJSON(join(OUT, "temporal.json"), null);
+  if (!c) return { status: "FAIL", detail: `temporal ${r.status}, no report`, evidence: r.tail };
+  const n = c.results.reduce((a, x) => a + x.findings.length, 0);
+  const warns = c.results.filter((x) => x.warn).length;
+  return n
+    ? { status: "FAIL", detail: `${n} temporal artifact(s): ${c.results.flatMap((x) => x.findings.map((f) => f.type)).join(", ")}`, evidence: "artifacts/qa/temporal.json + shots/temporal/" }
+    : { status: warns ? "WARN" : "PASS", detail: warns ? `${warns} transient instability warning(s) — see temporal.json` : `frozen scenes bit-stable, clips clean${c.ffmpeg ? " (ffmpeg tier on)" : " (ffmpeg MISSING — no-reference tier skipped)"}` };
+});
+
+// 4e) ANIMATION — foot-skate / jitter / smoothness as measured numbers.
+await phase("animation", true, async () => {
+  const r = await node(["scripts/qa/animation-metrics.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "animation.json"), null);
+  if (!c) return { status: "FAIL", detail: `animation ${r.status}, no report`, evidence: r.tail };
+  const m = c.results[0] ?? {};
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} motion finding(s) — skate/m=${m.skatePerMeter}, jitter=${m.jitterMs2}`, evidence: "artifacts/qa/animation.json" }
+    : { status: "PASS", detail: `grounded + smooth: skate/m=${m.skatePerMeter}, jitter=${m.jitterMs2}m/s², sparc=${m.sparc}` };
+});
+
+// 4f) RENDER-DIAG — subject pixel-coverage (is the player/boss actually on
+// screen?) + the ε-camera-shift static z-fight probe.
+await phase("render-diag", true, async () => {
+  const r = await node(["scripts/qa/render-diag.mjs"], { minutes: 10 });
+  const c = readJSON(join(OUT, "render-diag.json"), null);
+  if (!c) return { status: "FAIL", detail: `render-diag ${r.status}, no report`, evidence: r.tail };
+  const n = c.results.reduce((a, x) => a + x.findings.length, 0);
+  return n
+    ? { status: "FAIL", detail: `${n} finding(s): ${c.results.flatMap((x) => x.findings.map((f) => f.type)).join(", ")}`, evidence: "artifacts/qa/render-diag.json" }
+    : { status: "PASS", detail: "subjects visible; static scene depth-stable under ε camera shift" };
+});
+
 // 5) VISUAL — fresh contact sheet + objective frame gates
 await phase("visual", true, async () => {
   rmSync(join(GAME_DIR, cfg.judge.shotsDir), { recursive: true, force: true }); // no stale evidence
@@ -150,6 +210,17 @@ await phase("runtime", true, async () => {
     : { status: "PASS", detail: `frame loop clean; ${c.perf ? `${c.perf.calls} draws, ${c.perf.programs} programs, ${c.perf.heapMB}MB heap` : "no perf readback"}` };
 });
 
+// 8b) DETECTOR SELFTEST (full mode) — the fault-injection proof: every perception
+// detector must fire on its injected fault and stay quiet clean.
+await phase("selftest", FULL, async () => {
+  const r = await node(["scripts/qa/selftest.mjs"], { minutes: 30 });
+  const c = readJSON(join(OUT, "selftest.json"), null);
+  if (!c) return { status: "FAIL", detail: `selftest ${r.status}, no report`, evidence: r.tail };
+  return c.failed
+    ? { status: "FAIL", detail: `${c.failed} detector suite(s) failed their fault-proof`, evidence: "artifacts/qa/selftest.json" }
+    : { status: "PASS", detail: `${c.results.length}/${c.results.length} detector suites proven (fire on fault, quiet clean)` };
+});
+
 // 9) JUDGE — AI visual verdicts (opt-in; costs a claude call)
 await phase("judge", JUDGE, async () => {
   const r = await node(["scripts/qa/judge.mjs"], { minutes: 18 });
@@ -165,7 +236,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "visual", "glitch", "perf", "runtime", "judge"];
+const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "visual", "glitch", "perf", "runtime", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
