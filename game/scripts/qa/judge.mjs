@@ -114,13 +114,32 @@ const beatNote = (f) => {
 };
 const shotBlocks = pngs.map((f) => `- ${resolve(SHOTS_DIR, f)}${f.startsWith("filmstrip") ? " (FILMSTRIP: 9 tiles #0–#8, fixed sim-time steps — judge MOTION: attack anticipation/follow-through, no foot-sliding, living idle, readable arcs)" : beatNote(f)}`).join("\n");
 
-const prompt = `You are the visual-QA judge for the Three.js action-roguelike "${cfg.name}".
-Use the Read tool to open EVERY screenshot listed, then judge each one with BINARY
-per-criterion verdicts. Quote what you literally see as evidence — never soften a FAIL,
-never invent problems you cannot point to in the pixels.
+// Ground truth for the judge to CROSS-CHECK pixels against (research: injecting
+// engine state is the single biggest lever against VLM counting/spatial errors —
+// "state says N enemies; I see an empty arena" catches render/state mismatches a
+// blind read never would). Global facts + the filmstrip's spawned-enemy count.
+const groundTruth = `GROUND TRUTH (cross-check the PIXELS against these engine facts — a mismatch is itself a bug):
+- Art direction: dark rift/void arena, neon-emissive accents under bloom, procedural low-poly. Deliberately dark backgrounds are NORMAL, not a black-frame bug — only a >98%-black frame or a black SMEAR across an actor is a defect.
+- Palette roles: threat = red, player = gold/cyan blade. A red wash on the player or a gold hue on a hazard is a role violation.
+- The combat filmstrip has enemies actively spawned. An EMPTY arena in a "combat" tile is a state/render mismatch, not a clean frame.
+- Boss beats show a boss HP bar at the TOP of the screen (never above the head).`;
+
+const prompt = `You are a SENIOR ART DIRECTOR grading the Three.js action-roguelike "${cfg.name}" to a
+SHIPPING COMMERCIAL bar. Use the Read tool to open EVERY screenshot listed. For each shot,
+FIRST describe in one sentence exactly what you literally see (this description is required
+and comes before any verdict — it is what keeps you honest), THEN give BINARY per-criterion
+verdicts, each with ONE quoted visual observation.
+
+ANTI-INFLATION RULES (verbatim, non-negotiable):
+- EVIDENCE OR IT DIDN'T HAPPEN — cite the visible element behind each verdict; no evidence → FAIL.
+- Judge what is ACTUALLY on screen, not what the code intends; "can't tell" is NOT a pass.
+- Absence of flaws is NOT a positive. Between two readings, pick the more critical one.
+- Never round up out of politeness. A real defect you can point to is a FAIL, full stop.
+
+${groundTruth}
 
 Criteria for every still (filmstrips instead use the motion criteria in their note):
-  render-integrity: no black/blank regions, no white blowout, no corrupted pixels
+  render-integrity: no black/blank regions, no white blowout, no corrupted pixels or black smears over actors
   player-readable: player actor visible + distinct from arena (skip on menu/portrait beats)
   threat-readable: enemies/hazards read as distinct silhouettes vs ground/FX
   hud-integrity: all text legible, uncut, non-overlapping, contrast passes on its background
@@ -131,7 +150,7 @@ ${shotBlocks}
 
 Respond with ONLY JSON, exactly:
 {
-  "shots": { "<filename>": { "verdicts": { "<criterion>": { "pass": true|false, "evidence": "<quoted observation>" } } } },
+  "shots": { "<filename>": { "describe": "<one sentence of what you literally see>", "verdicts": { "<criterion>": { "pass": true|false, "evidence": "<quoted observation>" } } } },
   "rankedIssues": [
     { "severity": "high|medium|low", "issue": "<one sentence>", "shot": "<filename>", "evidence": "<what you saw>",
       "suggestedFix": "<one concrete code-level direction>" }
@@ -145,6 +164,42 @@ const parsed = extractJSON(res.result);
 if (!parsed) {
   console.error("[judge] could not parse JSON from claude:", String(res.result || "").slice(0, 400));
   process.exit(2);
+}
+
+// Confidence-gated skeptic reconcile: for any HIGH-severity issue, pay a SECOND
+// pass that argues the opposite ("assume the frame is fine, justify it") — a
+// finding that survives an adversarial re-read is real; one that flips was VLM
+// noise (~0.50 single-pass precision). Only high-severity, only when present, so
+// the cost is bounded. Order-swap discipline (research: pairwise order bias >10%)
+// is moot here since each shot is judged absolutely, not A/B.
+const highIssues = (parsed.rankedIssues || []).filter((i) => i.severity === "high");
+if (highIssues.length) {
+  const skepticPrompt = `You are a SKEPTIC re-reviewing ${highIssues.length} claimed HIGH-severity visual defect(s)
+in "${cfg.name}". For each, OPEN the shot with Read and argue as hard as you can that it is
+ACTUALLY FINE (by-design dark art, intended bloom, a one-frame FX, a correct palette role).
+Only concede "real" if the pixels leave no innocent explanation.
+
+${groundTruth}
+
+CLAIMS:
+${highIssues.map((i, n) => `${n}. shot=${resolve(SHOTS_DIR, i.shot)} — "${i.issue}" (evidence: ${i.evidence})`).join("\n")}
+
+Respond with ONLY JSON: {"verdicts":[{"n":<index>,"real":true|false,"why":"<one clause>"}]}`;
+  const sk = runClaude(skepticPrompt, { allowedTools: ["Read"], timeoutMs: 300000 });
+  const skj = extractJSON(sk.result);
+  if (skj?.verdicts) {
+    const overturned = new Set(skj.verdicts.filter((v) => v.real === false).map((v) => v.n));
+    parsed.rankedIssues = (parsed.rankedIssues || []).map((iss) => {
+      const idx = highIssues.indexOf(iss);
+      if (idx >= 0 && overturned.has(idx)) {
+        const v = skj.verdicts.find((x) => x.n === idx);
+        log(`  skeptic OVERTURNED high issue "${iss.issue}" — ${v?.why ?? "argued fine"}`);
+        return { ...iss, severity: "low", skepticOverturned: true, skepticWhy: v?.why };
+      }
+      return iss;
+    });
+    res.cost = (res.cost ?? 0) + (sk.cost ?? 0);
+  }
 }
 
 const failShots = Object.entries(parsed.shots || {}).filter(([, v]) =>
