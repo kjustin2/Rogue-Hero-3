@@ -247,6 +247,18 @@ await phase("comprehension", FULL, async () => {
     : { status: "PASS", detail: `all beats articulable + legible to a blind reader ($${c.costUSD})` };
 });
 
+// 8d) STYLE-DRIFT (full mode — loads a CLIP model) — reference-based aesthetic
+// drift vs the look bible; WARN-only (a look change may be intentional).
+await phase("style-drift", FULL, async () => {
+  const r = await node(["scripts/qa/style-drift.mjs"], { minutes: 12 });
+  const c = readJSON(join(OUT, "style-drift.json"), null);
+  if (!c) return { status: "WARN", detail: `style-drift ${r.status}, no report (bible baked? qa:style-bake)`, evidence: r.tail };
+  const drifted = (c.results || []).filter((x) => x.status === "DRIFTED");
+  return drifted.length
+    ? { status: "WARN", detail: `${drifted.length} scene(s) drifted from the look bible beyond dead-band: ${drifted.map((x) => `${x.scene}(${x.drift})`).join(", ")}`, evidence: "artifacts/qa/style-drift.json" }
+    : { status: "PASS", detail: `no scene drifted beyond dead-band vs the look bible` };
+});
+
 // 9) JUDGE — AI visual verdicts (opt-in; costs a claude call)
 await phase("judge", JUDGE, async () => {
   const r = await node(["scripts/qa/judge.mjs"], { minutes: 18 });
@@ -262,7 +274,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "visual", "glitch", "perf", "runtime", "comprehension", "selftest", "judge"];
+const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

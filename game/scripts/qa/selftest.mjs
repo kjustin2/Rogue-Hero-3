@@ -22,6 +22,7 @@ const SUITES = [
   ["render-diag", ["scripts/qa/render-diag.mjs", "--selftest"]],
   ["comprehend", ["scripts/qa/comprehend.mjs", "--selftest"]], // costs a couple cheap claude calls
   ["ui-audit", ["scripts/qa/ui-audit.mjs", "--selftest"]],
+  ["style-drift", ["scripts/qa/style-drift.mjs", "--selftest"]],
 ];
 
 const results = [];

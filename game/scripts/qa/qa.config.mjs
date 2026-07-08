@@ -62,6 +62,14 @@ export default {
     warnBelow: 0.5,
   },
 
+  // CLIP look-bible drift (qa/style-drift.mjs): reference-based aesthetic drift vs
+  // shots/anchors/ (re-bake with qa:style-bake). WARN-only, delta vs the saved
+  // per-scene baseline; absolute values are meaningless (research), deltas trend.
+  styleDrift: {
+    scenes: ["menu", "room:combat", "room:elite", "boss:warden", "boss:colossus", "victory"],
+    deadband: 0.04, settleMs: 2000,
+  },
+
   // Event-coverage matrix: emits counted by the typed bus (debug.coverage()).
   // Anything required that never fired during chaos+suite = untested content.
   coverage: {
