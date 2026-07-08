@@ -233,7 +233,7 @@ export class SpireCaster extends Enemy {
         if (p === 2) {
           this.spawnEchoes();
           for (let i = 0; i < 2; i++) {
-            const a = Math.random() * Math.PI * 2;
+            const a = this.ctx.rng.next() * Math.PI * 2;
             this.ctx.enemies.spawn("wisp", Math.sin(a) * 8, Math.cos(a) * 8, 1.2);
           }
         }
@@ -249,7 +249,7 @@ export class SpireCaster extends Enemy {
         speed: [4, 14], up: 0.8, size: [0.4, 1.1], life: [0.4, 0.95], gravity: -3, drag: 2.5,
       });
       this.ctx.cam.addTrauma(0.65);
-      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.08);
+      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.08); // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
       this.ctx.cam.pulseFov(0.8);
       this.ctx.stage.punch(0.42);
       this.ctx.sfx.bossRoar();
@@ -602,8 +602,8 @@ export class SpireCaster extends Enemy {
     this.blinkCd = this.phase >= 3 ? 2.0 : 3.0;
     const fromX = this.pos.x;
     const fromZ = this.pos.z;
-    const a = Math.random() * Math.PI * 2;
-    const r = 10 + Math.random() * 3;
+    const a = this.ctx.rng.next() * Math.PI * 2;
+    const r = 10 + this.ctx.rng.next() * 3;
     this.pos.x = Math.max(-1, Math.min(1, Math.sin(a))) * Math.min(r, ARENA_RADIUS - 3);
     this.pos.z = Math.max(-1, Math.min(1, Math.cos(a))) * Math.min(r, ARENA_RADIUS - 3);
     for (const [bx, bz] of [[fromX, fromZ], [this.pos.x, this.pos.z]] as const) {

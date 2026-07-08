@@ -611,7 +611,7 @@ export class PitWarden extends Enemy {
     this.state = "fissureTell";
     this.timer = 0.82;
     const arms = this.phase >= 3 ? 6 : 4;
-    const off = Math.random() * Math.PI;
+    const off = this.ctx.rng.next() * Math.PI;
     this.fissures = [];
     for (let i = 0; i < arms; i++) {
       const angle = off + (i / arms) * Math.PI * 2;
@@ -672,7 +672,7 @@ export class PitWarden extends Enemy {
     // Phase 2+: the slam wakes adds
     if (this.phase >= 2 && this.slamCount % 2 === 1 && this.ctx.enemies.living().length < 5) {
       for (let i = 0; i < 2; i++) {
-        const a = Math.random() * Math.PI * 2;
+        const a = this.ctx.rng.next() * Math.PI * 2;
         this.ctx.enemies.spawn("swarmer", this.pos.x + Math.sin(a) * 5, this.pos.z + Math.cos(a) * 5, 1.0);
       }
     }
@@ -699,7 +699,7 @@ export class PitWarden extends Enemy {
       const pt = this.patches[i];
       pt.life -= dt;
       pt.mat.opacity = Math.min(0.45, pt.life * 0.5);
-      if (Math.random() < dt * 6) {
+      if (Math.random() < dt * 6) { // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
         this.ctx.fx.burst({
           x: pt.x, y: 0.1, z: pt.z, count: 1, color: 0xff7733,
           speed: [0.3, 1], up: 1.5, vertical: 0.2, size: [0.3, 0.5], life: [0.4, 0.8], gravity: 0.5, drag: 1, jitter: 0.8,

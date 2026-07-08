@@ -18,7 +18,7 @@ export class Wisp extends Enemy {
   private windup = -1;
   private lockedAngle = 0;
   private orbMat: THREE.MeshStandardMaterial;
-  private strafeDir = Math.random() < 0.5 ? 1 : -1;
+  private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -69,7 +69,7 @@ export class Wisp extends Enemy {
       else {
         const ang = Math.atan2(this.pos.x - p.pos.x, this.pos.z - p.pos.z) + this.strafeDir * 0.4 * dt;
         this.seek(p.pos.x + Math.sin(ang) * d, p.pos.z + Math.cos(ang) * d, dt, 0.5);
-        if (Math.random() < dt * 0.25) this.strafeDir *= -1;
+        if (this.ctx.rng.next() < dt * 0.25) this.strafeDir *= -1;
       }
       this.fireTimer -= dt;
       if (this.fireTimer <= 0 && d < 15) {
@@ -241,7 +241,7 @@ export class Tether extends Enemy {
   private lockedAngles: number[] = [];
   private crystal: THREE.Mesh;
   private crystalMat: THREE.MeshStandardMaterial;
-  private strafeDir = Math.random() < 0.5 ? 1 : -1;
+  private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -293,7 +293,7 @@ export class Tether extends Enemy {
       else {
         const ang = Math.atan2(this.pos.x - p.pos.x, this.pos.z - p.pos.z) + this.strafeDir * 0.45 * dt;
         this.seek(p.pos.x + Math.sin(ang) * d, p.pos.z + Math.cos(ang) * d, dt, 0.5);
-        if (Math.random() < dt * 0.2) this.strafeDir *= -1;
+        if (this.ctx.rng.next() < dt * 0.2) this.strafeDir *= -1;
       }
       this.volleyTimer -= dt;
       if (this.volleyTimer <= 0 && d < 15) {
@@ -593,7 +593,7 @@ export class Shade extends Enemy {
   private strikeZ = 0;
   private bodyMats: THREE.MeshStandardMaterial[] = [];
   private opacity = 0.75;
-  private strafeDir = Math.random() < 0.5 ? 1 : -1;
+  private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -662,7 +662,7 @@ export class Shade extends Enemy {
         this.facePlayer(dt);
         const ang = Math.atan2(this.pos.x - p.pos.x, this.pos.z - p.pos.z) + this.strafeDir * 0.6 * dt;
         this.seek(p.pos.x + Math.sin(ang) * Math.max(6, d), p.pos.z + Math.cos(ang) * Math.max(6, d), dt, 0.7);
-        if (Math.random() < dt * 0.2) this.strafeDir *= -1;
+        if (this.ctx.rng.next() < dt * 0.2) this.strafeDir *= -1;
         if (this.timer <= 0 && d < 14) {
           this.state = "fade";
           this.timer = 0.5;
@@ -706,7 +706,7 @@ export class Shade extends Enemy {
       case "recover":
         if (this.timer <= 0) {
           this.state = "lurk";
-          this.timer = 2.6 + Math.random();
+          this.timer = 2.6 + this.ctx.rng.next();
         }
         break;
     }
@@ -1033,7 +1033,7 @@ export class Harrier extends Enemy {
   private lockedAngle = 0;
   private orb: THREE.Mesh;
   private orbMat: THREE.MeshStandardMaterial;
-  private strafeDir = Math.random() < 0.5 ? 1 : -1;
+  private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -1095,7 +1095,7 @@ export class Harrier extends Enemy {
       else {
         const ang = Math.atan2(this.pos.x - p.pos.x, this.pos.z - p.pos.z) + this.strafeDir * 0.9 * dt;
         this.seek(p.pos.x + Math.sin(ang) * d, p.pos.z + Math.cos(ang) * d, dt, 0.85);
-        if (Math.random() < dt * 0.3) this.strafeDir *= -1;
+        if (this.ctx.rng.next() < dt * 0.3) this.strafeDir *= -1;
       }
       this.fireTimer -= dt;
       if (this.fireTimer <= 0 && d < 14) {
@@ -1201,8 +1201,8 @@ export class Splitter extends Enemy {
  */
 export class Voidling extends Enemy {
   readonly kind: EnemyKind = "voidling";
-  private phase = Math.random() * Math.PI * 2;
-  private wander = Math.random() * Math.PI * 2;
+  private phase = this.ctx.rng.next() * Math.PI * 2;
+  private wander = this.ctx.rng.next() * Math.PI * 2;
   private coreMat: THREE.MeshStandardMaterial;
 
   constructor(ctx: Ctx, x: number, z: number) {
@@ -1256,7 +1256,7 @@ export class Voidling extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     // Erratic drift: a slow wandering bias perpendicular to the approach vector.
-    this.wander += (Math.random() - 0.5) * dt * 6;
+    this.wander += (this.ctx.rng.next() - 0.5) * dt * 6;
     const dx = p.pos.x - this.pos.x;
     const dz = p.pos.z - this.pos.z;
     const d = Math.hypot(dx, dz) || 1;
@@ -1280,7 +1280,7 @@ export class Warper extends Enemy {
   readonly kind: EnemyKind = "warper";
   private state: "drift" | "blinkTell" | "aim" = "drift";
   private timer = 1.4;
-  private blinkCd = 2.4 + Math.random();
+  private blinkCd = 2.4 + this.ctx.rng.next();
   private blinkTo = new THREE.Vector2();
   private lockedAngle = 0;
   private orb: THREE.Mesh;
@@ -1393,7 +1393,7 @@ export class Warper extends Enemy {
         this.pos.y = Math.sin(this.t * 2.2) * 0.08;
         // Blink away when crowded or on its own cadence; otherwise line up a shot.
         if ((d < 4.5 || this.blinkCd <= 0) && this.timer <= 0) {
-          this.blinkCd = 3.0 + Math.random();
+          this.blinkCd = 3.0 + this.ctx.rng.next();
           this.pickBlink();
         } else if (this.timer <= 0 && d < 16) {
           this.state = "aim";

@@ -102,6 +102,17 @@ await phase("coverage", true, async () => {
     : { status: "PASS", detail: `all ${cfg.coverage.required.length} required events fired` };
 });
 
+// 4a) DETERMINISM — the sim's golden-trace MR: same (seed, fixed tape) ⇒ same
+// simHash() every frame. The backbone the record-replay/autonomous tier stands on.
+await phase("determinism", true, async () => {
+  const r = await node(["scripts/qa/determinism.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "determinism.json"), null);
+  if (!c) return { status: "FAIL", detail: `determinism ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} finding(s) — a nondeterministic sim leak remains`, evidence: "artifacts/qa/determinism.json" }
+    : { status: "PASS", detail: `sim bit-deterministic under (seed, fixed tape); cosmetic RNG stays out of the hash` };
+});
+
 // 4b) COLLISION-TRUTH — render geometry and the collider set must agree about
 // where solid matter is (walk-through props + invisible walls, both directions).
 await phase("collision-truth", true, async () => {
@@ -286,7 +297,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "stability", "coverage", "determinism", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

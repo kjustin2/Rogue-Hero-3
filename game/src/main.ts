@@ -296,6 +296,12 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
 
   if (resume) {
     currentSeed = resume.seed;
+    // Re-seed the sim RNG on resume — the fresh-run path does this (below) but the
+    // resume path did NOT, so a resumed run's crit/drop/spawn stream continued from
+    // whatever menu-time entropy it held instead of the run's seed. Without this a
+    // resume is non-reproducible (each resume rolls a different fight). Found by the
+    // save-determinism oracle; the golden-trace MR gates it.
+    ctx.rng.reseed(resume.seed);
     currentDepth = resume.depth;
     ctx.stats.depth = resume.depth;
     ctx.difficulty = difficultyFor(resume.depth);
@@ -2436,6 +2442,42 @@ void boot();
         samples: motionBuf.map((s) => s.slice()),
       };
     },
+    /** FNV-1a digest over the live SIM state (float-quantized so FP noise can't
+     *  flip it; entity order-stable). The determinism backbone: same (seed, input
+     *  tape, fixed dt) MUST yield the same simHash() sequence every frame. Excludes
+     *  particles/telegraphs/decals (cosmetic, wall-clock/Math.random by design). The
+     *  rng cursor is part of the state — a stream that advanced differently is a
+     *  divergence even if positions momentarily match. */
+    simHash(): string {
+      let h = 0x811c9dc5 >>> 0;
+      const mix = (n: number): void => {
+        h ^= (Math.round((Number.isFinite(n) ? n : 0) * 1000) | 0) >>> 0;
+        h = Math.imul(h, 0x01000193) >>> 0;
+      };
+      const mixS = (s: string): void => {
+        for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+      };
+      const p = ctx.player;
+      // facing is DERIVED from camera+mouse (an aim projection), not authoritative
+      // sim state — it's excluded so the hash reflects the sim's own determinism,
+      // not camera-damping carry-over. Positions/hp/tempo/enemies/rng are the state.
+      mix(p.pos.x); mix(p.pos.z); mix(p.hp); mix(ctx.tempo.value);
+      // Lesser enemies only — the boss is hashed separately (below). Its `t` AI-phase
+      // seed is set at spawn from ctx.rng, so a boss staged before a mid-run reseed
+      // carries a stale t that isn't part of the state under test; its position/hp/
+      // phase (which its t drives) ARE hashed, so a real boss divergence still shows.
+      const foes = ctx.enemies.living().filter((e) => e.kind !== "boss")
+        .sort((a, b) => a.pos.x - b.pos.x || a.pos.z - b.pos.z);
+      for (const e of foes) { mixS(e.kind); mix(e.pos.x); mix(e.pos.z); mix(e.hp); mix((e as unknown as { t: number }).t); }
+      const b = livingBoss();
+      if (b) { mix((b as { phase?: number }).phase ?? 1); mix(b.pos.x); mix(b.pos.z); mix(b.hp); }
+      mix(ctx.rng.getState());
+      return (h >>> 0).toString(16);
+    },
+    /** Read/restore the sim RNG cursor (the determinism harness + a future
+     *  serialize/restore snapshot it). */
+    rngState(): number { return ctx.rng.getState(); },
+    setRngState(s: number): void { ctx.rng.setState(s); },
     /** The recognized scenario name patterns. */
     list(): string[] {
       return [

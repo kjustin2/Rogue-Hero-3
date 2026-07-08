@@ -11,6 +11,15 @@ export class Rng {
     this.s = seed >>> 0;
   }
 
+  /** Read/restore the exact stream cursor — the determinism harness snapshots this
+   *  so a golden trace and (eventually) a state restore reproduce bit-identically. */
+  getState(): number {
+    return this.s >>> 0;
+  }
+  setState(state: number): void {
+    this.s = state >>> 0;
+  }
+
   next(): number {
     this.s = (this.s + 0x6d2b79f5) >>> 0;
     let t = this.s;

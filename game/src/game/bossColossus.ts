@@ -112,10 +112,10 @@ export class Colossus extends Enemy {
     this.addMesh(new THREE.BoxGeometry(0.22, 0.16, 0.14), eyeMat, 0.45, 4.1, 1.32);
     // Magma veins
     for (let i = 0; i < 5; i++) {
-      const v = this.addMesh(new THREE.BoxGeometry(0.16, 1.8 + Math.random(), 0.16), this.veinMat, 0, 1.8, 0);
+      const v = this.addMesh(new THREE.BoxGeometry(0.16, 1.8 + Math.random(), 0.16), this.veinMat, 0, 1.8, 0); // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
       const a = (i / 5) * Math.PI * 2;
-      v.position.set(Math.sin(a) * 1.75, 1.4 + Math.random() * 0.8, Math.cos(a) * 1.75);
-      v.rotation.z = (Math.random() - 0.5) * 0.5;
+      v.position.set(Math.sin(a) * 1.75, 1.4 + Math.random() * 0.8, Math.cos(a) * 1.75); // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
+      v.rotation.z = (Math.random() - 0.5) * 0.5; // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
     }
     // Broken outer armor bands make the mountain read as layered slag plates.
     for (let row = 0; row < 3; row++) {
@@ -244,7 +244,7 @@ export class Colossus extends Enemy {
         this.applyPhaseLook(p);
         if (p === 2) {
           for (let i = 0; i < 2; i++) {
-            const a = Math.random() * Math.PI * 2;
+            const a = this.ctx.rng.next() * Math.PI * 2;
             this.ctx.enemies.spawn("leaper", this.pos.x + Math.sin(a) * 9, this.pos.z + Math.cos(a) * 9, 1.2);
           }
         }
@@ -260,7 +260,7 @@ export class Colossus extends Enemy {
         speed: [4, 16], up: 0.9, size: [0.5, 1.3], life: [0.4, 0.95], gravity: -5, drag: 2.5,
       });
       this.ctx.cam.addTrauma(0.7);
-      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.09);
+      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.09); // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
       this.ctx.cam.pulseFov(0.9);
       this.ctx.stage.punch(0.48);
       this.ctx.sfx.bossRoar();
@@ -337,7 +337,7 @@ export class Colossus extends Enemy {
   private beginNova(): void {
     this.state = "novaTell";
     this.timer = 0.6;
-    this.novaSpin = this.phase >= 2 ? (Math.random() < 0.5 ? -1 : 1) * (0.2 + this.phase * 0.1) : 0;
+    this.novaSpin = this.phase >= 2 ? (this.ctx.rng.next() < 0.5 ? -1 : 1) * (0.2 + this.phase * 0.1) : 0;
     this.fistAnim = 1;
     this.ctx.tele.circle(this.pos.x, this.pos.z, 4.4, 0.6, 0xff7733);
     this.ctx.sfx.beamCharge();
@@ -559,8 +559,8 @@ export class Colossus extends Enemy {
       w.radius += dt * 5;
       w.mesh.scale.setScalar(w.radius);
       w.mat.opacity = Math.max(0, 0.65 * (1 - w.radius / 22));
-      if (Math.random() < dt * 18) {
-        const a = Math.random() * Math.PI * 2;
+      if (Math.random() < dt * 18) { // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
+        const a = Math.random() * Math.PI * 2; // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
         this.ctx.fx.burst({
           x: this.pos.x + Math.sin(a) * w.radius, y: 0.3, z: this.pos.z + Math.cos(a) * w.radius,
           count: 2, color: 0xff6622, speed: [0.5, 2], up: 1.6, vertical: 0.3, size: [0.3, 0.55], life: [0.3, 0.6], gravity: 0.5, drag: 1.5,

@@ -265,7 +265,7 @@ export class RiftTyrant extends Enemy {
         speed: [4, 15], up: 0.8, size: [0.4, 1.1], life: [0.4, 0.95], gravity: -4, drag: 2.5,
       });
       this.ctx.cam.addTrauma(0.68);
-      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.09);
+      this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.09); // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
       this.ctx.cam.pulseFov(0.85);
       this.ctx.stage.punch(0.45);
       this.ctx.sfx.bossRoar();
@@ -316,8 +316,8 @@ export class RiftTyrant extends Enemy {
   private summonAdds(n: number): void {
     if (this.ctx.enemies.living().length >= 6) return;
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 7 + Math.random() * 3;
+      const a = this.ctx.rng.next() * Math.PI * 2;
+      const r = 7 + this.ctx.rng.next() * 3;
       const x = Math.max(-1, Math.min(1, Math.sin(a))) * Math.min(r, ARENA_RADIUS - 3);
       const z = Math.max(-1, Math.min(1, Math.cos(a))) * Math.min(r, ARENA_RADIUS - 3);
       // Light, modest adds — husks in P2, faster swarmers once critical
@@ -339,7 +339,7 @@ export class RiftTyrant extends Enemy {
     this.state = "novaTell";
     this.timer = 0.6;
     const count = this.phase >= 3 ? 18 : this.phase === 2 ? 13 : 10;
-    const spin = this.phase >= 3 ? (Math.random() < 0.5 ? -1 : 1) * 0.4 : 0;
+    const spin = this.phase >= 3 ? (this.ctx.rng.next() < 0.5 ? -1 : 1) * 0.4 : 0;
     // The whole ring is the threat — mark it with a circle the player must escape.
     this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.6, RIFT_CYAN);
     this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.6 });
@@ -442,7 +442,7 @@ export class RiftTyrant extends Enemy {
     // P3: pair the slam with a spinning nova so the safe space squeezes
     if (this.phase >= 3) {
       const count = 14;
-      const spin = (Math.random() < 0.5 ? -1 : 1) * 0.5;
+      const spin = (this.ctx.rng.next() < 0.5 ? -1 : 1) * 0.5;
       this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.68, RIFT_CYAN);
       this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.68 });
     }
@@ -477,7 +477,7 @@ export class RiftTyrant extends Enemy {
     const tell = 0.52;
     this.timer = tell;
     const n = this.phase >= 3 ? 6 : 5;
-    const base = Math.random() * Math.PI * 2;
+    const base = this.ctx.rng.next() * Math.PI * 2;
     for (let i = 0; i < n; i++) {
       const angle = base + (i / n) * Math.PI * 2;
       this.ctx.tele.line(this.pos.x, this.pos.z, angle, LANCE_LEN, LANCE_WIDTH * 0.78, tell, RIFT_CYAN);
@@ -495,8 +495,8 @@ export class RiftTyrant extends Enemy {
     const R = 3.3;
     let maxT = 0;
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const dist = i === 0 ? 0 : 3 + Math.random() * 3.5;
+      const a = this.ctx.rng.next() * Math.PI * 2;
+      const dist = i === 0 ? 0 : 3 + this.ctx.rng.next() * 3.5;
       let x = p.pos.x + Math.sin(a) * dist;
       let z = p.pos.z + Math.cos(a) * dist;
       const rr = Math.hypot(x, z);

@@ -100,7 +100,6 @@ export abstract class Enemy {
   /** Brief post-break exposure that interrupts any in-progress attack (not freeze — no blue tint). */
   protected stagger = 0;
   private spawnGrace = 0;
-  private spawnGraceUntil = 0;
   /** Read by combat.dealDamage for honest floaters/stats: how much of the last hit reached the body, and whether a shield ate it. */
   lastBodyDamage = 0;
   lastHitShielded = false;
@@ -146,7 +145,8 @@ export abstract class Enemy {
   private gaitAmt = 0;
   private gaitPrevX = NaN;
   private gaitPrevZ = NaN;
-  protected t = Math.random() * 10;
+  protected t = 0; // seeded AI sine-timer phase — set in the ctor (a base-class field
+  // initializer runs before `ctx` is assigned, so ctx.rng isn't available here yet)
   /** While >0 the enemy deflects ALL damage — a telegraphed boss ward window. */
   protected invulnTime = 0;
   private deflectCd = 0;
@@ -164,6 +164,7 @@ export abstract class Enemy {
     this.pos.set(x, 0, z);
     this.root.position.copy(this.pos);
     this.root.userData.solidity = "mover"; // collision-truth audit: movers are exempt
+    this.t = ctx.rng.next() * 10; // seeded AI phase (see field decl)
     ctx.stage.scene.add(this.root);
 
     const barMatBg = new THREE.SpriteMaterial({ color: 0x000000, opacity: 0.55, transparent: true, depthWrite: false });
@@ -706,7 +707,6 @@ export abstract class Enemy {
   /** Hold an enemy's brain still after materialization without showing freeze/stagger FX. */
   setSpawnGrace(seconds: number): void {
     this.spawnGrace = Math.max(this.spawnGrace, seconds);
-    this.spawnGraceUntil = Math.max(this.spawnGraceUntil, performance.now() + seconds * 1000);
   }
 
   /** Feedback when a hit lands on a warded boss: a clink spark + throttled "WARDED" tag. */
@@ -906,11 +906,11 @@ export abstract class Enemy {
         f.mat.emissiveIntensity = 0.9 + Math.sin(this.t * 6) * 0.2;
       }
     } else {
-      if (this.spawnGrace > 0) {
-        const byDt = Math.max(0, this.spawnGrace - dt);
-        const byClock = Math.max(0, (this.spawnGraceUntil - performance.now()) / 1000);
-        this.spawnGrace = Math.min(byDt, byClock);
-      }
+      // Purely dt-accumulated — a wall-clock (performance.now) backstop made the
+      // AI-start frame nondeterministic under the frame-stepper (the golden-trace
+      // caught it as a frame-0 divergence). The frame loop clamps dt (≤0.05), so
+      // dt alone can't strand an enemy in grace.
+      if (this.spawnGrace > 0) this.spawnGrace = Math.max(0, this.spawnGrace - dt);
       // Spawn grace/stagger interrupt the brain (no blue tint) but the body still flashes/settles.
       if (this.stagger <= 0 && this.spawnGrace <= 0) this.tick(dt);
       // Hit flash: spike emissive to white, settle back
@@ -1036,7 +1036,7 @@ export abstract class Enemy {
         const ang = this.t * 2.3 + this.id;
         this.ctx.fx.burst({
           x: this.pos.x + Math.sin(ang) * this.radius * 1.4,
-          y: 0.2 + Math.random() * 0.5,
+          y: 0.2 + Math.random() * 0.5, // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
           z: this.pos.z + Math.cos(ang * 1.3) * this.radius * 1.4,
           count: 1, color: this.wardColor,
           speed: [0.2, 0.9], up: 1.4, vertical: 0.5, size: [0.18, 0.42],
@@ -1242,7 +1242,7 @@ export class Spitter extends Enemy {
   private lockedAngle = 0; // aim locked + telegraphed at windup start, fired along it
   private orb: THREE.Mesh;
   private orbMat: THREE.MeshStandardMaterial;
-  private strafeDir = Math.random() < 0.5 ? 1 : -1;
+  private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -1295,7 +1295,7 @@ export class Spitter extends Enemy {
         const tx = p.pos.x + Math.sin(ang) * d;
         const tz = p.pos.z + Math.cos(ang) * d;
         this.seek(tx, tz, dt, 0.55);
-        if (Math.random() < dt * 0.2) this.strafeDir *= -1;
+        if (this.ctx.rng.next() < dt * 0.2) this.strafeDir *= -1;
       }
       this.fireTimer -= dt;
       if (this.fireTimer <= 0 && d < 16) {
@@ -1327,7 +1327,7 @@ export class Spitter extends Enemy {
 /** Tiny, fast, jittery. Dangerous in packs, dies to anything. */
 export class Swarmer extends Enemy {
   readonly kind: EnemyKind = "swarmer";
-  private phase = Math.random() * TAU;
+  private phase = this.ctx.rng.next() * TAU;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
@@ -1700,7 +1700,7 @@ export class EnemyManager {
       if (along < 0.5 || along > 9) continue; // ahead of the player, within lunge reach
       const perp = dx * fz - dz * fx; // signed distance from the lane centerline
       if (Math.abs(perp) > 2.2) continue;
-      if (Math.random() < 0.6) {
+      if (this.ctx.rng.next() < 0.6) {
         const side = perp >= 0 ? 1 : -1;
         e.shove(fz * side, -fx * side, 9); // dive out of the lane
       }

@@ -324,7 +324,7 @@ export class Unmaker extends Enemy {
         });
         this.detonate(3.0);
         this.ctx.cam.addTrauma(0.75);
-        this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.1);
+        this.ctx.cam.kickRoll((Math.random() < 0.5 ? -1 : 1) * 0.1); // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
         this.ctx.cam.pulseFov(1.0);
         this.ctx.stage.punch(0.5);
         this.ctx.sfx.bossRoar();
@@ -412,8 +412,8 @@ export class Unmaker extends Enemy {
     if (this.phase >= 4) return;
     if (this.ctx.enemies.living().length >= 7) return;
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.min(8 + Math.random() * 3, ARENA_RADIUS - 3);
+      const a = this.ctx.rng.next() * Math.PI * 2;
+      const r = Math.min(8 + this.ctx.rng.next() * 3, ARENA_RADIUS - 3);
       const x = Math.sin(a) * r;
       const z = Math.cos(a) * r;
       // Voidlings swarm earlier; warpers harry in the final phase.
@@ -491,7 +491,7 @@ export class Unmaker extends Enemy {
     const tell = BEAM_TELL + 0.12;
     this.timer = tell;
     const n = this.phase >= 3 ? 7 : 6;
-    const base = Math.random() * Math.PI * 2;
+    const base = this.ctx.rng.next() * Math.PI * 2;
     for (let i = 0; i < n; i++) {
       const angle = base + (i / n) * Math.PI * 2;
       this.ctx.tele.line(this.pos.x, this.pos.z, angle, BEAM_LEN, BEAM_WIDTH * 0.8, tell, VOID_WHITE);
@@ -521,7 +521,7 @@ export class Unmaker extends Enemy {
     this.state = "novaTell";
     this.timer = 0.62;
     const count = this.phase >= 3 ? 23 : this.phase === 2 ? 17 : 12;
-    const spin = this.phase >= 2 ? (Math.random() < 0.5 ? -1 : 1) * (0.25 + this.phase * 0.12) : 0;
+    const spin = this.phase >= 2 ? (this.ctx.rng.next() < 0.5 ? -1 : 1) * (0.25 + this.phase * 0.12) : 0;
     this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.62, VOID_VIOLET);
     this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.62 });
     this.ctx.sfx.beamCharge();
@@ -554,7 +554,7 @@ export class Unmaker extends Enemy {
     // P3 pairs the implosion with a spinning nova so the safe ground squeezes.
     if (this.phase >= 3) {
       this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.8, VOID_VIOLET);
-      this.novas.push({ x: this.pos.x, z: this.pos.z, count: 18, spin: (Math.random() < 0.5 ? -1 : 1) * 0.5, timer: 0.8 });
+      this.novas.push({ x: this.pos.x, z: this.pos.z, count: 18, spin: (this.ctx.rng.next() < 0.5 ? -1 : 1) * 0.5, timer: 0.8 });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -706,7 +706,7 @@ export class Unmaker extends Enemy {
     this.state = "sweepTell";
     this.timer = 0.55;
     const p = this.ctx.player;
-    this.sweepDir = Math.random() < 0.5 ? 1 : -1;
+    this.sweepDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
     // Start just behind the player on the chosen side so it rotates INTO them.
     const toP = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
     this.sweepAngle = toP - this.sweepDir * 0.6;
@@ -755,8 +755,8 @@ export class Unmaker extends Enemy {
       }
     }
     // Sparks stream off the swinging tip.
-    if (Math.random() < dt * 34) {
-      const r = 6 + Math.random() * 14;
+    if (Math.random() < dt * 34) { // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
+      const r = 6 + Math.random() * 14; // cosmetic: fx/jitter — NOT sim state (must stay off ctx.rng)
       this.ctx.fx.burst({
         x: this.pos.x + sx * r, y: 1.4, z: this.pos.z + cz * r, count: 1,
         color: [VOID_WHITE, VOID_VIOLET], speed: [1, 4], up: 0.6, size: [0.25, 0.6], life: [0.2, 0.5], gravity: -1, drag: 3,
