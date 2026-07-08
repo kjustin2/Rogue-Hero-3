@@ -23,6 +23,8 @@
     "qa:save-selftest": "node scripts/qa/save-determinism.mjs --selftest",
     "qa:state-graph": "node scripts/qa/state-graph.mjs",
     "qa:state-graph-selftest": "node scripts/qa/state-graph.mjs --selftest",
+    "qa:audio": "node scripts/qa/audio.mjs",
+    "qa:audio-selftest": "node scripts/qa/audio.mjs --selftest",
     "qa:balance": "node scripts/qa/balance.mjs",
     "qa:balance-selftest": "node scripts/qa/balance.mjs --selftest",
     "qa:monitors": "node scripts/qa/monitors.mjs",

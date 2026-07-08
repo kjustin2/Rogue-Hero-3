@@ -22,6 +22,7 @@ const SUITES = [
   ["save-determinism", ["scripts/qa/save-determinism.mjs", "--selftest"]],
   ["state-graph", ["scripts/qa/state-graph.mjs", "--selftest"]],
   ["balance", ["scripts/qa/balance.mjs", "--selftest"]],
+  ["audio", ["scripts/qa/audio.mjs", "--selftest"]],
   ["collision-truth", ["scripts/qa/collision-truth.mjs", "--selftest"]],
   ["reachability", ["scripts/qa/reachability.mjs", "--selftest"]],
   ["temporal", ["scripts/qa/temporal.mjs", "--selftest"]],

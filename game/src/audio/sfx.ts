@@ -33,6 +33,10 @@ export class Sfx {
   private ambientNodes: AudioNode[] = [];
   private ambientGain: GainNode | null = null;
   volume = 0.7;
+  /** Test seam: total sound primitives emitted. Incremented in tone()/noise()
+   *  BEFORE the AudioContext guard, so it counts intent independent of audio
+   *  hardware — the audio QA oracle asserts each gameplay event grows it. */
+  soundCount = 0;
   private noiseBuf: AudioBuffer | null = null;
   private lastLightHitAt = -Infinity;
   private lastHeavyHitAt = -Infinity;
@@ -117,6 +121,7 @@ export class Sfx {
 
   // ---------------------------------------------------------------- helpers
   private tone(o: ToneOpts): void {
+    this.soundCount++;
     if (!this.ac || !this.master) return;
     const t0 = this.ac.currentTime + (o.delay ?? 0);
     const osc = this.ac.createOscillator();
@@ -135,6 +140,7 @@ export class Sfx {
   }
 
   private noise(o: NoiseOpts): void {
+    this.soundCount++;
     if (!this.ac || !this.master || !this.noiseBuf) return;
     const t0 = this.ac.currentTime + (o.delay ?? 0);
     const src = this.ac.createBufferSource();

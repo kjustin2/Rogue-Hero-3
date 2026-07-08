@@ -182,6 +182,20 @@ await phase("balance", true, async () => {
     : { status: "PASS", detail: `difficulty ladder monotonic, bounded, heals preserved` };
 });
 
+// 3h) AUDIO — every gameplay event must be audible (soundCount grows) and the
+// music bed must track the game state (menu/combat/boss). Hardware-free.
+await phase("audio", true, async () => {
+  const r = await node(["scripts/qa/audio.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "audio.json"), null);
+  if (!c) return { status: "FAIL", detail: `audio ${r.status}, no report`, evidence: r.tail };
+  if (c.failures) {
+    const silent = (c.report.sfx ?? []).filter((s) => s.delta <= 0).map((s) => s.name);
+    const badMusic = (c.report.music ?? []).filter((m) => m.ok === false).map((m) => `${m.state}→${m.actual}`);
+    return { status: "FAIL", detail: `${c.failures} audio gap(s)${silent.length ? ` — silent: ${silent.join(", ")}` : ""}${badMusic.length ? ` — music: ${badMusic.join(", ")}` : ""}`, evidence: "artifacts/qa/audio.json" };
+  }
+  return { status: "PASS", detail: `all gameplay events audible; music bed tracks state` };
+});
+
 // 4b) COLLISION-TRUTH — render geometry and the collider set must agree about
 // where solid matter is (walk-through props + invisible walls, both directions).
 await phase("collision-truth", true, async () => {
@@ -366,7 +380,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "audio", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

@@ -65,6 +65,10 @@ export class Music {
   private tensionTarget = 0;
   private currentKey = "";
 
+  /** Test seam: the music state currently cued (menu / set{act} / boss{act} /
+   *  tutorial / silence) — the audio QA oracle asserts it tracks the game state. */
+  get playingKey(): string { return this.currentKey; }
+
   constructor() {
     this.a = this.makeChannel();
     this.b = this.makeChannel();
