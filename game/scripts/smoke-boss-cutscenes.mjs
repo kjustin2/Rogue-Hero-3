@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Boss cutscene smoke: captures every boss entrance, verifies title styling,
 // and exercises the skip cleanup path. Needs the dev server on :5174.
 import { chromium } from "playwright-core";

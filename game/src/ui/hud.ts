@@ -63,9 +63,14 @@ export class Hud {
   private lastUpgraded = [false, false, false];
   private lastCds = [0, 0, 0];
   // Write-on-change caches for the per-frame HUD update (skip redundant DOM writes).
-  private lastHpText = "";
   private lastHpFrac = -1;
   private lastShieldFrac = -1;
+  // Track the raw HP/shield inputs so the HUD text + ghost-bar width strings are built ONLY
+  // when they actually change (they change occasionally) instead of every frame just to diff.
+  private lastHpCeil = -1;
+  private lastMaxHp = -1;
+  private lastShCeil = -1;
+  private lastGhostVal = -1;
   private lastTempoRound = -1;
   private lastZoneCss = "";
   private lastCrashReady = false;
@@ -433,7 +438,8 @@ export class Hud {
     // frame; everything else is written only when its value actually changes
     // (skipping a redundant identical write is visually identical, just cheaper).
     const frac = Math.max(0, player.hp / player.maxHp);
-    this.hpGhost.style.width = `${Math.max(frac, this.ghostHp) * 100}%`;
+    const ghostVal = Math.max(frac, this.ghostHp);
+    if (ghostVal !== this.lastGhostVal) { this.lastGhostVal = ghostVal; this.hpGhost.style.width = `${ghostVal * 100}%`; }
     if (this.ghostHp > frac) this.ghostHp = Math.max(frac, this.ghostHp - 0.0045);
     else this.ghostHp = frac;
     if (frac !== this.lastHpFrac) {
@@ -447,10 +453,10 @@ export class Hud {
       this.lastShieldFrac = shieldFrac;
       this.hpShield.style.width = `${shieldFrac * 100}%`;
     }
-    const hpText = `${Math.ceil(player.hp)} / ${player.maxHp}${player.shield > 0 ? `  ·  ${Math.ceil(player.shield)} SHIELD` : ""}`;
-    if (hpText !== this.lastHpText) {
-      this.lastHpText = hpText;
-      this.hpText.textContent = hpText;
+    const hpCeil = Math.ceil(player.hp), shCeil = Math.ceil(player.shield);
+    if (hpCeil !== this.lastHpCeil || player.maxHp !== this.lastMaxHp || shCeil !== this.lastShCeil) {
+      this.lastHpCeil = hpCeil; this.lastMaxHp = player.maxHp; this.lastShCeil = shCeil;
+      this.hpText.textContent = `${hpCeil} / ${player.maxHp}${player.shield > 0 ? `  ·  ${shCeil} SHIELD` : ""}`;
     }
 
     // Tempo dial: 0–100 maps onto a 280° sweep (77.7% of the conic)

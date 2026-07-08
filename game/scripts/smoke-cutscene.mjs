@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Captures the story intro and a boss entrance cutscene.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

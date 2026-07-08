@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Boss ward smoke: the shared invulnerability mechanic (hits deflected while
 // warded, then vulnerable again), the close-range punish shockwave, and the
 // raised per-boss HP. Loaded at depth 0 so HP isn't difficulty-scaled. :5174.

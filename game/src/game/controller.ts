@@ -253,6 +253,7 @@ export class Controller {
       const mat = new THREE.MeshBasicMaterial({ color: 0xff5a6e, transparent: true, opacity: 0.92, depthWrite: false });
       this.reticle = new THREE.Mesh(geo, mat);
       this.reticle.renderOrder = 6;
+      this.reticle.userData.solidity = "fx";
       this.ctx.stage.scene.add(this.reticle);
     }
     const t = this.target;

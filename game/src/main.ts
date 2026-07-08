@@ -12,7 +12,7 @@ import { Particles } from "./render/particles";
 import { SwordTrail } from "./render/trail";
 import { Telegraphs } from "./render/telegraphs";
 import { Floaters } from "./render/floaters";
-import { Arena, THEMES } from "./render/arena";
+import { Arena, ARENA_RADIUS, THEMES } from "./render/arena";
 import { ContactShadows } from "./render/contactShadow";
 import { EffectsPanel } from "./debug/effectsToggle";
 import { setRimEnabled } from "./render/materialFx";
@@ -575,6 +575,7 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
     group.add(ring, disc, beam);
     pads.push({ x: d.x, z: d.z, kind: d.kind, ring, mat, label: d.label, color: d.color, badge: makeBadge(d.color, d.title, d.sub) });
   }
+  group.userData.solidity = "nonsolid"; // boon pads are walked ONTO by design
   ctx.stage.scene.add(group);
 
   // Skip affordance (skips the WHOLE interlude, no boon — same class the old cutscene used).
@@ -1060,6 +1061,7 @@ function spawnEmberAlly(): void {
   if (emberAlly) return;
   const mat = new THREE.MeshBasicMaterial({ color: 0xffd8a0, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), mat);
+  mesh.userData.solidity = "fx";
   ctx.stage.scene.add(mesh);
   emberAlly = { mesh, mat, t: 0, acc: 4 };
   hud.banner("THE EMBER YOU SPARED RISES WITH YOU", "", "banner--clear");
@@ -1237,6 +1239,7 @@ function clearCutsceneTemps(): void {
 
 function trackCutsceneTemp<T extends THREE.Object3D>(obj: T): T {
   cutsceneTemps.push(obj);
+  obj.userData.solidity = "fx";
   ctx.stage.scene.add(obj);
   return obj;
 }
@@ -1806,19 +1809,38 @@ const trailBase = new THREE.Vector3();
 const perf = new PerfMonitor(ctx, () => state);
 /** Latches once the frame loop has thrown so the recovery log fires only on the first hit. */
 let loopErrorLogged = false;
+/** Capped log of every frame-loop error (state + message) — QA reads it via
+ *  __rh3debug.frameErrors() and asserts it stays EMPTY: a loop that survives a
+ *  throwing frame otherwise looks perfectly healthy from the outside. */
+const frameErrorRing: { t: number; state: string; msg: string }[] = [];
 /** Test-only: when true the frame loop freezes all updates (dt=0) but keeps rendering the
  *  full composer, so a shimmer test can isolate per-frame-random post FX. Set via __rh3debug. */
 let frozenForTest = false;
+/** Test-only motion recorder (the animation oracles' data source): while armed, each
+ *  playing frame appends one compact numeric sample — sim time, player/camera world
+ *  positions, facing, per-foot world contact points and the pose layer's lift signals —
+ *  so foot-skate/jitter/smoothness are MEASURED numbers, never filmstrip eyeballs.
+ *  Off (zero work, zero allocation) in normal play; capped so a forgotten arm can't grow. */
+let motionOn = false;
+let motionT = 0;
+const motionBuf: number[][] = [];
+const MOTION_CAP = 1800; // 30s at 60fps
+const motionSampleOut = new Float64Array(8);
 
-ctx.stage.renderer.setAnimationLoop(() => {
-  const now = performance.now();
+/** One frame of the game. Live play calls it from setAnimationLoop with the real
+ *  clock; the QA stepper (__rh3debug.frames) calls it directly with a forced dt —
+ *  same sim, same composer, exact frames instead of wall-waiting a slow headless
+ *  clock. */
+const runFrame = (now: number, forcedDt: number | null = null): void => {
   // Frame-rate limit: on a high-refresh display, skip vsync ticks that arrive
   // sooner than the chosen interval (the 1ms tolerance keeps a 60-cap from
   // collapsing to 30 on a 60Hz panel under jitter). Input/sim/render all run on
-  // the ticks we keep, so latency tracks the cap — not vsync. Never gate boot.
+  // the ticks we keep, so latency tracks the cap — not vsync. Never gate boot,
+  // never gate a forced step.
   const fpsCap = menus.settings.fpsCap;
-  if (fpsCap > 0 && !booting && now - last < 1000 / fpsCap - 1) return;
-  const renderDt = Math.min(0.05, (now - last) / 1000);
+  if (forcedDt == null && fpsCap > 0 && !booting && now - last < 1000 / fpsCap - 1) return;
+  // max(0): after a stepper run, `last` can sit ahead of the real clock.
+  const renderDt = forcedDt ?? Math.min(0.05, Math.max(0, (now - last) / 1000));
   last = now;
   // Test-only world freeze (__rh3debug.freezeForTest): pass dt=0 to every sim/camera/arena
   // update so the scene is pixel-identical frame-to-frame, while the composer still renders
@@ -1908,6 +1930,20 @@ ctx.stage.renderer.setAnimationLoop(() => {
   ctx.music.setTension(ctx.playing && ctx.player.alive && hpFrac < 0.35 ? (0.35 - hpFrac) / 0.35 : 0);
   ctx.music.update(dt);
 
+  // Motion recorder (test-only; armed via __rh3debug.recordMotion)
+  if (motionOn && ctx.playing && motionBuf.length < MOTION_CAP) {
+    motionT += dt;
+    ctx.player.motionSample(motionSampleOut);
+    const cp = ctx.stage.camera.position;
+    motionBuf.push([
+      motionT, ctx.player.pos.x, ctx.player.pos.y, ctx.player.pos.z, ctx.player.facing,
+      cp.x, cp.y, cp.z,
+      motionSampleOut[0], motionSampleOut[1], motionSampleOut[2],
+      motionSampleOut[3], motionSampleOut[4], motionSampleOut[5],
+      motionSampleOut[6], motionSampleOut[7],
+    ]);
+  }
+
   ctx.arena.update(dt);
   ctx.fx.update(dt);
   ctx.decals.update(dt); // scorch/crack marks fade on their own clock, even through death
@@ -1946,12 +1982,35 @@ ctx.stage.renderer.setAnimationLoop(() => {
       loopErrorLogged = true;
       console.error(`[rh3] frame loop error (state=${state}) — recovered, loop kept alive:`, err);
     }
+    if (frameErrorRing.length < 20) frameErrorRing.push({ t: Math.round(now), state, msg: String(err) });
     // Clear per-frame input edges even on a bad frame so a stuck press can't latch.
     try { ctx.input.endFrame(); } catch { /* ignore */ }
   } finally {
     try { perf.end(dt); } catch { /* the instrument must never freeze the loop */ }
   }
+};
+
+ctx.stage.renderer.setAnimationLoop(() => runFrame(performance.now()));
+
+// ── WebGL context-loss watchdog ────────────────────────────────────────────
+// Three re-inits GL and lazily re-uploads resources on restore, but the whole
+// PROGRAM CACHE is dropped — without a re-warm the first-use compile-hitch
+// class silently returns on the first post-restore fight. If the context never
+// comes back, reload: the fixed loopback origin + checkpoint saves make a
+// reload lossless. (Restore-with-reload-fallback is the shipped-web-game norm.)
+let ctxLostAt = 0;
+ctx.stage.renderer.domElement.addEventListener("webglcontextlost", () => {
+  ctxLostAt = performance.now();
+  console.error("[rh3] WebGL context LOST — waiting for restore");
 });
+ctx.stage.renderer.domElement.addEventListener("webglcontextrestored", () => {
+  console.warn(`[rh3] WebGL context restored after ${Math.round(performance.now() - ctxLostAt)}ms — re-warming shaders`);
+  ctxLostAt = 0;
+  try { ctx.stage.warmUp(); ctx.stage.warmMenu(); } catch (e) { console.error("[rh3] post-restore warm-up failed:", e); }
+});
+window.setInterval(() => {
+  if (ctxLostAt && performance.now() - ctxLostAt > 10_000) location.reload();
+}, 1000);
 
 // ---------------------------------------------------------------- boot
 // The loading screen (#rift-loader in index.html) is already painting. Under it we
@@ -2068,7 +2127,7 @@ void boot();
   // one-by-one on REAL hardware to pinpoint a GPU-specific glitch software rendering can't
   // show. Also exposed as window.__rh3fx for the harness.
   const fxPanel = new EffectsPanel([
-    { id: "msaa", label: "MSAA (4× hardware anti-alias)", hint: "alters depth resolve", apply: (on) => ctx.stage.setDebug("msaa", on) },
+    { id: "msaa", label: "MSAA (4× hardware anti-alias)", hint: "OFF: caused real-GPU flicker", on: false, apply: (on) => ctx.stage.setDebug("msaa", on) },
     { id: "smaa", label: "SMAA (post anti-alias)", apply: (on) => ctx.stage.setDebug("smaa", on) },
     { id: "bloom", label: "Bloom (glow)", apply: (on) => ctx.stage.setDebug("bloom", on) },
     { id: "shadows", label: "Shadows", hint: "shadow-map flicker", apply: (on) => ctx.stage.setDebug("shadows", on) },
@@ -2194,6 +2253,41 @@ void boot();
     /** Test-only: freeze all world/camera updates (dt=0) while still rendering the full
      *  composer, so the flicker shimmer test can isolate per-frame-random post FX. */
     freezeForTest(on = true): boolean { frozenForTest = on; return frozenForTest; },
+    /** Deterministic stepper: advance EXACTLY n frames at a fixed dt (seconds), real sim +
+     *  real composer render each step. The base of filmstrips and frame-exact tests —
+     *  never wall-wait the ~3×-slow headless clock when you can step. */
+    frames(n: number, dt = 1 / 60): number {
+      for (let i = 0; i < n; i++) runFrame(last + dt * 1000, dt);
+      return n;
+    },
+    /** One forced frame (see frames()). */
+    tick(dt = 1 / 60): void { runFrame(last + dt * 1000, dt); },
+    /** Every error the frame loop caught (capped at 20). QA asserts this is EMPTY —
+     *  the loop surviving a throwing frame otherwise looks healthy from outside. */
+    frameErrors(): { t: number; state: string; msg: string }[] { return frameErrorRing.slice(); },
+    /** Per-event emit counts since boot — the QA coverage matrix (0 = untested content). */
+    coverage(): Record<string, number> { return { ...ctx.events.counts } as Record<string, number>; },
+    /** True while the WebGL context is lost (context-loss resilience smoke reads this). */
+    contextLost(): boolean { return ctxLostAt > 0; },
+    /** Non-pixel scene oracles: NaN scan over world matrices, finite scene bounds,
+     *  type counts, renderer.info gauges — catches geometry/scale explosions and
+     *  scene-transition leaks that pixels can't localize. QA asserts ok===true. */
+    sceneCheck(): { ok: boolean; nan: number; finiteBounds: boolean; meshes: number; info: { geometries: number; textures: number; programs: number } } {
+      const scene = ctx.stage.scene;
+      scene.updateMatrixWorld(true);
+      let nan = 0, meshes = 0;
+      scene.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) meshes++;
+        for (const e of o.matrixWorld.elements) if (Number.isNaN(e)) { nan++; break; }
+      });
+      const box = new THREE.Box3().setFromObject(scene);
+      const finiteBounds = [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].every(Number.isFinite);
+      const info = ctx.stage.renderer.info;
+      return {
+        ok: nan === 0 && finiteBounds, nan, finiteBounds, meshes,
+        info: { geometries: info.memory.geometries, textures: info.memory.textures, programs: info.programs?.length ?? 0 },
+      };
+    },
     /** The active boss instance (or null). */
     boss0() { return livingBoss(); },
     /** Current top-level UI screen. */
@@ -2209,6 +2303,124 @@ void boot();
       else if (kind === "gamble") menus.showGamble(done);
       else return false;
       return true;
+    },
+    /** Structural world constants for the collision/reachability oracles — oracles
+     *  read these OFF the seam, never hardcode them (a hardcoded bound broke silently
+     *  in another repo when the level resized). */
+    world(): { arenaRadius: number; playerRadius: number; obstacles: { x: number; z: number; r: number }[] } {
+      return {
+        arenaRadius: ARENA_RADIUS,
+        playerRadius: ctx.player.radius,
+        obstacles: ctx.arena.obstacles.map((o) => ({ x: o.x, z: o.z, r: o.r })),
+      };
+    },
+    /** What the player should perceive right now: current screen, goal, next action.
+     *  A reachable state this cannot articulate is confusing by definition (the
+     *  articulability gate), and the blind comprehension probe scores a context-free
+     *  model's reading of the frame against exactly this ground truth. */
+    flow(): { screen: string; goal: string; nextAction: string } {
+      const boss = livingBoss();
+      const foes = ctx.enemies.living().filter((e) => e.kind !== "boss").length;
+      switch (state) {
+        case "menu": return { screen: "menu", goal: "begin a run", nextAction: "click PLAY (or press Enter)" };
+        case "cutscene": return { screen: "cutscene", goal: "watch the story beat", nextAction: "press Space to skip" };
+        case "paused": return { screen: "paused", goal: "resume the run", nextAction: "press Escape or click RESUME" };
+        case "dead": return { screen: "death", goal: "start a new run", nextAction: "click the retry button" };
+        case "victory": return { screen: "victory", goal: "bank the run and continue", nextAction: "click CONTINUE" };
+        case "draft": {
+          if (document.querySelector(".mapnode")) return { screen: "map", goal: "choose the next node on the forked path", nextAction: "click a highlighted map node" };
+          if (document.querySelector(".draft-row .card")) return { screen: "card-draft", goal: "add one card to the deck", nextAction: "click one of the offered cards" };
+          return { screen: "interstitial", goal: "resolve this screen and move on", nextAction: "click one of the offered choices" };
+        }
+        default: { // playing
+          if (interlude) return { screen: "interlude", goal: "cross the causeway", nextAction: interlude.locked ? "wait for the words to pass" : "walk forward across the causeway" };
+          if (boss) return { screen: "combat", goal: "defeat the boss", nextAction: "attack the boss and dodge its telegraphed attacks" };
+          if (foes > 0) return { screen: "combat", goal: `defeat the remaining ${foes} ${foes === 1 ? "enemy" : "enemies"}`, nextAction: "attack the nearest enemy" };
+          return { screen: "combat", goal: "room cleared — collect the reward", nextAction: "wait for the reward screen" };
+        }
+      }
+    },
+    /** Collision-truth oracle: the render scene and the collider set must AGREE about
+     *  where solid matter is — every prior oracle only checked the resolver against its
+     *  own collider list, so a visible prop with no collider passed everything. Run in
+     *  a staged, quiescent room (transient combat FX absent). Finding classes:
+     *  - unclassified: an in-reach mesh with no userData.solidity on itself or any
+     *    ancestor (a NEW prop nobody classified — exactly the walk-through incubator);
+     *  - uncovered: a "solid" mesh whose XZ footprint no collider circle covers to
+     *    within a player-radius tolerance (the walk-through class);
+     *  - phantom: a collider circle with no solid mesh footprint over it (the
+     *    invisible-wall class). Deterministic; no pixels. */
+    collisionAudit(): {
+      ok: boolean;
+      unclassified: { name: string; x: number; z: number; r: number }[];
+      uncovered: { name: string; x: number; z: number; r: number; overhang: number }[];
+      phantom: { x: number; z: number; r: number }[];
+    } {
+      const scene = ctx.stage.scene;
+      scene.updateMatrixWorld(true);
+      const R = ctx.player.radius;
+      const obstacles = ctx.arena.obstacles;
+      const rnd2 = (n: number): number => Math.round(n * 100) / 100;
+      const cls = (o: THREE.Object3D): string | null => {
+        for (let p: THREE.Object3D | null = o; p; p = p.parent) {
+          const s = (p.userData as { solidity?: string }).solidity;
+          if (s) return s;
+        }
+        return null;
+      };
+      const box = new THREE.Box3();
+      const unclassified: { name: string; x: number; z: number; r: number }[] = [];
+      const uncovered: { name: string; x: number; z: number; r: number; overhang: number }[] = [];
+      const covered: boolean[] = new Array<boolean>(obstacles.length).fill(false);
+      scene.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || !m.visible) return;
+        const s = cls(m);
+        if (s && s !== "solid") return; // ground/nonsolid/mover/fx are exempt by declaration
+        // precise=true: transform the vertices, not the local AABB — a rotated
+        // pillar's loose AABB otherwise reads ~1.3× wider than its true footprint
+        // and manufactures phantom overhang findings.
+        box.setFromObject(m, true);
+        if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return;
+        const cx = (box.min.x + box.max.x) / 2;
+        const cz = (box.min.z + box.max.z) / 2;
+        const r = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) / 2;
+        // Reach filter: only geometry a grounded player can bodily touch matters —
+        // inside the movement clamp, intersecting the body's height band.
+        const inReach = Math.hypot(cx, cz) - r < ARENA_RADIUS - R && box.min.y < 1.6 && box.max.y > 0.12;
+        if (!inReach) return;
+        const name = m.name || m.parent?.name || m.geometry.type;
+        if (!s) { unclassified.push({ name, x: rnd2(cx), z: rnd2(cz), r: rnd2(r) }); return; }
+        // "solid": some collider circle must cover this footprint to within a gap the
+        // player doesn't fit through (visual overhang the circle still bodily blocks).
+        let best = Infinity;
+        for (let i = 0; i < obstacles.length; i++) {
+          const ob = obstacles[i];
+          const overhang = Math.hypot(cx - ob.x, cz - ob.z) + r - ob.r;
+          if (overhang < best) best = overhang;
+          if (Math.hypot(cx - ob.x, cz - ob.z) < ob.r + r) covered[i] = true;
+        }
+        if (best > R * 0.8) uncovered.push({ name, x: rnd2(cx), z: rnd2(cz), r: rnd2(r), overhang: rnd2(best) });
+      });
+      const phantom: { x: number; z: number; r: number }[] = [];
+      for (let i = 0; i < obstacles.length; i++) {
+        if (!covered[i]) phantom.push({ x: rnd2(obstacles[i].x), z: rnd2(obstacles[i].z), r: rnd2(obstacles[i].r) });
+      }
+      return { ok: !unclassified.length && !uncovered.length && !phantom.length, unclassified, uncovered, phantom };
+    },
+    /** Arm/disarm the per-frame motion recorder (arming resets the buffer). */
+    recordMotion(on = true): boolean {
+      motionOn = on;
+      if (on) { motionBuf.length = 0; motionT = 0; }
+      return motionOn;
+    },
+    /** Drain the recorded motion samples (see `fields` for the per-sample layout). */
+    motion(): { fields: string[]; samples: number[][] } {
+      return {
+        fields: ["t", "px", "py", "pz", "facing", "camX", "camY", "camZ",
+          "footRX", "footRY", "footRZ", "footLX", "footLY", "footLZ", "liftR", "liftL"],
+        samples: motionBuf.map((s) => s.slice()),
+      };
     },
     /** The recognized scenario name patterns. */
     list(): string[] {

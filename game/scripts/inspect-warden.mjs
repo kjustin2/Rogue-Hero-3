@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Pit Warden geometry regression probe + eyeball shots. Guards the "feet clipping
 // through the floor" fix: the lowest point of the boss mesh must sit at/above the
 // arena floor (y≈0), not buried below it. Also dumps a couple of back views to

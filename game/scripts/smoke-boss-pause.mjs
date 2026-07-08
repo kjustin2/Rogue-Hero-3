@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Regression smoke: pausing right after a boss entrance must not keep the boss
 // inert after resume. The boss should wake naturally without needing a player hit.
 import { chromium } from "playwright-core";

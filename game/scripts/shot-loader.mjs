@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Capture the boot loading screen for a visual eyeball. Grabs a few frames while
 // the loader is up (it self-removes after ~900ms + warm-up + a 0.6s fade).
 import { chromium } from "playwright-core";

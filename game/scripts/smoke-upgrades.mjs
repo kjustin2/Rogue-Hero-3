@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Card upgrade smoke: cast EVERY card both base and honed in a live combat node,
 // asserting no dispatch path throws. Also screenshots the Hone-a-Card picker.
 import { chromium } from "playwright-core";

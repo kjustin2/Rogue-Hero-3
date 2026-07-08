@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Targeted check: crash-ready range ring + card slot ready/cooldown states.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Captures the Spire Caster and Colossus across their phases.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

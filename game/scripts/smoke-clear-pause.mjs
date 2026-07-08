@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Regression smoke: pausing after the room-clear event but before the delayed
 // reward screen should not drop the transition or leave the run stuck.
 import { chromium } from "playwright-core";

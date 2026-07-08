@@ -14,6 +14,8 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { registerNativeIpc } = require("../electron-ipc.cjs");
+const { guard, guardWindow } = require("./lib/guard.cjs");
+guard({ name: "smoke-display-electron", maxMinutes: 6 });
 
 const distDir = path.join(__dirname, "..", "dist");
 const shotDir = path.join(__dirname, "..", "shots");
@@ -69,7 +71,7 @@ app.whenReady().then(async () => {
   win.webContents.setAudioMuted(true); // no soundtrack during test runs
 
   win.webContents.on("console-message", (_e, level, message) => { if (level >= 3) fails.push("CONSOLE: " + message); });
-  win.webContents.on("render-process-gone", (_e, d) => fails.push("RENDERER GONE: " + d.reason));
+  guardWindow(win); // dead/hung renderer → abort, never hang on the next await
 
   const js = (s) => win.webContents.executeJavaScript(s);
 

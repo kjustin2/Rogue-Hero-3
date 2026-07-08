@@ -36,8 +36,12 @@ export class Stage {
   readonly fog: THREE.FogExp2;
   private envBaker!: EnvironmentBaker;
   private envTex: THREE.Texture | null = null;
-  /** Debug bisection toggles (effectsToggle panel) — default on; flipping rebuilds post. */
-  private msaaEnabled = true;
+  /** MSAA is OFF by default: a real-GPU glitch-hunt (npm run glitch-hunt, NVIDIA/ANGLE/D3D11)
+   *  proved hardware MSAA through the EffectComposer's multisampled target flickers the frame
+   *  ~3/255 EVERY frame even on a frozen scene — a per-frame shimmer that headless SwiftShader
+   *  can't reproduce. That regressed the look on real GPUs; SMAA handles edge AA without it.
+   *  The bisection panel can still toggle it on for experimentation. */
+  private msaaEnabled = false;
   private smaaEnabled = true;
   quality: Quality = "high";
   /**

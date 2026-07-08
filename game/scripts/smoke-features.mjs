@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Map-feature smoke: the new arena mechanics (spikes that erupt, drifting hazard
 // orbs, a sweeping beam) set up, damage the player when in their danger zone, and
 // dispose cleanly. Drives features directly (synchronous tick loop, no main-loop

@@ -6,6 +6,20 @@ import { DEFAULT_COSMETICS, cosmeticById } from "./cosmetics";
 import type { Ctx } from "./ctx";
 
 const HERO_VISUAL_SCALE = 1.2;
+/** Scratch vector for motionSample() — the recorder must not allocate per frame. */
+const MOTION_TMP = new THREE.Vector3();
+
+/** Per-hero locomotion tuning — hoisted to a module constant so Player.update() looks it up
+ *  instead of rebuilding a fresh 6-field object every frame (a per-frame GC source). */
+interface Gait { stride: number; bob: number; arm: number; lean: number; rate: number; plant: number }
+const GAITS: Record<string, Gait> = {
+  bulwark: { stride: 0.72, bob: 0.032, arm: 0.34, lean: 0.075, rate: 0.78, plant: 1.35 },
+  tempest: { stride: 1.16, bob: 0.034, arm: 0.52, lean: 0.095, rate: 1.28, plant: 0.88 },
+  sparkmage: { stride: 0.86, bob: 0.052, arm: 0.32, lean: 0.06, rate: 0.96, plant: 0.95 },
+  reaver: { stride: 0.98, bob: 0.05, arm: 0.56, lean: 0.12, rate: 1.02, plant: 1.12 },
+  revenant: { stride: 0.82, bob: 0.045, arm: 0.42, lean: 0.085, rate: 0.9, plant: 1.18 },
+  default: { stride: 1.0, bob: 0.04, arm: 0.44, lean: 0.08, rate: 1.0, plant: 1.0 },
+};
 
 /**
  * The hero: stats + a fully procedural low-poly knight, rebuilt from any
@@ -86,9 +100,31 @@ export class Player {
 
   constructor(private ctx: Ctx) {
     this.root = new THREE.Group();
+    this.root.userData.solidity = "mover"; // collision-truth audit: movers are exempt
     this.root.scale.setScalar(HERO_VISUAL_SCALE);
     ctx.stage.scene.add(this.root);
     this.applyHero(this.hero, DEFAULT_COSMETICS.cape, DEFAULT_COSMETICS.blade);
+  }
+
+  /** Last-frame per-leg lift signals from the locomotion pose (0 = planted, 1 = peak
+   *  swing) — the animation oracles read these alongside foot world positions so
+   *  foot-skate is a MEASURED number (planted foot translating = skate), not a
+   *  filmstrip eyeball. */
+  lastLiftR = 0;
+  lastLiftL = 0;
+  /** Local Y of the foot contact point under each hip group (set per hero build). */
+  private footLocalY = -0.6;
+
+  /** Fill `out` with the motion sample the recorder stores each frame:
+   *  [footRx, footRy, footRz, footLx, footLy, footLz, liftR, liftL]. Allocation-free. */
+  motionSample(out: Float64Array): void {
+    MOTION_TMP.set(0, this.footLocalY, 0);
+    this.legR.localToWorld(MOTION_TMP);
+    out[0] = MOTION_TMP.x; out[1] = MOTION_TMP.y; out[2] = MOTION_TMP.z;
+    MOTION_TMP.set(0, this.footLocalY, 0);
+    this.legL.localToWorld(MOTION_TMP);
+    out[3] = MOTION_TMP.x; out[4] = MOTION_TMP.y; out[5] = MOTION_TMP.z;
+    out[6] = this.lastLiftR; out[7] = this.lastLiftL;
   }
 
   /** Tear down and rebuild the whole mesh for a hero + cosmetic loadout. */
@@ -402,7 +438,11 @@ export class Player {
     this.sword.position.set(0, -0.56, 0.05);
     this.armR.add(this.sword);
     const bladeMat = new THREE.MeshStandardMaterial({
-      color: 0x99ddff, emissive: this.bladeColor, emissiveIntensity: 2.0, roughness: 0.2, metalness: 0.6,
+      // Was roughness 0.2 / metalness 0.6 (near-mirror) — that made the blade SNAP/twinkle as
+      // it swung and the camera followed, sweeping the env-map specular lobe (a real-GPU
+      // "blink when moving"). The blade reads as light via emissiveIntensity, not reflection,
+      // so dulling the metal + cutting envMapIntensity loses nothing and kills the flicker.
+      color: 0x99ddff, emissive: this.bladeColor, emissiveIntensity: 2.0, roughness: 0.5, metalness: 0.3, envMapIntensity: 0.2,
     });
     if (id === "reaver") {
       // Heavy, broad cleaver-blade.
@@ -495,6 +535,7 @@ export class Player {
       const trim = box(P.torsoW * 0.16, 0.04, P.torsoD * 0.14, gold, sx * P.torsoW * 0.18, 0.29, P.torsoD * 0.38);
       trim.rotation.x = sx * 0.03;
     }
+    this.footLocalY = -P.legH * 1.16 - 0.06; // bottom face of the lowest boot plate
     this.legR = new THREE.Group();
     this.legR.position.set(P.legX, 0.55, 0);
     this.body.add(this.legR);
@@ -625,23 +666,35 @@ export class Player {
     ghost.position.copy(this.pos);
     ghost.scale.multiplyScalar(HERO_VISUAL_SCALE);
     ghost.rotation.y = this.root.rotation.y;
+    ghost.userData.solidity = "fx";
     this.ctx.stage.scene.add(ghost);
-    const start = performance.now();
-    const fade = () => {
-      const k = (performance.now() - start) / 240;
+    // dt-driven fade (advanced in update()) — a private rAF + wall-clock loop
+    // here defeated freezeForTest/frames(n,dt) and made captures nondeterministic
+    // (the temporal gate caught it as intermittent frozen-scene shimmer).
+    this.ghostFades.push({ ghost, mat, t: 0 });
+  }
+
+  /** Live dodge-ghost fades — advanced by update(dt) on the threaded clock. */
+  private ghostFades: { ghost: THREE.Group; mat: THREE.MeshBasicMaterial; t: number }[] = [];
+
+  private updateGhostFades(dt: number): void {
+    for (let i = this.ghostFades.length - 1; i >= 0; i--) {
+      const g = this.ghostFades[i];
+      g.t += dt;
+      const k = g.t / 0.24;
       if (k >= 1) {
-        this.ctx.stage.scene.remove(ghost);
-        mat.dispose();
-        return;
+        this.ctx.stage.scene.remove(g.ghost);
+        g.mat.dispose();
+        this.ghostFades.splice(i, 1);
+      } else {
+        g.mat.opacity = 0.35 * (1 - k);
       }
-      mat.opacity = 0.35 * (1 - k);
-      requestAnimationFrame(fade);
-    };
-    requestAnimationFrame(fade);
+    }
   }
 
   update(dt: number): void {
     this.t += dt;
+    this.updateGhostFades(dt);
     this.root.position.set(this.pos.x, this.pos.y, this.pos.z);
     this.hitFlash = Math.max(0, this.hitFlash - dt * 6);
 
@@ -738,13 +791,7 @@ export class Player {
     this.stopPose = damp(this.stopPose, Math.min(1, stopped * 12), 10, dt);
 
     const h = this.hero.id;
-    const gait =
-      h === "bulwark" ? { stride: 0.72, bob: 0.032, arm: 0.34, lean: 0.075, rate: 0.78, plant: 1.35 } :
-      h === "tempest" ? { stride: 1.16, bob: 0.034, arm: 0.52, lean: 0.095, rate: 1.28, plant: 0.88 } :
-      h === "sparkmage" ? { stride: 0.86, bob: 0.052, arm: 0.32, lean: 0.06, rate: 0.96, plant: 0.95 } :
-      h === "reaver" ? { stride: 0.98, bob: 0.05, arm: 0.56, lean: 0.12, rate: 1.02, plant: 1.12 } :
-      h === "revenant" ? { stride: 0.82, bob: 0.045, arm: 0.42, lean: 0.085, rate: 0.9, plant: 1.18 } :
-      { stride: 1.0, bob: 0.04, arm: 0.44, lean: 0.08, rate: 1.0, plant: 1.0 };
+    const gait = GAITS[h] ?? GAITS.default; // hoisted const (was a per-frame object literal)
 
     if (moving > 0.035) this.locoClock += dt * (5.6 + moving * 8.7) * gait.rate;
     const reversing = forward < -0.2 && Math.abs(forward) > Math.abs(side) * 0.75;
@@ -755,6 +802,8 @@ export class Player {
     const liftR = Math.pow(Math.max(0, -Math.sin(cycle)), 1.8) * moving;
     const liftL = Math.pow(Math.max(0, Math.sin(cycle)), 1.8) * moving;
     const footPlant = Math.pow(Math.abs(Math.cos(cycle)), 6) * moving;
+    this.lastLiftR = liftR;
+    this.lastLiftL = liftL;
     // Footfall impact: on each rising step-contact, a small ground-tinted dust puff +
     // a micro camera kick scaled by hero bulk (IDEAS-GRAPHICS #39).
     if (footPlant > 0.55 && this.prevFootPlant <= 0.55 && moving > 0.25) this.emitFootfall();

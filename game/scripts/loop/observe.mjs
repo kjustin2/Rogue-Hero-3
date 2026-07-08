@@ -5,6 +5,7 @@
 // visual goal pass/fail with evidence, and proposes the single highest-value
 // next change. Writes observe.json: { verdicts, proposal, _meta }.
 import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { GOALS } from "./goals.mjs";
 import {
   readJSON, writeJSON, runClaude, extractJSON, ARTIFACTS,
@@ -24,20 +25,37 @@ const fileFor = (key) => {
 const visualGoals = GOALS.filter((g) => g.rubric);
 
 // Build the per-goal blocks with absolute screenshot paths to Read.
+const auditFor = (key) => {
+  const m = manifest.find((x) => x.key === key);
+  return m?.audit?.length ? `  [FRAME-GATE: ${m.audit.join(",")}]` : "";
+};
 const goalBlocks = visualGoals.map((g) => {
-  const shots = (g.shots || []).map(fileFor).filter(Boolean);
+  const shots = (g.shots || []).map((key) => {
+    const f = fileFor(key);
+    return f ? `  - ${f}${auditFor(key)}` : null;
+  }).filter(Boolean);
   const guard = logicFile.guards?.[g.id];
   return [
     `### goal: ${g.id}`,
     `title: ${g.title}`,
     `pass_rubric: ${g.rubric}`,
-    `screenshots_to_read:\n${shots.map((s) => `  - ${s}`).join("\n") || "  (none captured!)"}`,
+    `screenshots_to_read:\n${shots.join("\n") || "  (none captured!)"}`,
     guard ? `capture_guard: ${guard.pass ? "ok" : "FAILED"} (${guard.detail})` : "",
   ].filter(Boolean).join("\n");
 }).join("\n\n");
 
 const logicLines = Object.entries(logicFile.logic || {})
   .map(([id, r]) => `  - ${id}: ${r.pass ? "PASS" : "FAIL"} (${r.detail})`).join("\n");
+
+// Regression memory: what past cycles tried and how it went, so the judge never
+// re-proposes a change that already failed (the loop-thrash class).
+const learnings = (() => {
+  try { return readFileSync(join(ARTIFACTS, "LEARNINGS.md"), "utf8").trim().split("\n").slice(-20).join("\n"); }
+  catch { return ""; }
+})();
+// Hard bans: proposals that failed (build or behavioral) >= 2 times.
+const banned = Object.values(readJSON(join(ARTIFACTS, "ledger.json"), {}))
+  .filter((e) => e.fails >= 2).map((e) => e.title);
 
 const prompt = `You are the visual & quality judge for an automated game-improvement loop on the
 Three.js action-roguelike "Rogue Hero 3". You are the OBJECTIVE source of truth:
@@ -49,6 +67,10 @@ Use the Read tool to open every screenshot path listed under each goal. Then:
    based on what is actually visible. Give a one-sentence evidence note citing what
    you saw, and a confidence 0.0–1.0. If capture_guard FAILED, the screenshot was
    taken in the wrong state — mark that goal fail (evidence: "guard failed").
+   A screenshot tagged [FRAME-GATE: …] failed an objective pixel gate (BLACK =
+   all-black frame, BLOWOUT = additive-white screen-fill, FLAT = uniform dead
+   frame): mark that goal fail citing the gate — do not try to judge content in
+   a broken frame.
 
 2) Look at the failing goals (your visual fails + the logical FAILs listed) and
    propose the SINGLE highest-value, concrete, minimal code change to make next.
@@ -64,6 +86,14 @@ ${goalBlocks}
 
 LOGICAL RESULTS (already computed; you are NOT judging these, just consider them)
 ${logicLines || "  (none)"}
+${learnings ? `
+PRIOR CYCLES (regression memory — do NOT re-propose a change that already
+failed its build gate or didn't move its goal; try a different angle instead)
+${learnings}` : ""}
+${banned.length ? `
+BANNED PROPOSALS (failed >= 2 times — you MUST NOT propose these or trivial
+rewordings of them; attack the goal from a genuinely different mechanism)
+${banned.map((t) => `  - ${t}`).join("\n")}` : ""}
 
 Respond with ONLY a JSON object, no prose outside it, exactly this shape:
 {

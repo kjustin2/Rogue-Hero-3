@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Canvas viewport smoke: verify the WebGL scene is nonblank on desktop and mobile.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

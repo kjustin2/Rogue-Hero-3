@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Difficulty ladder smoke: validates the depth table (Phase 1).
 // Enemy-HP / damage scaling at spawn is exercised by the live hooks in later phases.
 import { chromium } from "playwright-core";

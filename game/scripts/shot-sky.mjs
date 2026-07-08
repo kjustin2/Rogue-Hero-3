@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Sky showcase: load each act's theme, swing the camera to the menu-orbit (low,
 // horizon-filling) angle so the per-act sky signature is actually in frame.
 import { chromium } from "playwright-core";

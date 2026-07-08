@@ -60,6 +60,7 @@ function makePool(scene: THREE.Scene, count: number): Shot[] {
     const glow = new THREE.Sprite(glowMat);
     glow.scale.setScalar(7);
     mesh.add(glow);
+    mesh.userData.solidity = "fx";
     scene.add(mesh);
     pool.push({
       active: false, mesh, mat,

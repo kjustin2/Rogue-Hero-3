@@ -16,8 +16,9 @@ import { fileURLToPath } from "node:url";
 import { GOALS, isMet } from "./goals.mjs";
 import {
   ARTIFACTS, STATE_FILE, cycleDir, ensureDir, readJSON, writeJSON, writeText,
-  ensureServer, runVerify, gitRevertCycle, existsSync, rmSync,
+  ensureServer, runVerify, gitRevertCycle, existsSync, rmSync, guard,
 } from "./lib.mjs";
+import { appendFileSync } from "node:fs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (flag, def) => {
@@ -28,6 +29,10 @@ const has = (flag) => process.argv.includes(flag);
 
 const MAX_CYCLES = parseInt(arg("--max-cycles", "6"), 10);
 const MAX_MINUTES = parseInt(arg("--max-minutes", "120"), 10);
+const MAX_COST = Number(arg("--max-cost", "20")); // cumulative claude spend cap, USD
+// Extend the lib auto-guard to the loop's own budget (+slack for the last cycle
+// to finish); the machine lock is held for the whole loop, stages inherit it.
+guard({ name: "loop-orchestrate", maxMinutes: MAX_MINUTES + 30 });
 const MODEL = arg("--model", "");
 const DO_IMPLEMENT = !has("--no-implement");
 const startTs = Date.now();
@@ -78,6 +83,35 @@ function evaluateGoals(observe, logicFile) {
     passed: results.filter((r) => r.met).map((r) => r.id),
     failed: results.filter((r) => !r.met).map((r) => r.id),
   };
+}
+
+// ── learnings ledger — the loop's cross-session memory ───────────────────
+// One line per cycle, append-only. Future sessions (and the observe prompt's
+// author) read this to avoid re-proposing changes that already failed.
+function logLearning(c) {
+  const impl = c.implement;
+  const outcome = impl?.behavioralRegression ? `behavioral REGRESSION (${impl.behavioralRegression.join(", ")}), reverted`
+    : impl?.verifyOk === false ? "build-FAIL, reverted"
+    : impl?.verifyOk ? "landed" : "unverified";
+  const line = `- ${new Date().toISOString().slice(0, 16)} cycle ${c.n}: goals ${c.evaluation.passed.length}/${GOALS.length}`
+    + (c.evaluation.failed.length ? ` (failing: ${c.evaluation.failed.join(", ")})` : "")
+    + (impl?.proposal ? `; tried "${impl.proposal.title}" → ${outcome}` : "; no change")
+    + "\n";
+  try { appendFileSync(join(ARTIFACTS, "LEARNINGS.md"), line); } catch { /* best effort */ }
+}
+
+// ── proposal-fingerprint ledger — never resample known losers ─────────────
+// Keyed by normalized title; a proposal with >=2 recorded failures is BANNED
+// in the observe prompt (the single biggest anti-thrash lever in the automated
+// game-QA literature — TITAN's deprioritized state-action pairs, adapted).
+const LEDGER_FILE = join(ARTIFACTS, "ledger.json");
+function ledgerBump(title, failed) {
+  const fp = (title || "").toLowerCase().replace(/\W+/g, " ").trim();
+  if (!fp) return;
+  const led = readJSON(LEDGER_FILE, {});
+  const e = (led[fp] ||= { title, fails: 0, lands: 0 });
+  if (failed) e.fails++; else e.lands++;
+  writeJSON(LEDGER_FILE, led);
 }
 
 // ── per-cycle report ─────────────────────────────────────────────────────
@@ -139,6 +173,7 @@ try {
   while (true) {
     if (state.cycles.length >= MAX_CYCLES) { log(`budget: hit max ${MAX_CYCLES} cycles`); state.status = "stopped:max-cycles"; break; }
     if (Date.now() > deadline) { log(`budget: hit ${MAX_MINUTES} min`); state.status = "stopped:timeout"; break; }
+    if ((state.costUsd || 0) >= MAX_COST) { log(`budget: hit $${MAX_COST} claude spend`); state.status = "stopped:max-cost"; break; }
 
     const n = state.cycles.length + 1;
     const dir = cycleDir(n);
@@ -156,10 +191,21 @@ try {
     const logicFile = readJSON(join(dir, "logic.json"), { logic: {}, guards: {} });
     c.phase = "observe"; persist();
 
+    // HARNESS-FAILURE BUCKET: a broken capture must never drive code churn —
+    // a game "fix" proposed off a broken screenshot is the classic thrash bug.
+    const trace = readJSON(join(dir, "trace.json"), { consoleErrors: [] });
+    if ((trace.consoleErrors || []).some((e) => /CAPTURE-THREW/.test(e))) {
+      log("capture stage itself threw — this is a HARNESS bug, not a game bug; stopping");
+      c.phase = "done"; c.harnessFailure = true;
+      c.evaluation = { results: [], passed: [], failed: [] };
+      persist(); state.status = "stopped:harness-failure"; break;
+    }
+
     // 3) OBSERVE (AI judges visuals + proposes next change)
     const obsCode = stage("observe.mjs", dir);
     const observe = readJSON(join(dir, "observe.json"), { verdicts: {}, proposal: null });
     if (obsCode !== 0) log("observe stage returned nonzero — using whatever it wrote");
+    state.costUsd = (state.costUsd || 0) + (observe._meta?.cost || 0);
 
     // 4) DECIDE
     c.evaluation = evaluateGoals(observe, logicFile);
@@ -167,9 +213,24 @@ try {
     persist();
     log(`goals met ${c.evaluation.passed.length}/${GOALS.length} — remaining: ${c.evaluation.failed.join(", ") || "NONE"}`);
 
+    // STALL BREAKER: if the met-goal count hasn't improved for 3 straight
+    // evaluations (i.e. ~2 implemented changes bought nothing), stop and report
+    // instead of burning the rest of the budget on a stuck goal.
+    if (c.evaluation.passed.length > (state.bestPassed ?? -1)) {
+      state.bestPassed = c.evaluation.passed.length; state.stall = 0;
+    } else {
+      state.stall = (state.stall || 0) + 1;
+      if (state.stall >= 3) {
+        log(`stalled: ${state.stall} evaluations with no new goal met — stopping (see LEARNINGS.md for what was tried)`);
+        c.phase = "done"; c.implement = { skipped: true, reason: "stalled" };
+        writeReport(dir, c); logLearning(c); persist(); writeRollup();
+        state.status = "stopped:stalled"; break;
+      }
+    }
+
     if (c.evaluation.failed.length === 0) {
       c.phase = "done"; c.implement = { skipped: true, reason: "all goals met" };
-      writeReport(dir, c); persist(); writeRollup();
+      writeReport(dir, c); logLearning(c); persist(); writeRollup();
       success = true; state.status = "done:all-goals-met";
       log("🎉 all goals met — stopping"); break;
     }
@@ -186,6 +247,7 @@ try {
     stage("implement.mjs", dir);
     const impl = readJSON(join(dir, "implement.json"), { skipped: true });
     c.implement = impl;
+    state.costUsd = (state.costUsd || 0) + (impl._meta?.cost || 0);
     c.phase = "verify"; persist();
 
     // 6) BUILD GATE — revert just this cycle's edits if tsc/build breaks
@@ -196,6 +258,7 @@ try {
         writeText(join(dir, "verify-fail.log"), v.out.slice(-8000));
         const reverted = impl.base ? gitRevertCycle(impl.base) : false;
         impl.reverted = reverted;
+        ledgerBump(impl.proposal?.title, true);
         log(`build failed → ${reverted ? "reverted cycle edits" : "REVERT FAILED (manual cleanup needed)"}`);
       } else {
         // 7) RE-VERIFY (re-run the play-through; logical confirmation now)
@@ -212,13 +275,31 @@ try {
           guard: aLogic.guards?.[gid] ?? null,
           logic: aLogic.logic?.[gid] ?? null,
         };
+        // 8) BEHAVIORAL-REGRESSION GATE (AlphaEvolve acceptance rule): a change
+        // that builds but breaks a previously-passing deterministic signal is
+        // worse than no change — revert it and record the failure.
+        const regressed = [];
+        for (const [id, prev] of Object.entries(logicFile.logic || {}))
+          if (prev.pass && aLogic.logic?.[id]?.pass === false) regressed.push(`logic:${id}`);
+        for (const [id, prev] of Object.entries(logicFile.guards || {}))
+          if (prev.pass && aLogic.guards?.[id]?.pass === false) regressed.push(`guard:${id}`);
+        if (regressed.length) {
+          const reverted = impl.base ? gitRevertCycle(impl.base) : false;
+          impl.behavioralRegression = regressed;
+          impl.reverted = reverted;
+          impl.verifyOk = false;
+          ledgerBump(impl.proposal?.title, true);
+          log(`behavioral regression (${regressed.join(", ")}) → ${reverted ? "reverted" : "REVERT FAILED"}`);
+        } else {
+          ledgerBump(impl.proposal?.title, false);
+        }
       }
     } else {
       impl.verifyOk = null;
     }
 
     c.phase = "done";
-    writeReport(dir, c); persist(); writeRollup();
+    writeReport(dir, c); logLearning(c); persist(); writeRollup();
     log(`cycle ${n} complete`);
   }
 } catch (err) {

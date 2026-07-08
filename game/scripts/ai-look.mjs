@@ -90,8 +90,8 @@ if (looksLikeFile) {
 }
 
 const prompt = `You are a senior visual-QA reviewer for the Three.js action-roguelike "Rogue Hero 3".
-Use the Read tool to open this screenshot, then answer the question from ONLY what is
-actually visible (do not assume). Be concrete and cite what you see.
+Use the Read tool to open this screenshot, then judge from ONLY what is actually visible
+(do not assume). Binary verdicts with quoted evidence — never soften a FAIL.
 
 screenshot: ${shotPath}
 ${perf ? `
@@ -104,9 +104,31 @@ Factor these into your assessment where relevant.` : `
 If a performance overlay is present in the TOP-LEFT (fps / frame ms / draw calls / programs /
 state), read what you can and note it.`}
 
-Question: ${question}
+First give a PASS/FAIL for each criterion, each with ONE short quoted visual observation
+as evidence (what you literally see, not what you infer). These map to this game's known
+failure classes — judge them strictly:
+  render-integrity: no black/blank regions, no solid-white or washed-out blowout, no
+    obviously corrupted/garbage pixels
+  player-readable: the player actor is visible and clearly distinguishable from the arena
+  threat-readable: enemies/hazards read as distinct silhouettes, separable from ground/FX
+  hud-integrity: HUD/overlay text is legible, uncut, non-overlapping, passes contrast on
+    its real background
+  state-consistent: what is visible plausibly matches the engine state above (enemy count,
+    game state, fps regime)
 
-Answer in at most ~8 sentences. End with a single line "VERDICT: <one-line takeaway>".`;
+Then answer the question in at most ~6 sentences, concrete, citing what you see.
+
+Output format (exactly):
+CRITERIA:
+- render-integrity: PASS|FAIL — "<observation>"
+- player-readable: PASS|FAIL — "<observation>"
+- threat-readable: PASS|FAIL — "<observation>"
+- hud-integrity: PASS|FAIL — "<observation>"
+- state-consistent: PASS|FAIL — "<observation>"
+ANSWER: <your answer to the question>
+VERDICT: <one line; must say FAIL if ANY criterion failed, else the takeaway>
+
+Question: ${question}`;
 
 console.log("[ai-look] asking claude …\n");
 const res = runClaude(prompt, { allowedTools: ["Read"], timeoutMs: 240000 });

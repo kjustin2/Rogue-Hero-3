@@ -1,9 +1,11 @@
 // Comprehensive VERIFY suite — a wide contact sheet + per-theme fast-pan motion strips +
 // the new card VFX, so the glitch fix (MSAA edge stability, no grain/flicker, soft shadows,
 // no banding) can be judged at NATIVE zoom across every scenario. ~40+ shots → shots/verify/.
-import { launchBrowser, bootGame, enterRun, sleep } from "./loop/lib.mjs";
+import { launchBrowser, bootGame, enterRun, sleep, guard } from "./loop/lib.mjs";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+
+guard({ maxMinutes: 15 }); // ~40 shots + per-theme pans run past the lib default
 
 const OUT = "shots/verify";
 mkdirSync(OUT, { recursive: true });

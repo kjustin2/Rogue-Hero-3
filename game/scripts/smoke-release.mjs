@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Release smoke: hero select, obstacles, save/continue, armory purchase,
 // shard earnings — the new systems in one pass.
 import { chromium } from "playwright-core";

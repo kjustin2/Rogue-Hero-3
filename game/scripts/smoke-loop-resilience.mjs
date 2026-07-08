@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Frame-loop resilience + boss-cutscene crash guard.
 //   1) The WARDEN entrance plays to completion with the boss left ALIVE (a real run —
 //      not the insta-kill the other smokes do) with no console errors and the rAF loop

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Relic flow: clear the elite chamber → "CHOOSE A RELIC" → pick → HUD icon row.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

@@ -11,6 +11,16 @@ import {
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { guard, track, untrack } from "../lib/guard.cjs";
+
+// Every script that imports this lib runs under the test-run governor: a hard
+// 10-min watchdog, the machine-wide one-test-at-a-time lock, a low-memory
+// sentinel, below-normal priority, and child cleanup on every exit path.
+// Long-running consumers (orchestrate, perf-bench) re-call guard() with a
+// bigger maxMinutes to extend. See lib/guard.cjs — the "never crash the
+// computer again" layer.
+guard({ maxMinutes: 10 });
+export { guard };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const GAME_DIR = resolve(HERE, "..", "..");          // .../game
@@ -70,6 +80,7 @@ export async function ensureServer({ log = console.log } = {}) {
   const child = spawn("npm", ["run", "dev"], {
     cwd: GAME_DIR, stdio: "ignore", shell: true, detached: false,
   });
+  track(child); // guard tree-kills it if this script hangs/aborts
   const pid = child.pid;
   for (let i = 0; i < 60; i++) {
     await sleep(1000);
@@ -84,6 +95,7 @@ export async function ensureServer({ log = console.log } = {}) {
           spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
         } else { child.kill("SIGTERM"); }
       } catch { /* best effort */ }
+      untrack(child);
     },
   };
 }
@@ -92,7 +104,13 @@ export async function ensureServer({ log = console.log } = {}) {
 
 export async function launchBrowser() {
   // --mute-audio: never blast the soundtrack through the system during test runs.
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: ["--mute-audio"] });
+  // --enable-unsafe-swiftshader: Chrome 139+ removed the automatic software-GL
+  // fallback — without the opt-in, headless WebGL context creation can FAIL
+  // (black canvas). Harmless when a real GPU/WARP path is used instead.
+  const browser = await chromium.launch({
+    executablePath: CHROME, headless: true,
+    args: ["--mute-audio", "--enable-unsafe-swiftshader"],
+  });
   const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
   const page = await context.newPage();
   const errors = [];
@@ -108,6 +126,16 @@ export async function bootGame(page, { query = "" } = {}) {
   await page.goto(GAME_URL + query, { waitUntil: "networkidle" });
   await page.waitForTimeout(2500);              // boot loader + warm
   await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
+  // Stamp which rasterizer produced this run's evidence (SwiftShader vs WARP vs
+  // real GPU) — perf numbers and shot baselines only compare within one renderer.
+  const glr = await page.evaluate(() => {
+    try {
+      const gl = window.__rh3.stage.renderer.getContext();
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    } catch { return "?"; }
+  });
+  console.log(`[boot] GL_RENDERER: ${glr}`);
 }
 
 /** The live top-level UI screen, via the __rh3state accessor (fallback "?"). */
@@ -225,6 +253,56 @@ export async function perfReport(page) {
   return page.evaluate(() => (window.__rh3perf ? window.__rh3perf.report() : null));
 }
 
+// ───────────────────────────────────────────────────────────── shot gates ──
+
+/** Decode a PNG in-page (detached canvases; touches nothing) and return
+ *  objective frame stats — the cheap gate that catches broken frames before a
+ *  human or a paid AI judge reads them. Pair with shotFlags(). */
+export async function shotStats(page, absPath) {
+  const url = `data:image/png;base64,${readFileSync(absPath).toString("base64")}`;
+  return page.evaluate(async (src) => {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("decode")); i.src = src; });
+    const c = document.createElement("canvas"); c.width = im.width; c.height = im.height;
+    const g = c.getContext("2d"); g.drawImage(im, 0, 0);
+    const d = g.getImageData(0, 0, im.width, im.height).data;
+    let black = 0, blow = 0, sum = 0, sumSq = 0;
+    const n = d.length / 4;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], gg = d[i + 1], b = d[i + 2];
+      const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+      const lum = (r + gg + b) / 3;
+      if (mx < 8) black++;
+      if (mn > 190 && mx - mn < 45) blow++; // bright-desat: the additive-white washout class
+      sum += lum; sumSq += lum * lum;
+    }
+    // 8×8 average-hash — cheap pixel-identity signature for duplicate detection.
+    const t = document.createElement("canvas"); t.width = 8; t.height = 8;
+    const tg = t.getContext("2d"); tg.drawImage(im, 0, 0, 8, 8);
+    const td = tg.getImageData(0, 0, 8, 8).data;
+    let sig = "";
+    for (let i = 0; i < td.length; i += 4) sig += Math.round((td[i] + td[i + 1] + td[i + 2]) / 48).toString(36);
+    const mean = sum / n;
+    return {
+      w: im.width, h: im.height,
+      pctBlack: Math.round((10000 * black) / n) / 100,
+      pctBlowout: Math.round((10000 * blow) / n) / 100,
+      meanLum: Math.round(mean * 10) / 10,
+      stdLum: Math.round(Math.sqrt(Math.max(0, sumSq / n - mean * mean)) * 10) / 10,
+      sig,
+    };
+  }, url);
+}
+
+/** Objective failure flags for a shotStats() result. Empty array = frame OK. */
+export function shotFlags(s) {
+  const flags = [];
+  if (s.pctBlack > 98) flags.push("BLACK");
+  else if (s.pctBlowout > 2.5) flags.push("BLOWOUT");
+  else if (s.stdLum < 4) flags.push("FLAT"); // uniform non-black frame (dead composer / stuck fill)
+  if (s.w < 400 || s.h < 300) flags.push("TINY");
+  return flags;
+}
+
 /** Compare stats against a budget of MAX values. Keys may be dotted to reach the
  *  GPU snapshot, e.g. { p95: 120, max: 350, over250: 0, "snap.calls": 900 }.
  *  Returns { pass, fails:[ "p95=140 > 120", … ] }. */
@@ -289,7 +367,7 @@ export function gitRevertCycle(base) {
 export function runVerify({ log = console.log } = {}) {
   log("[verify] tsc --noEmit && vite build …");
   const r = spawnSync("npm", ["run", "verify"], {
-    cwd: GAME_DIR, encoding: "utf8", shell: true,
+    cwd: GAME_DIR, encoding: "utf8", shell: true, timeout: 10 * 60_000,
   });
   const ok = (r.status ?? 1) === 0;
   log(`[verify] ${ok ? "PASS" : "FAIL"}`);

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard({ keepPriority: true }); // timing-GATED: keep normal priority or ms budgets measure the scheduler (guard still applies)
 // Death-transition stall guard. Targets the "~3-second freeze when a boss killed
 // me" bug: in a material-dense boss room the death -> "dead" screen flip turns the
 // directional shadow OFF, and (before the fix) that forced a synchronous relink of

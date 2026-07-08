@@ -4,9 +4,11 @@
 // just this cycle's edits without touching any pre-existing working-tree changes.
 import { join } from "node:path";
 import {
-  readJSON, writeJSON, writeText, runClaude,
+  readJSON, writeJSON, writeText, runClaude, guard,
   gitSnapshot, gitChangedFiles, gitCycleDiff, ARTIFACTS,
 } from "./lib.mjs";
+
+guard({ maxMinutes: 15 }); // the claude edit call alone may run 10 min
 
 const argOut = process.argv.includes("--out")
   ? process.argv[process.argv.indexOf("--out") + 1] : null;

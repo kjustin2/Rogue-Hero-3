@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Verifies shields BREAK under damage (the user's ask) for Bastion + Mirror,
 // and that flanking the Bastion stays the fast route.
 import { chromium } from "playwright-core";

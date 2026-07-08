@@ -23,8 +23,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   launchBrowser, bootGame, enterRun, gotoScenario, samplePerf, sleep,
-  isServerUp, ensureDir, writeJSON, readJSON, GAME_DIR,
+  isServerUp, ensureDir, writeJSON, readJSON, GAME_DIR, guard,
 } from "./loop/lib.mjs";
+
+guard({ maxMinutes: 25, keepPriority: true }); // full battery; timing feeds baselines — keep normal priority
 
 const ARGS = process.argv.slice(2);
 const has = (f) => ARGS.includes(f);

@@ -51,6 +51,10 @@ type Handler<K extends keyof EventMap> = (payload: EventMap[K]) => void;
 export class EventBus {
   private handlers = new Map<keyof EventMap, Set<Handler<keyof EventMap>>>();
 
+  /** Per-event emit counts since boot — the QA coverage matrix reads these to see
+   *  which systems a test run actually exercised (an event at 0 = untested content). */
+  readonly counts: Partial<Record<keyof EventMap, number>> = {};
+
   on<K extends keyof EventMap>(name: K, fn: Handler<K>): () => void {
     let set = this.handlers.get(name);
     if (!set) {
@@ -62,6 +66,7 @@ export class EventBus {
   }
 
   emit<K extends keyof EventMap>(name: K, payload: EventMap[K]): void {
+    this.counts[name] = (this.counts[name] ?? 0) + 1;
     const set = this.handlers.get(name);
     if (!set) return;
     for (const fn of set) (fn as Handler<K>)(payload);

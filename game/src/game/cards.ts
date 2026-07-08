@@ -1648,23 +1648,35 @@ export class CardCaster {
     }
     const geo = new THREE.BufferGeometry().setFromPoints(verts);
     const line = new THREE.Line(geo, mat);
+    line.userData.solidity = "fx";
     scene.add(line);
-    const start = performance.now();
-    const fade = () => {
-      const k = (performance.now() - start) / 180;
+    // dt-driven fade (advanced in update()) — a private rAF + wall-clock loop
+    // here defeated freezeForTest/frames(n,dt) and made captures nondeterministic.
+    this.lineFades.push({ line, geo, mat, t: 0 });
+  }
+
+  /** Live lightning-line fades — advanced by update(dt) on the threaded clock. */
+  private lineFades: { line: THREE.Line; geo: THREE.BufferGeometry; mat: THREE.LineBasicMaterial; t: number }[] = [];
+
+  private updateLineFades(dt: number): void {
+    for (let i = this.lineFades.length - 1; i >= 0; i--) {
+      const f = this.lineFades[i];
+      f.t += dt;
+      const k = f.t / 0.18;
       if (k >= 1) {
-        scene.remove(line);
-        geo.dispose();
-        mat.dispose();
-        return;
+        this.ctx.stage.scene.remove(f.line);
+        f.geo.dispose();
+        f.mat.dispose();
+        this.lineFades.splice(i, 1);
+      } else {
+        f.mat.opacity = 1 - k;
       }
-      mat.opacity = 1 - k;
-      requestAnimationFrame(fade);
-    };
-    requestAnimationFrame(fade);
+    }
   }
 
   clear(): void {
+    for (const f of this.lineFades) { this.ctx.stage.scene.remove(f.line); f.geo.dispose(); f.mat.dispose(); }
+    this.lineFades = [];
     for (const m of this.mines) { this.ctx.stage.scene.remove(m.mesh); m.mat.dispose(); }
     for (const p of this.phantoms) { this.ctx.stage.scene.remove(p.group); disposeGroup(p.group); }
     for (const w of this.wells) {
@@ -1728,6 +1740,7 @@ export class CardCaster {
   }
 
   update(dt: number): void {
+    this.updateLineFades(dt);
     this.conduitTimer = Math.max(0, this.conduitTimer - dt);
     // Conduit aura while active
     if (this.conduitTimer > 0 && Math.random() < dt * 8) {

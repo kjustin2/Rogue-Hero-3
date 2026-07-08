@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Full-run smoke: navigates the generated forked map to victory, then a death.
 // State-driven: each tick it kills any enemies, then resolves whatever screen is up
 // (map fork, draft, shop, treasure, rest, event). Always picks a combat/elite path

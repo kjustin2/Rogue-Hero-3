@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Portrait capture of every enemy + boss for visual-polish review.
 // Enemies: load a plain combat room, clear it, spawn ONE unit at origin, dolly
 // the cinematic camera in. Bosses: scenario() with repeated cutscene-skip.

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard({ keepPriority: true }); // timing-GATED: keep normal priority or ms budgets measure the scheduler (guard still applies)
 // Performance smoke: drives a live Spire Caster fight (the reported freeze) while
 // sampling real animation-frame deltas. A synchronous shader-compile / GC stall
 // shows up as a multi-hundred-ms gap between frames regardless of headless pacing

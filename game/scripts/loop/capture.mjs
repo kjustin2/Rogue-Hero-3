@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import {
   launchBrowser, bootGame, snapState, clickIf, sleep, ensureDir,
-  writeJSON, isServerUp, ARTIFACTS,
+  writeJSON, readJSON, isServerUp, ARTIFACTS, shotStats, shotFlags,
 } from "./lib.mjs";
 
 const argOut = process.argv.includes("--out")
@@ -34,13 +34,16 @@ const probes = {};
 
 /** Screenshot + state snapshot for one meaningful step. `extra` merges into the
  *  recorded state (e.g. heroCardCount, bossPresent) so logic guards can read it. */
+let lastStepAt = Date.now();
 async function recordStep(key, caption, extra = {}) {
+  const ms = Date.now() - lastStepAt; // how long this step's drive took
   const file = `shots/${key}.png`;
   await page.screenshot({ path: join(OUT, file) });
   const state = { ...(await snapState(page)), ...extra };
-  steps.push({ key, caption, state });
+  steps.push({ key, caption, ms, state });
   manifest.push({ key, file, caption });
-  log(`▸ ${key} — ui=${state.ui} enemies=${state.enemyCount ?? "?"}`);
+  log(`▸ ${key} — ui=${state.ui} enemies=${state.enemyCount ?? "?"} (${ms}ms)`);
+  lastStepAt = Date.now();
 }
 
 const godmode = () => page.evaluate(() => {
@@ -185,9 +188,35 @@ try {
   errors.push(`CAPTURE-THREW: ${err.message}`);
   log("ERROR:", err.message);
 } finally {
+  // Objective shot gate: flag black/blown-out/flat frames in the manifest so the
+  // observe stage never wastes an AI judgment on (or gets fooled by) a dead frame.
+  for (const m of manifest) {
+    try {
+      const s = await shotStats(page, join(OUT, m.file));
+      m.audit = shotFlags(s);
+      if (m.audit.length) log(`shot gate: ${m.key} flagged ${m.audit.join(",")}`);
+    } catch { m.audit = ["UNDECODABLE"]; }
+  }
+  // Step-duration anomaly oracle: a step taking >max(3× median, median+2s) vs
+  // its own history is a perf/soft-lock regression the goal probes can't see.
+  const histPath = join(ARTIFACTS, "step-times.json");
+  const hist = readJSON(histPath, {});
+  const anomalies = [];
+  for (const s of steps) {
+    if (typeof s.ms !== "number") continue;
+    const samples = hist[s.key] || [];
+    if (samples.length >= 3) {
+      const med = [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+      if (s.ms > Math.max(3 * med, med + 2000)) anomalies.push(`${s.key}: ${s.ms}ms vs median ${med}ms`);
+    }
+    hist[s.key] = [...samples, s.ms].slice(-9);
+  }
+  writeJSON(histPath, hist);
+  if (anomalies.length) log(`step-duration anomalies: ${anomalies.join("; ")}`);
+
   const trace = {
     meta: { capturedAt: new Date().toISOString?.() ?? null, out: OUT },
-    steps, probes, consoleErrors: errors,
+    steps, probes, anomalies, consoleErrors: errors,
   };
   writeJSON(join(OUT, "trace.json"), trace);
   writeJSON(join(OUT, "manifest.json"), manifest);

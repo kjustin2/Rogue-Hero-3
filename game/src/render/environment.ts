@@ -64,7 +64,12 @@ export class EnvironmentBaker {
     this.mats[4].color.copy(this.cEmber).multiplyScalar(0.3);
     this.mats[5].color.copy(this.cEmber).multiplyScalar(0.22);
     const prev = this.rt;
-    this.rt = this.pmrem.fromScene(this.scene, 0.5);
+    // Blur sigma 1.2 (was 0.5): a SHARP env from this tiny 6-plane box produced hard bright
+    // specular lobes, so on real GPUs a glossy surface (blade, crystals, metal set-dressing)
+    // reflecting it would SNAP/twinkle as the follow-camera swept the lobe across it — a
+    // view-dependent "blink when moving" that software rendering masks. A soft, low-frequency
+    // env changes smoothly under camera motion; it's still colored ambient IBL, just no lobes.
+    this.rt = this.pmrem.fromScene(this.scene, 1.2);
     prev?.dispose();
     return this.rt.texture;
   }

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // THE WOUND BENEATH (Ascension true-final) smoke: killing the Unmaker at depth 3+
 // tears the floor open and stages the Wound fight on the final fork. Asserts the
 // reveal fires, the wound spawns with its own tempo meter, it SWALLOWS a card slot,

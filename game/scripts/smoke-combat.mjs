@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Combat-feel smoke: charged heavy (hold attack → guard-breaking sweep that leaves
 // foes Vulnerable) and parry (meet a frontal blow in the swing's opening beat).
 // Needs the dev server on 5174.

@@ -21,6 +21,7 @@ const { app, BrowserWindow } = require("electron");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { guard, guardWindow } = require("./lib/guard.cjs");
 
 const distDir = path.join(__dirname, "..", "dist");
 const outDir = path.join(__dirname, "..", "artifacts", "perf");
@@ -36,6 +37,9 @@ if (!fs.existsSync(path.join(distDir, "index.html"))) {
 const MODE = process.env.SOAK || "full"; // quick | full | deep
 const SCALE = MODE === "quick" ? 0.4 : MODE === "deep" ? 1.8 : 1;
 const ms = (base) => Math.round(base * SCALE);
+// Real-GPU stress is exactly the run that must never squat the machine: hard
+// wall-clock budget scaled to the mode, plus the lock/memory/priority governor.
+guard({ name: `perf-soak-${MODE}`, maxMinutes: MODE === "quick" ? 8 : MODE === "deep" ? 25 : 15 });
 
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -86,6 +90,10 @@ app.whenReady().then(async () => {
   let rendererGone = null, unresponsive = false;
   win.webContents.on("render-process-gone", (_e, d) => { rendererGone = d.reason; errors.push("RENDERER GONE: " + d.reason); });
   win.webContents.on("unresponsive", () => { unresponsive = true; errors.push("UNRESPONSIVE"); });
+  // A gone/hung renderer makes the soak data junk AND would hang the next
+  // executeJavaScript await forever — abort immediately instead (kills the
+  // GPU-pegged window; this exact hang is what froze the machine).
+  guardWindow(win);
 
   const js = (s) => win.webContents.executeJavaScript(s);
   const capture = async (name) => {
@@ -240,14 +248,31 @@ app.whenReady().then(async () => {
     }
 
     // 8) Sustained soak — long continuous heavy combat so GC cycles many times.
+    // Heap sampled throughout: a positive HEAP-FLOOR slope that never flattens
+    // is the leak signature (trend-based soak gating, not point-based).
     await js(`window.__rh3debug.room("combat", 4); window.__rh3menus.clear(); window.__rh3.player.hp = window.__rh3.player.maxHp;`);
     await sleep(600);
+    await js(`window.__heapS=[]; window.__heapT=setInterval(()=>{ if(performance.memory) window.__heapS.push([performance.now(), performance.memory.usedJSHeapSize]); }, 2500);`);
     await phase("sustained-soak", ms(22000), { load: true });
+    const heapSamples = await js(`clearInterval(window.__heapT); window.__heapS`);
+
+    // 8b) DISPOSAL-LEAK PROBE — renderer.info resource counts must return to
+    // baseline after repeated load/clear of the SAME room; drift = a dispose()
+    // leak the instantaneous draw-call gates can't see.
+    await js(`window.__rh3perf.setSpikeLabel("disposal-probe"); window.__rh3debug.room("combat", 2); window.__rh3menus.clear();`);
+    await sleep(1400);
+    const resBase = await js(`(()=>{const s=window.__rh3perf.snapshot();return {geometries:s.geometries,textures:s.textures,programs:s.programs};})()`);
+    for (let i = 0; i < 5; i++) {
+      await js(`window.__rh3debug.room("combat", 2); window.__rh3menus.clear();`);
+      await sleep(ms(900));
+    }
+    await sleep(1400);
+    const resAfter = await js(`(()=>{const s=window.__rh3perf.snapshot();return {geometries:s.geometries,textures:s.textures,programs:s.programs};})()`);
 
     // ── Collect + analyze ─────────────────────────────────────────────────────
     const spikes = await js(`window.__rh3perf.spikes()`);
     const finalReport = await js(`window.__rh3perf.report()`);
-    writeReport(spikes, finalReport);
+    writeReport(spikes, finalReport, { heapSamples, resBase, resAfter });
   } catch (e) {
     errors.push("EXCEPTION: " + (e && e.message ? e.message : String(e)));
     console.error(e);
@@ -262,7 +287,25 @@ app.whenReady().then(async () => {
   app.exit(realErrors.length || rendererGone ? 1 : 0);
 });
 
-function writeReport(spikes, finalReport) {
+function writeReport(spikes, finalReport, leaks = {}) {
+  // ── Leak oracles ──────────────────────────────────────────────────────────
+  let heapSlopeMBmin = null;
+  const hs = leaks.heapSamples || [];
+  if (hs.length >= 4) {
+    const xs = hs.map((s) => s[0] / 60000), ys = hs.map((s) => s[1] / 1048576);
+    const n = xs.length, mx = xs.reduce((a, b) => a + b, 0) / n, my = ys.reduce((a, b) => a + b, 0) / n;
+    const num = xs.reduce((a, x, i) => a + (x - mx) * (ys[i] - my), 0);
+    const den = xs.reduce((a, x) => a + (x - mx) * (x - mx), 0) || 1;
+    heapSlopeMBmin = Math.round((num / den) * 100) / 100;
+  }
+  const resDrift = leaks.resBase && leaks.resAfter
+    ? Object.fromEntries(Object.keys(leaks.resBase).map((k) => [k, leaks.resAfter[k] - leaks.resBase[k]]))
+    : null;
+  const leakWarnings = [];
+  if (heapSlopeMBmin != null && heapSlopeMBmin > 1.5) leakWarnings.push(`heap grows ${heapSlopeMBmin}MB/min under sustained load — per-frame allocation or a JS leak`);
+  if (resDrift && (resDrift.geometries > 8 || resDrift.textures > 8)) leakWarnings.push(`resource counts did not return to baseline after 5 room reloads (Δgeom ${resDrift.geometries}, Δtex ${resDrift.textures}) — a dispose() leak`);
+  if (resDrift && resDrift.programs > 2) leakWarnings.push(`+${resDrift.programs} shader programs from reloading the SAME room — a material is being recreated per load (compile-hitch fuel)`);
+
   const byLabel = {};
   const byClass = { compile: 0, "gc/stall": 0 };
   for (const s of spikes) {
@@ -295,7 +338,12 @@ function writeReport(spikes, finalReport) {
   console.log("\n── 25 worst individual spikes ──");
   worst.forEach((s) => console.log(`  ${String(s.dt).padStart(4)}ms  ${s.klass.padEnd(8)}  @${(s.label || s.state).padEnd(22)}  enemies ${s.enemies}  draws ${s.draws}  Δprog ${s.dProg}  Δheap ${s.dHeapMB}mb`));
 
-  const out = { mode: MODE, generatedBy: "perf-soak-electron", byClass, phases, labels: labelRows, worst, compiles, finalReport };
+  console.log("\n── Leak oracles ──");
+  console.log(`  heap-floor slope: ${heapSlopeMBmin == null ? "n/a" : heapSlopeMBmin + " MB/min"} (sustained-soak)`);
+  if (resDrift) console.log(`  disposal probe (5× same-room reload): Δgeometries ${resDrift.geometries}  Δtextures ${resDrift.textures}  Δprograms ${resDrift.programs}`);
+  leakWarnings.forEach((w) => console.log(`  *** LEAK WARNING: ${w}`));
+
+  const out = { mode: MODE, generatedBy: "perf-soak-electron", byClass, phases, labels: labelRows, worst, compiles, heapSlopeMBmin, resDrift, leakWarnings, finalReport };
   const file = path.join(outDir, "soak.json");
   fs.writeFileSync(file, JSON.stringify(out, null, 2));
   console.log(`\nFull data → artifacts/perf/soak.json`);

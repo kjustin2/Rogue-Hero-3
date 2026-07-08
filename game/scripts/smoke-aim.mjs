@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Gamepad combat smoke: the new default pad mapping (attack + 3 cards on the
 // shoulder buttons; dodge=A, crash=B, target=Y, mercy=X, pause=Start),
 // auto-aim facing the nearest enemy, and the [Y] switch-target lock-on. Runs in

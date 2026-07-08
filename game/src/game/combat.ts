@@ -96,6 +96,7 @@ export class Combat {
       });
       const mesh = new THREE.Mesh(new THREE.RingGeometry(1.1, 2.6, 32, 1, 0, Math.PI / 2), mat);
       mesh.visible = false;
+      mesh.userData.solidity = "fx";
       ctx.stage.scene.add(mesh);
       this.slashes.push({ mesh, mat, t: 0, active: false });
     }

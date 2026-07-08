@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Ascension smoke: depth picker on hero select + live enemy-HP/damage scaling.
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

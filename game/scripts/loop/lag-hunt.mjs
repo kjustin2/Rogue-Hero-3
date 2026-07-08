@@ -4,7 +4,9 @@
 // We drive through gameplay events and report which ones add programs (and when).
 //
 //   node scripts/loop/lag-hunt.mjs
-import { launchBrowser, bootGame, sleep, isServerUp } from "./lib.mjs";
+import { launchBrowser, bootGame, sleep, isServerUp, guard } from "./lib.mjs";
+
+guard({ maxMinutes: 15 }); // drives every event in the game — runs long
 
 if (!(await isServerUp())) { console.error("[lag-hunt] dev server not on :5174"); process.exit(2); }
 const { browser, page, errors } = await launchBrowser();

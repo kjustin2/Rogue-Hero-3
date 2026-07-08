@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Map node-kind smoke: navigates the forked map PREFERRING interstitial nodes
 // (shop/treasure/rest/event) so each resolves cleanly, then finishes the run.
 import { chromium } from "playwright-core";

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Balance + UX smoke: boss HP raised, synergy badge removed, shard balance shown on
 // drafts, blessing description shown, gamepad layout documented. Needs dev server :5174.
 import { chromium } from "playwright-core";

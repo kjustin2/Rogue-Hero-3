@@ -273,6 +273,7 @@ export class Arena {
       root.add(group);
     }
     root.visible = false;
+    root.userData.solidity = "nonsolid"; // decorative ring outside the movement clamp
     scene.add(root);
     return root;
   }
@@ -302,6 +303,8 @@ export class Arena {
     if (!defs.length) return;
 
     this.obstacleGroup = new THREE.Group();
+    // Collision-truth audit: every mesh under this group is backed by a collider circle.
+    this.obstacleGroup.userData.solidity = "solid";
     for (const d of defs) {
       const h = 2.4 + d.r;
       // Faint accent emissive on the rock body so mid-field pillars read as lit
@@ -540,6 +543,7 @@ export class Arena {
       `,
     });
     const sky = new THREE.Mesh(new THREE.SphereGeometry(160, 32, 16), this.skyMat);
+    sky.userData.solidity = "nonsolid";
     scene.add(sky);
 
     // --- Floor: obsidian disc with painted grid texture
@@ -563,6 +567,7 @@ export class Arena {
     );
     disc.position.y = -1.2;
     disc.receiveShadow = true;
+    disc.userData.solidity = "ground"; // the walkable floor — never a blocker
     scene.add(disc);
     // Top cap material slot: cylinder material order is [side, top, bottom]
     disc.geometry.groups.forEach((g, i) => (g.materialIndex = i === 1 ? 1 : i === 2 ? 2 : 0));
@@ -577,6 +582,7 @@ export class Arena {
     const rim = new THREE.Mesh(new THREE.TorusGeometry(ARENA_RADIUS + 0.9, 0.16, 12, 96), this.rimMat);
     rim.rotation.x = Math.PI / 2;
     rim.position.y = 0.1;
+    rim.userData.solidity = "nonsolid";
     scene.add(rim);
 
     // --- Edge dressing: one group per act silhouette, toggled by theme
@@ -673,6 +679,7 @@ export class Arena {
       m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
       m.scale.setScalar(0.8 + Math.random() * 2.8);
       m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+      m.userData.solidity = "nonsolid"; // drifting void rocks, far outside reach
       scene.add(m);
       this.rocks.push({
         mesh: m,

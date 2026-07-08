@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Headless-browser smoke: boots the game, captures console errors, screenshots
 // the menu and (via simulated input) early gameplay. Usage: node scripts/smoke-browser.mjs
 import { chromium } from "playwright-core";

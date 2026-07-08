@@ -84,6 +84,12 @@ const DECAL_ORDER = { base: 0, glow: 1, ring: 2, warn: 3, plate: 4 } as const;
  * node's `feature`, ticked in the main loop, disposed on every room change.
  */
 export class MapFeatures {
+  /** Scene-add with the collision-truth tag: features are hazards/pads the player
+   *  walks over by design — never blockers, so the audit must not flag them. */
+  private addTagged(...objs: THREE.Object3D[]): void {
+    for (const o of objs) { o.userData.solidity = "nonsolid"; this.ctx.stage.scene.add(o); }
+  }
+
   private hazards: Hazard[] = [];
   private pads: Pad[] = [];
   private spikes: SpikeTrap[] = [];
@@ -132,24 +138,24 @@ export class MapFeatures {
       taken.push({ x, z });
       const r = 2 + this.ctx.rng.range(0, 1.3);
       // Scorched dark base so the pit reads as burnt ground, not a flat decal.
-      const baseMat = new THREE.MeshBasicMaterial({ color: 0x190a06, transparent: true, opacity: 0.82, depthWrite: false });
+      const baseMat = new THREE.MeshBasicMaterial({ color: 0x190a06, transparent: true, opacity: 0.82, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
       const base = new THREE.Mesh(new THREE.CircleGeometry(r * 1.1, 30), baseMat);
       base.rotation.x = -Math.PI / 2;
       base.position.set(x, DECAL_Y.base, z);
       base.renderOrder = DECAL_ORDER.base;
       // Molten inner glow, animated each frame.
-      const glowMat = new THREE.MeshBasicMaterial({ color: 0xff5a1e, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false });
+      const glowMat = new THREE.MeshBasicMaterial({ color: 0xff5a1e, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
       const glow = new THREE.Mesh(new THREE.CircleGeometry(r, 30), glowMat);
       glow.rotation.x = -Math.PI / 2;
       glow.position.set(x, DECAL_Y.glow, z);
       glow.renderOrder = DECAL_ORDER.glow;
       // Bright molten rim.
-      const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8a3a, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8a3a, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
       const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.24, r + 0.1, 30), ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.position.set(x, DECAL_Y.ring, z);
       ring.renderOrder = DECAL_ORDER.ring;
-      this.ctx.stage.scene.add(base, glow, ring);
+      this.addTagged(base, glow, ring);
       // Flickering flame tongues clustered in the pit (shared geo/mat per pit).
       const flameMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.72, blending: THREE.AdditiveBlending, depthWrite: false });
       const flameGeo = new THREE.ConeGeometry(0.34, 1.25, 6);
@@ -160,7 +166,7 @@ export class MapFeatures {
         const rr = this.ctx.rng.range(0, r * 0.62);
         const fl = new THREE.Mesh(flameGeo, flameMat);
         fl.position.set(x + Math.sin(a) * rr, 0.6, z + Math.cos(a) * rr);
-        this.ctx.stage.scene.add(fl);
+        this.addTagged(fl);
         flames.push(fl);
       }
       this.hazards.push({ x, z, r, base, baseMat, glow, glowMat, ring, ringMat, flames, flameGeo, flameMat, emberAcc: 0 });
@@ -213,7 +219,7 @@ export class MapFeatures {
       const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.95, 5, 16, 1, true), beamMat);
       beam.position.y = 2.5;
       group.add(beam);
-      this.ctx.stage.scene.add(group);
+      this.addTagged(group);
       this.pads.push({ x: p.x, z: p.z, group, ring, mat, shards, beam, beamMat });
     }
     this.teleCd = 1; // don't trigger on the frame they appear
@@ -227,13 +233,13 @@ export class MapFeatures {
       taken.push({ x, z });
       const r = 1.7 + this.ctx.rng.range(0, 0.7);
       // Outline ring marking the bite zone.
-      const plateMat = new THREE.MeshBasicMaterial({ color: 0xffb33a, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+      const plateMat = new THREE.MeshBasicMaterial({ color: 0xffb33a, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
       const plate = new THREE.Mesh(new THREE.RingGeometry(r - 0.2, r, 28), plateMat);
       plate.rotation.x = -Math.PI / 2;
       plate.position.set(x, DECAL_Y.plate, z);
       plate.renderOrder = DECAL_ORDER.plate;
       // Filled warning glow that floods in during the telegraph window.
-      const warnMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const warnMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
       const warn = new THREE.Mesh(new THREE.CircleGeometry(r - 0.2, 26), warnMat);
       warn.rotation.x = -Math.PI / 2;
       warn.position.set(x, DECAL_Y.warn, z);
@@ -268,7 +274,7 @@ export class MapFeatures {
         spikes.add(cone);
       }
       spikes.position.set(x, SPIKE_PARK_Y, z); // parked well below the floor
-      this.ctx.stage.scene.add(plate, warn, collar, spikes);
+      this.addTagged(plate, warn, collar, spikes);
       this.spikes.push({ x, z, r, plate, plateMat, warn, warnMat, collar, collarMat, spikes, spikeMat, spikeGeo, phase: (i / n) * SPIKE_PERIOD, cd: 0 });
     }
   }
@@ -302,7 +308,7 @@ export class MapFeatures {
       for (let s = 0; s < 6; s++) { const sa = (s / 6) * Math.PI * 2; addSpike(Math.sin(sa), (s % 2 ? -0.25 : 0.25), Math.cos(sa)); }
       addSpike(0, 1, 0); addSpike(0, -1, 0);
       mesh.position.set(x, 1.1, z);
-      this.ctx.stage.scene.add(mesh);
+      this.addTagged(mesh);
       this.drifters.push({ x, z, vx: Math.sin(a) * sp, vz: Math.cos(a) * sp, r: 1.15, cd: 0, mesh, mat });
     }
   }
@@ -327,7 +333,7 @@ export class MapFeatures {
     const hubMat = new THREE.MeshBasicMaterial({ color: 0xbfeeff, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
     const hub = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 0), hubMat);
     hub.position.set(x, 0.5, z);
-    this.ctx.stage.scene.add(bar, hub);
+    this.addTagged(bar, hub);
     const dir = this.ctx.rng.chance(0.5) ? 1 : -1;
     this.sweepers.push({ bar, mat, core, coreMat, hub, hubMat, x, z, len, angle: this.ctx.rng.range(0, Math.PI), speed: dir * (0.75 + this.ctx.rng.range(0, 0.22)), half: 0.55, cd: 0 });
   }
@@ -349,7 +355,7 @@ export class MapFeatures {
       rim.position.set(x, 0.09, z);
       rim.renderOrder = DECAL_ORDER.ring;
       // Floor glow that floods in as the geyser charges.
-      const warnMat = new THREE.MeshBasicMaterial({ color: 0xff6a1e, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false });
+      const warnMat = new THREE.MeshBasicMaterial({ color: 0xff6a1e, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
       const warn = new THREE.Mesh(new THREE.CircleGeometry(r * 0.78, 24), warnMat);
       warn.rotation.x = -Math.PI / 2;
       warn.position.set(x, DECAL_Y.warn, z);
@@ -360,7 +366,7 @@ export class MapFeatures {
       column.position.set(x, 2.2, z);
       column.scale.y = 0.001;
       column.renderOrder = DECAL_ORDER.plate;
-      this.ctx.stage.scene.add(rim, warn, column);
+      this.addTagged(rim, warn, column);
       this.vents.push({ x, z, r, rim, rimMat, warn, warnMat, column, colMat, phase: (i / n) * VENT_PERIOD, cd: 0, emberAcc: 0 });
     }
   }

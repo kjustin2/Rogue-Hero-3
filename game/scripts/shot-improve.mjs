@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Capture each act's sky + the reworked bosses (1 Warden, 3 Colossus, 5 Unmaker).
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";

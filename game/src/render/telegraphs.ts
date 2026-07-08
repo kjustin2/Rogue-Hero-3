@@ -79,6 +79,7 @@ export class Telegraphs {
       sweep.position.y = 0.01;
       group.add(outline, fill, impact, zone, sweep);
       group.visible = false;
+      group.userData.solidity = "fx";
       this.scene.add(group);
       this.pool.push({
         group, outline, fill, impact, zone, sweep, annulus: null,

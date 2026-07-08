@@ -59,6 +59,7 @@ export class SwordTrail {
     this.mesh = new THREE.Mesh(this.geometry, this.mat);
     this.mesh.frustumCulled = false;
     this.mesh.visible = false;
+    this.mesh.userData.solidity = "fx";
     scene.add(this.mesh);
   }
 

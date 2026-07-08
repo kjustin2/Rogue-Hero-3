@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Wide orbit-cam capture of the reworked melee/rooted bosses so their radial
 // attacks (Warden ember-fan/fissure, Colossus magma-nova) and arm animation are
 // fully in frame. Dense frames catch the projectile rings mid-flight.

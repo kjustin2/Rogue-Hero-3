@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard({ keepPriority: true }); // timing-GATED: keep normal priority or ms budgets measure the scheduler (guard still applies)
 // Performance stress smoke: loads a dense combat room, keeps many enemies,
 // projectiles, particles, card effects, DOM floaters, and SFX events active,
 // then samples animation-frame gaps for stall detection. Needs dev server.

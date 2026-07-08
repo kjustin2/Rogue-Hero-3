@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Card visual identity smoke: every card should get a unique HUD-slot class
 // and draft-card sigil layer. Needs the dev server running.
 import { chromium } from "playwright-core";

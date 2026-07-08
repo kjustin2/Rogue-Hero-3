@@ -1,5 +1,10 @@
 # Self-iterating improvement loop
 
+> Sibling: the **QA doctor** (`npm run qa`, `scripts/qa/`) is the assessment side — one command,
+> one health card (`artifacts/qa/QA.md`) across build/functional/stability/coverage/visual/
+> glitch/perf/runtime/judge. Typical flow: `qa` finds issues → its judge's rankedIssues become
+> goals in `goals.mjs` → this loop drives them to green.
+
 A closed feedback loop that drives the game toward a set of measurable goals,
 using **screenshots as the visual source of truth** and **state assertions as the
 logical source of truth**. Each cycle:
@@ -18,11 +23,30 @@ good-looking screenshot taken in the wrong state can never pass on looks alone.
 
 ```bash
 cd game
-npm run loop                 # full loop, default budget (6 cycles / 120 min)
-npm run loop -- --max-cycles 3 --max-minutes 45
+npm run loop                 # full loop, default budget (6 cycles / 120 min / $20 claude spend)
+npm run loop -- --max-cycles 3 --max-minutes 45 --max-cost 8
 npm run loop -- --no-implement   # assess + report only, make no code changes
 npm run loop -- --reset      # wipe prior artifacts and start clean
 ```
+
+Everything runs under the test-run governor (`scripts/lib/guard.cjs`): hard watchdog, the
+machine-wide one-test-at-a-time lock (stages inherit it), memory sentinel, child cleanup.
+
+### Convergence guards (why the loop can't thrash)
+
+- **Behavioral-regression revert** — after a change lands, capture+probes re-run; any
+  previously-passing deterministic signal now failing → the cycle's edits are reverted.
+- **Proposal-fingerprint ledger** (`artifacts/loop/ledger.json`) — a proposal that failed
+  (build or behavioral) ≥2 times is BANNED in the observe prompt.
+- **Stall breaker** — 3 evaluations with no new goal met stops the loop with a report.
+- **Harness-failure bucket** — if capture itself threw, the loop stops instead of proposing
+  game "fixes" off broken screenshots.
+- **Learnings ledger** (`artifacts/loop/LEARNINGS.md`) — one line per cycle, append-only,
+  fed back into the observe prompt as cross-session regression memory.
+- **Frame gates** — capture stamps objective shot flags (BLACK/BLOWOUT/FLAT) into
+  `manifest.json`; the judge fails goals whose evidence frames are broken, and a
+  step-duration anomaly oracle (`artifacts/loop/step-times.json`) flags steps running
+  >3× their historical median.
 
 The orchestrator manages the dev server itself (reuses one already on :5174, or
 starts and later stops its own). The only prerequisite is the Playwright Chromium

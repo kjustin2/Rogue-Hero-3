@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Meta-progression: fresh profile → locked drafts; win a run → unlock toasts,
 // persisted profile, progress screen shows stats.
 import { chromium } from "playwright-core";

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Visual audit: spawns the fixed enemies near the player and screenshots them
 // from several camera-relative positions (z-fighting is angle-dependent).
 import { chromium } from "playwright-core";

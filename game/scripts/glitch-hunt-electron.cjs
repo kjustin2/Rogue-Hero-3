@@ -10,6 +10,8 @@ const { app, BrowserWindow } = require("electron");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { guard, guardWindow } = require("./lib/guard.cjs");
+guard({ name: "glitch-hunt", maxMinutes: 8 });
 
 const distDir = path.join(__dirname, "..", "dist");
 const outDir = path.join(__dirname, "..", "shots", "glitch-gpu");
@@ -35,6 +37,7 @@ const bitmapDiff = (a, b) => { let s = 0; const n = a.length; for (let i = 0; i 
 app.whenReady().then(async () => {
   const port = await startServer();
   const win = new BrowserWindow({ width: 1280, height: 720, show: false, paintWhenInitiallyHidden: true, backgroundColor: "#05070a", webPreferences: { backgroundThrottling: false, offscreen: false } });
+  guardWindow(win); // hung/dead renderer under real-GPU load → abort, never hang
   win.webContents.setAudioMuted(true);
   win.showInactive();
   win.webContents.on("console-message", (_e, l, m) => { if (l >= 3) errors.push("CONSOLE: " + m); });
@@ -60,7 +63,31 @@ app.whenReady().then(async () => {
 
   // Freeze the world, orbit the camera slowly, capture + diff + save frames.
   await js(`window.__rh3debug.freezeForTest(true)`);
-  await sleep(200);
+  await sleep(250);
+
+  // (a) FIXED-CAMERA temporal BISECTION: with the world AND camera frozen, a correct render
+  // is pixel-identical frame-to-frame. If it isn't, a render effect is varying per frame.
+  // Cumulatively disable effects; the step where the temporal diff drops to ~0 is the cause.
+  const temporalDiff = async (frames = 6) => {
+    let p = null, t = 0, n = 0;
+    for (let i = 0; i < frames; i++) { await sleep(55); const im = await win.webContents.capturePage(); const b = im.toBitmap(); if (p) { t += bitmapDiff(p, b); n++; } p = b; }
+    return t / n;
+  };
+  const steps = [
+    ["baseline", ""],
+    ["-msaa", `window.__rh3.stage.setDebug("msaa",false)`],
+    ["-smaa", `window.__rh3.stage.setDebug("smaa",false)`],
+    ["-bloom", `window.__rh3.stage.setDebug("bloom",false)`],
+    ["-grade", `window.__rh3.stage.setDebug("grade",false)`],
+    ["-vignette", `window.__rh3.stage.setDebug("vignette",false)`],
+    ["-env", `window.__rh3.stage.setDebug("env",false)`],
+    ["-shadows", `window.__rh3.stage.setDebug("shadows",false)`],
+  ];
+  for (const [name, setup] of steps) { if (setup) { await js(setup); await sleep(350); } const d = await temporalDiff(); console.log(`temporal[${name}]: ${d.toFixed(3)} /255`); }
+  // restore
+  await js(`["msaa","smaa","bloom","grade","vignette","env","shadows"].forEach(n=>window.__rh3.stage.setDebug(n,true))`);
+  await sleep(300);
+
   let prev = null, total = 0, pairs = 0, maxd = 0;
   const FRAMES = 12;
   for (let i = 0; i < FRAMES; i++) {

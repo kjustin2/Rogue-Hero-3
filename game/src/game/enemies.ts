@@ -163,6 +163,7 @@ export abstract class Enemy {
   constructor(protected ctx: Ctx, x: number, z: number) {
     this.pos.set(x, 0, z);
     this.root.position.copy(this.pos);
+    this.root.userData.solidity = "mover"; // collision-truth audit: movers are exempt
     ctx.stage.scene.add(this.root);
 
     const barMatBg = new THREE.SpriteMaterial({ color: 0x000000, opacity: 0.55, transparent: true, depthWrite: false });
@@ -220,6 +221,7 @@ export abstract class Enemy {
     const s = this.kind === "boss" ? Math.max(6, this.radius * 4.6) : Math.max(1.5, this.radius * 3.4);
     m.scale.set(s, s, s);
     m.renderOrder = -1;
+    m.userData.solidity = "fx";
     this.ctx.stage.scene.add(m);
     this.groundGlow = m;
   }
@@ -1520,6 +1522,7 @@ export class Sentinel extends Enemy {
     });
     this.beamMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 1), this.beamMat);
     this.beamMesh.visible = false;
+    this.beamMesh.userData.solidity = "fx";
     ctx.stage.scene.add(this.beamMesh);
   }
 
@@ -1762,7 +1765,12 @@ export class EnemyManager {
 
   living(): Enemy[] {
     if (this.livingDirty) {
-      this.livingCache = this.enemies.filter((e) => e.alive);
+      // Refill in place (no new array, no per-call closure) — living() is the hottest
+      // accessor in the game (combat/AI/projectiles/HUD/contact-shadows all call it) and
+      // update() marks it dirty every frame, so `.filter()` here was the single biggest
+      // per-frame GC source in heavy combat (the soak's gc/stall spikes).
+      this.livingCache.length = 0;
+      for (const e of this.enemies) if (e.alive) this.livingCache.push(e);
       this.livingDirty = false;
     }
     return this.livingCache;
@@ -1784,7 +1792,7 @@ export class EnemyManager {
     this.enemies = [];
     this.pending = [];
     this.streakCount = 0;
-    this.livingCache = [];
+    this.livingCache.length = 0;
     this.livingDirty = false;
   }
 

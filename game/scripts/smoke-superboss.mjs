@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Superboss + new-node-kind smoke: the optional Rift Echo (two telegraphed phases,
 // counts as a mid-map clear not a victory) and the Shrine / Gamble screens.
 // Needs the dev server on 5174.

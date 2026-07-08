@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Gamepad smoke: detection (event + poll backstop), the "Controller connected"
 // toast, menu navigation (focus ring + A activates), left-stick → moveVector, and
 // disconnect handling. A real pad can't be conjured, so we surface a fake one via

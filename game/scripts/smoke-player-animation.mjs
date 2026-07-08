@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Player visual smoke: walking should keep a grounded stride without side sway,
 // and the hero body should not contain the old glowing back torus.
 import { chromium } from "playwright-core";

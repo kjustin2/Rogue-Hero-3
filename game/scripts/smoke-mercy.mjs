@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Mercy/true-ending smoke: reach the Unmaker's fading phase, hold [Q] to spare it,
 // and confirm the hopeful ending ("THE LIGHT ENDURES") instead of the bittersweet one.
 // Also checks warden boons are granted on a mid-boss kill. Needs dev server :5174.

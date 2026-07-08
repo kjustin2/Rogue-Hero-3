@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Adversarial edge-case hunt: damage stacking sanity, save round-trip,
 // bosses-have-no-affix. Needs the dev server on 5174.
 import { chromium } from "playwright-core";

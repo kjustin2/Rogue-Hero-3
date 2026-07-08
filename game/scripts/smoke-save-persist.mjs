@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Regression probe for cross-restart SAVE PERSISTENCE — the fixed-loopback-port fix
 // in electron-main.cjs. localStorage (run checkpoints, profile, unlocks, cosmetics)
 // is partitioned by origin, and the origin includes the port; the pre-fix code bound

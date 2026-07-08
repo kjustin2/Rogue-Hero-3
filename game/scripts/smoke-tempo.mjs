@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Tempo active-system smoke: Crescendo stacks at Critical, and the perfect-crash
 // refund still works. Needs dev server :5174.
 import { chromium } from "playwright-core";

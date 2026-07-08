@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Counter-window smoke: a perfect dodge arms the next melee strike (+75% dmg,
 // bonus tempo). Arms the window via the debug seam, swings at a parked enemy,
 // and asserts the strike consumed it (decay alone can't zero it this fast).

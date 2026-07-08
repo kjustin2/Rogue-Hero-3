@@ -7,8 +7,10 @@
 // pre-fix code used), the read phase would see an empty store.
 const { app, BrowserWindow } = require("electron");
 const http = require("http");
+const { guard, guardWindow } = require("./lib/guard.cjs");
 
 const PHASE = process.env.SAVE_PHASE || "write";
+guard({ name: `save-persist-${PHASE}`, maxMinutes: 3 });
 const PORT = Number(process.env.SAVE_PORT || 41731);
 if (process.env.SAVE_USERDATA) app.setPath("userData", process.env.SAVE_USERDATA);
 
@@ -38,6 +40,7 @@ function serve() {
   }
 
   const win = new BrowserWindow({ show: false });
+  guardWindow(win);
   win.webContents.setAudioMuted(true); // no soundtrack during test runs
   await win.loadURL("http://127.0.0.1:" + PORT + "/");
 

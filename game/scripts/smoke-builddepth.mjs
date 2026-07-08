@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Build-depth smoke: Vulnerable status (dealDamage scales), Shatterglass detonator,
 // Overcharger free-3rd-cast, card tags + relic tiers present. Needs dev server :5174.
 import { chromium } from "playwright-core";

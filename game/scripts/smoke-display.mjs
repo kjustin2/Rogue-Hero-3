@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Headless-browser smoke for the Display settings (resolution scale, fullscreen,
 // frame-rate cap, sectioned Settings UI). Boots, opens Settings, asserts the new
 // controls exist and that Resolution Scale actually changes the renderer pixel

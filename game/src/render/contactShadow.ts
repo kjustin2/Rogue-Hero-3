@@ -40,6 +40,7 @@ export class ContactShadows {
       this.pool.push(m);
     }
     this.group.matrixAutoUpdate = false;
+    this.group.userData.solidity = "fx";
     scene.add(this.group);
   }
 

@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // Verifies the standalone Electron app boots dist/ and renders the menu.
 // Opens a real window briefly, screenshots it, then closes.
 import { _electron } from "playwright-core";

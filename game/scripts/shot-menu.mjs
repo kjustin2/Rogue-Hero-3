@@ -1,3 +1,5 @@
+import { guard } from "./lib/guard.cjs";
+guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/guard.cjs)
 // One-off visual capture for the menu-perf work: main menu, hero select, and a
 // hovered hero preview, at a forced quality so we can eyeball that the low-cost
 // menu render path keeps the look (bloom/glow, hero, frozen-but-present shadow).

@@ -21,6 +21,83 @@ Single-player 3D action roguelike on **Three.js** (the June 2026 ground-up rebui
 npm run verify     # tsc --noEmit && vite build (~10s)
 ```
 
+**Stop dev servers before ending the turn** — the owner only tests via the standalone build
+(`start.bat` / `npm run standalone` / the exe). Never hand back with `npm run dev` running; kill the
+process tree (`taskkill /T`) so no orphan squats the port or serves stale code to the next smoke.
+
+### Test-run governor (HARD RULE — a test run once froze the whole machine)
+
+Every test script runs under `scripts/lib/guard.cjs`: a hard wall-clock **watchdog**, a
+**machine-wide lock** (one guarded test at a time, `%TEMP%/game-test-guard.lock`), a **low-memory
+sentinel** (aborts below ~1.5GB free), **below-normal priority**, and **child-tree cleanup** on
+every exit path. Electron harnesses also wire `guardWindow(win)` so a hung/dead renderer ABORTS
+instead of blocking `executeJavaScript` forever with a GPU-pegged window open (the 2026-07-05
+freeze class). Rules:
+
+- **NEVER run two test scripts in parallel** (no parallel agents each launching smokes, no `&`
+  fan-out). The lock enforces it — a second run waits, then exits 4. One GPU, one CPU pool.
+- New test scripts must init the guard: `import { guard } from "./lib/guard.cjs"; guard();`
+  (importing `loop/lib.mjs` does it automatically). Long runners pass `{ maxMinutes }`.
+- Prefer `npm run suite` / `smoke:core` over hand-chaining scripts — the runner adds per-script
+  timeouts, kills hung children, audits fresh screenshots, and writes `artifacts/suite/SUITE.md`.
+- Real-GPU stress (`perf:soak`, `glitch-hunt`) has mode-scaled budgets; never strip them.
+
+### The QA doctor — one command, one health card
+
+```bash
+npm run qa          # quick sweep: build → core smokes → chaos bot → contact-sheet gates → perf smokes
+npm run qa:full     # + full fleet, flicker gate, perf bench vs baseline, AI judge
+npm run qa:chaos    # seeded chaos bot alone (--seconds N --seed N)
+npm run qa:judge    # AI visual judge alone (contact sheet + stepper filmstrip; costs one claude call)
+```
+
+`scripts/qa/qa-run.mjs` sweeps every health dimension through the existing guarded harness and
+writes ONE artifact — **`artifacts/qa/QA.md` + `qa.json`**: build / functional (suite) / stability
+(chaos oracles: NaN, out-of-bounds, HP-range, stuck-while-moving, no-progress, frame errors,
+scene-graph NaN) / coverage (required `EventMap` events that never fired = untested content) /
+visual (fresh contact sheet + BLACK/BLOWOUT/FLAT/DUP gates) / glitch (flicker, full mode) / perf /
+runtime (frame-error ring, programs-flat-after-warm-up, draw-call tripwires) / judge (binary
+per-criterion AI verdicts + ranked issues with suggested fixes). Read that file first when asked
+"what's broken" — it is the fix-next list. **The qa/ core is game-agnostic**: everything
+RH3-specific lives in `scripts/qa/qa.config.mjs`; to port the tester to another game repo copy
+`scripts/qa/ + scripts/lib/guard.cjs + scripts/loop/lib.mjs + scripts/run-suite.mjs +
+scripts/shot-audit.mjs` and edit only the config.
+
+QA seam (in `main.ts` `__rh3debug`): **`frames(n, dt)`** deterministic stepper (exact sim frames —
+never wall-wait the headless clock), `tick(dt)`, **`frameErrors()`** (capped ring the frame-loop
+catch feeds — must stay EMPTY; a loop that survives a throwing frame otherwise looks healthy),
+**`coverage()`** (per-event emit counts from the typed bus), **`sceneCheck()`** (world-matrix NaN
+scan + finite scene bounds + renderer.info gauges), **`contextLost()`**. The game also ships a
+**WebGL context-loss watchdog**: on restore it re-warms both composer paths (the program cache is
+dropped on restore — without re-warm the compile-hitch class returns); if no restore in 10s it
+reloads (lossless: fixed origin + checkpoint saves). Probe: `node scripts/smoke-context-loss.mjs`.
+
+**Rasterizer facts (measured 2026-07-07):** headless Playwright Chromium on this machine renders
+on the REAL GPU (`ANGLE (NVIDIA RTX 5070 Ti) D3D11`), not SwiftShader — `bootGame` logs
+`GL_RENDERER` at every boot, contact sheets stamp it into `_renderer.json`, and `visual:diff`
+REFUSES to compare across different rasterizer stamps (keep separate baselines per renderer).
+`visual:diff` also supports `--downscale 2` (three.js's supersample-then-box-filter trick — kills
+sub-pixel edge-crawl noise so tight thresholds hold), `--mask "x,y,w,h;…"` for dynamic HUD
+regions, `--blur N`, and `--fail-mad` (mean-abs-delta gate that catches slow washout drift).
+
+### The suite runner + screenshot gate
+
+```bash
+npm run smoke:core      # the 6 high-signal smokes, serial + timeboxed (per-round loop)
+npm run smoke:all       # every smoke-*.mjs
+npm run smoke:release   # full fleet incl. visual + Electron families (release passes)
+npm run suite -- <names…|core|visual|electron|all|release>
+npm run shots:audit     # objective gates over shots/: BLACK / BLOWOUT / FLAT / TINY / DUP / STALE
+```
+
+`run-suite.mjs` starts/stops the dev server itself, runs everything **sequentially**, tree-kills
+any script past its budget, then runs `shot-audit.mjs` over every screenshot the run produced
+(stale files are excluded evidence, not failures) and writes `artifacts/suite/summary.json` +
+`SUITE.md` — read that one artifact to see the whole round's health. The loop's capture stage
+stamps the same gates into `manifest.json` (`audit: ["BLACK"]…`) so the AI judge never wastes a
+verdict on a dead frame, and `artifacts/loop/LEARNINGS.md` is the loop's append-only regression
+memory (observe reads it to avoid re-proposing failed changes).
+
 For visual/behavioral checks, run the dev server (`npm run dev`, port 5174) and:
 
 ```bash
@@ -51,7 +128,7 @@ node scripts/smoke-ward.mjs      # boss ward/invuln: hits deflected while warded
 node scripts/smoke-mercy.mjs     # Unmaker fading phase → hold [Q] to spare → "THE LIGHT ENDURES" true ending
 node scripts/smoke-superboss.mjs # Rift Echo encounter across phases (debugLoadNode)
 node scripts/smoke-wound.mjs     # THE WOUND BENEATH: reveal after Unmaker (depth 3+), boss tempo strip, card swallow/return, victory
-node scripts/smoke-menu-perf.mjs # 3×-throttled CPU: menu/hero-select/settings frame max·p95·longMax (perf regression guard)
+node scripts/smoke-menu-perf.mjs # 3×-throttled CPU: menu/hero-select/settings frame max·p95·longMax. BOOT gates wall-time-to-menu + POST-loader pacing only — frames behind the opaque loader are warm-up by design and vary with the driver shader cache (2026-07-07). Runs keepPriority (timing-gated)
 node scripts/smoke-death-perf.mjs# forces HIGH quality, boss room → kills player; asserts the playing→dead flip relinks 0 programs (no freeze)
 node scripts/smoke-loop-resilience.mjs # warden entrance plays with boss ALIVE (no crash); the setAnimationLoop guard recovers from an injected frame fault (no permanent freeze)
 node scripts/smoke-perf.mjs / smoke-perf-stress.mjs  # combat frame budget under load
