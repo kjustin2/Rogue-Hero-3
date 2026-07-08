@@ -162,6 +162,19 @@ await phase("render-diag", true, async () => {
     : { status: "PASS", detail: "subjects visible; static scene depth-stable under ε camera shift" };
 });
 
+// 4g) UI-AUDIT — deterministic DOM UI gate (overlap / truncation / offscreen /
+// contrast / dead-control / raw-text-leak) at 5 viewports + a pseudoloc pass.
+await phase("ui-audit", true, async () => {
+  const r = await node(["scripts/qa/ui-audit.mjs"], { minutes: 12 });
+  const c = readJSON(join(OUT, "ui-audit.json"), null);
+  if (!c) return { status: "FAIL", detail: `ui-audit ${r.status}, no report`, evidence: r.tail };
+  const n = (c.results || []).reduce((a, x) => a + (x.findings?.length ?? 0), 0);
+  const warn = (c.results || []).reduce((a, x) => a + (x.warnings?.length ?? 0), 0);
+  return n
+    ? { status: "FAIL", detail: `${n} DOM UI finding(s): ${[...new Set(c.results.flatMap((x) => (x.findings || []).map((f) => f.rule)))].join(", ")}`, evidence: "artifacts/qa/ui-audit.json" }
+    : { status: warn ? "WARN" : "PASS", detail: warn ? `clean; ${warn} pseudoloc (localization headroom) warning(s)` : "DOM UI clean across every screen × viewport (+ pseudoloc)" };
+});
+
 // 5) VISUAL — fresh contact sheet + objective frame gates
 await phase("visual", true, async () => {
   rmSync(join(GAME_DIR, cfg.judge.shotsDir), { recursive: true, force: true }); // no stale evidence
@@ -249,7 +262,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "visual", "glitch", "perf", "runtime", "comprehension", "selftest", "judge"];
+const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "visual", "glitch", "perf", "runtime", "comprehension", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

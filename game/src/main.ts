@@ -15,6 +15,7 @@ import { Floaters } from "./render/floaters";
 import { Arena, ARENA_RADIUS, THEMES } from "./render/arena";
 import { ContactShadows } from "./render/contactShadow";
 import { EffectsPanel } from "./debug/effectsToggle";
+import { auditUI, auditOcclusion } from "./debug/uiAudit";
 import { setRimEnabled } from "./render/materialFx";
 import { Decals } from "./render/decals";
 import { Input } from "./core/input";
@@ -2414,6 +2415,13 @@ void boot();
       }
       return { ok: !unclassified.length && !uncovered.length && !phantom.length, unclassified, uncovered, phantom };
     },
+    /** Deterministic DOM UI audit (overlap / truncation / offscreen / contrast /
+     *  no-owned-surface / raw-text-leak / invisible-interactive) over #hud+#overlay
+     *  at the current viewport. The harness drives this at multiple sizes + a
+     *  pseudoloc pass. See src/debug/uiAudit.ts. */
+    auditUI(opts?: { roots?: string[]; allow?: string[] }) { return auditUI(opts); },
+    /** Occlusion hit-test: every interactive control must resolve to itself. */
+    auditOcclusion(selector?: string) { return auditOcclusion(selector); },
     /** Arm/disarm the per-frame motion recorder (arming resets the buffer). */
     recordMotion(on = true): boolean {
       motionOn = on;
