@@ -35,7 +35,18 @@ const godmode = () => page.evaluate(() => {
 
 const boss = async (act, tag, phaseDmg) => {
   await page.evaluate((a) => window.__rh3.run.debugLoadNode("boss", a), act);
-  await page.waitForTimeout(3400); // intro + spawn
+  // SKIP the entrance and poll to `playing` before the first p1 shot. A blind
+  // fixed wait lands mid-entrance-formation, where the Spire's bright cyan crown
+  // bars + white summoning ring stack additive over a dark forming boss — that
+  // tripped BLOWOUT (4.29%) + 30% black on spire-p1-0. The settled fight frame is
+  // clean; capture hygiene = skip + settle, never a blind wait into the bloom.
+  for (let i = 0; i < 20; i++) {
+    if ((await page.evaluate(() => window.__rh3state())) === "playing") break;
+    await page.evaluate(() => window.__rh3debug?.skipCutscene?.());
+    await page.keyboard.press("Space").catch(() => {});
+    await page.waitForTimeout(250);
+  }
+  await page.waitForTimeout(900); // let the entrance FX pool drain + camera settle
   for (let i = 0; i < 3; i++) {
     await godmode();
     await page.waitForTimeout(1500);
