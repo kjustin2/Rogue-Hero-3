@@ -33,6 +33,8 @@
     "qa:style-drift": "node scripts/qa/style-drift.mjs",
     "qa:style-bake": "node scripts/qa/style-drift.mjs --bake",
     "qa:style-drift-selftest": "node scripts/qa/style-drift.mjs --selftest",
+    "qa:pixel-ui": "node scripts/qa/pixel-ui.mjs",
+    "qa:pixel-ui-selftest": "node scripts/qa/pixel-ui.mjs --selftest",
     "qa:selftest": "node scripts/qa/selftest.mjs",
     "qa:judge": "node scripts/qa/judge.mjs",
     "suite": "node scripts/run-suite.mjs",

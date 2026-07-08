@@ -175,6 +175,18 @@ await phase("ui-audit", true, async () => {
     : { status: warn ? "WARN" : "PASS", detail: warn ? `clean; ${warn} pseudoloc (localization headroom) warning(s)` : "DOM UI clean across every screen × viewport (+ pseudoloc)" };
 });
 
+// 4h) PIXEL-UI — HUD text contrast vs the REAL framebuffer + ghost-widget hash
+// (the compositing residual the DOM auditUI structurally cannot measure).
+await phase("pixel-ui", true, async () => {
+  const r = await node(["scripts/qa/pixel-ui.mjs"], { minutes: 10 });
+  const c = readJSON(join(OUT, "pixel-ui.json"), null);
+  if (!c) return { status: "FAIL", detail: `pixel-ui ${r.status}, no report`, evidence: r.tail };
+  const n = (c.results || []).reduce((a, x) => a + (x.findings?.length ?? 0), 0);
+  return n
+    ? { status: "FAIL", detail: `${n} finding(s): ${[...new Set(c.results.flatMap((x) => (x.findings || []).map((f) => f.type)))].join(", ")}`, evidence: "artifacts/qa/pixel-ui.json" }
+    : { status: "PASS", detail: `HUD text reads against the real framebuffer; no ghost widgets` };
+});
+
 // 5) VISUAL — fresh contact sheet + objective frame gates
 await phase("visual", true, async () => {
   rmSync(join(GAME_DIR, cfg.judge.shotsDir), { recursive: true, force: true }); // no stale evidence
@@ -274,7 +286,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

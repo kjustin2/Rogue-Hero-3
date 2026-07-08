@@ -70,6 +70,13 @@ export default {
     deadband: 0.04, settleMs: 2000,
   },
 
+  // Pixel-UI lint (qa/pixel-ui.mjs): the compositing residual DOM auditUI cant see
+  // — HUD text contrast vs the REAL framebuffer + duplicate/ghost-widget pHash.
+  pixelUi: {
+    scenes: ["room:combat", "boss:warden", "room:elite"],
+    minContrast: 3.0, dupHamming: 6, settleMs: 1800,
+  },
+
   // Event-coverage matrix: emits counted by the typed bus (debug.coverage()).
   // Anything required that never fired during chaos+suite = untested content.
   coverage: {

@@ -23,6 +23,7 @@ const SUITES = [
   ["comprehend", ["scripts/qa/comprehend.mjs", "--selftest"]], // costs a couple cheap claude calls
   ["ui-audit", ["scripts/qa/ui-audit.mjs", "--selftest"]],
   ["style-drift", ["scripts/qa/style-drift.mjs", "--selftest"]],
+  ["pixel-ui", ["scripts/qa/pixel-ui.mjs", "--selftest"]],
 ];
 
 const results = [];
