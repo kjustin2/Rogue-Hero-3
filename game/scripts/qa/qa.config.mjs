@@ -91,6 +91,28 @@ export default {
     required: ["ENEMY_HIT", "KILL", "CARD_CAST", "PLAYER_HIT", "TEMPO_ZONE", "ROOM_START", "DODGE"],
   },
 
+  // Per-id content coverage (content-coverage.mjs): every enemy kind must
+  // spawn+die (KILL.kind); every card is cast via caster.cast (CARD_CAST.id).
+  contentCoverage: {
+    enemyKinds: ["husk", "spitter", "swarmer", "bomber", "sentinel", "wisp", "leaper",
+      "tether", "mirror", "caster", "shade", "bastion", "brute", "harrier", "splitter", "voidling", "warper"],
+  },
+
+  // Difficulty-ladder invariants (balance.mjs): monotonic non-decreasing, bounded
+  // per depth step, heals never zeroed.
+  balance: { maxStepMult: 0.6, minHeal: 0.05 },
+
+  // Save/replay determinism (save-determinism.mjs): plan-purity seeds + the
+  // resume-reseed source guard.
+  saveDeterminism: { seeds: [1234567, 987654321, 42] },
+
+  // Flow-graph completability (state-graph.mjs): grid size + catalogs.
+  stateGraph: {
+    seeds: 40,
+    nodeKinds: ["combat", "elite", "shop", "treasure", "rest", "event", "shrine", "gamble", "boss"],
+    bossOrder: ["warden", "spire", "colossus", "tyrant", "unmaker"], // echo/wound are gated add-ons
+  },
+
   // AI judge (qa/judge.mjs): binary per-criterion verdicts over the contact
   // sheet + a stepper-driven combat filmstrip.
   judge: {

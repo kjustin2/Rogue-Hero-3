@@ -138,6 +138,50 @@ await phase("determinism", true, async () => {
     : { status: "PASS", detail: `sim bit-deterministic under (seed, fixed tape); cosmetic RNG stays out of the hash` };
 });
 
+// 3d) CONTENT — per-id coverage: every card must cast (a dispatch that throws /
+// no-ops never emits CARD_CAST → id gap) and every enemy kind must spawn+die.
+await phase("content", true, async () => {
+  const r = await node(["scripts/qa/content-coverage.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "content-coverage.json"), null);
+  if (!c) return { status: "FAIL", detail: `content-coverage ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} content gap(s): ${[...(c.report.cards?.gaps ?? []), ...(c.report.enemies?.gaps ?? [])].join(", ") || "see report"}`, evidence: "artifacts/qa/content-coverage.json" }
+    : { status: "PASS", detail: `${c.report.cards?.total ?? "?"} cards cast, ${c.report.enemies?.total ?? "?"} enemy kinds spawn+die` };
+});
+
+// 3e) SAVE-DETERMINISM — plan purity + restore idempotence + the resume-reseed
+// guard (the real-bug regression guard: resumed runs must reproduce).
+await phase("save-determinism", true, async () => {
+  const r = await node(["scripts/qa/save-determinism.mjs"], { minutes: 6 });
+  const c = readJSON(join(OUT, "save-determinism.json"), null);
+  if (!c) return { status: "FAIL", detail: `save-determinism ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} determinism break(s)${c.report.p3?.reseeds === false ? " — resume branch does NOT reseed" : ""}`, evidence: "artifacts/qa/save-determinism.json" }
+    : { status: "PASS", detail: `plans pure, restores idempotent, resume reseeds` };
+});
+
+// 3f) STATE-GRAPH — flow-graph completability: every generated run reaches victory
+// (no empty/dead-end fork), boss ladder ordered; node-kind frontier reported.
+await phase("state-graph", true, async () => {
+  const r = await node(["scripts/qa/state-graph.mjs"], { minutes: 6 });
+  const c = readJSON(join(OUT, "state-graph.json"), null);
+  if (!c) return { status: "FAIL", detail: `state-graph ${r.status}, no report`, evidence: r.tail };
+  const warn = c.report.warnings?.length ?? 0;
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} reachability/order finding(s) over ${c.report.checked} plans`, evidence: "artifacts/qa/state-graph.json" }
+    : { status: warn ? "WARN" : "PASS", detail: warn ? `${c.report.checked} plans completable; ${warn} node-kind(s) never generated: ${c.report.warnings.join(", ")}` : `all ${c.report.checked} generated runs completable, ladder ordered` };
+});
+
+// 3g) BALANCE — the difficulty ladder must be monotonic, bounded, and never zero heals.
+await phase("balance", true, async () => {
+  const r = await node(["scripts/qa/balance.mjs"], { minutes: 5 });
+  const c = readJSON(join(OUT, "balance.json"), null);
+  if (!c) return { status: "FAIL", detail: `balance ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} balance violation(s): ${c.violations.slice(0, 3).join("; ")}`, evidence: "artifacts/qa/balance.json" }
+    : { status: "PASS", detail: `difficulty ladder monotonic, bounded, heals preserved` };
+});
+
 // 4b) COLLISION-TRUTH — render geometry and the collider set must agree about
 // where solid matter is (walk-through props + invisible walls, both directions).
 await phase("collision-truth", true, async () => {
@@ -322,7 +366,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "determinism", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
