@@ -17,6 +17,7 @@ const log = (...a) => console.log("[selftest]", ...a);
 const SUITES = [
   ["determinism", ["scripts/qa/determinism.mjs", "--selftest"]],
   ["tutorial", ["scripts/qa/tutorial.mjs", "--selftest"]],
+  ["monitors", ["scripts/qa/monitors.mjs", "--selftest"]],
   ["collision-truth", ["scripts/qa/collision-truth.mjs", "--selftest"]],
   ["reachability", ["scripts/qa/reachability.mjs", "--selftest"]],
   ["temporal", ["scripts/qa/temporal.mjs", "--selftest"]],

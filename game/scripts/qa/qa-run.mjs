@@ -115,6 +115,18 @@ await phase("tutorial", true, async () => {
     : { status: "PASS", detail: `tutorial completable end-to-end; all run-required verbs taught` };
 });
 
+// 3c) MONITORS — EventBus runtime-verification (Dwyer patterns): ordering +
+// liveness + invariant violations over a real drive (soft-lock as a discharge
+// failure, boss-phase-stuck, tempo/HP/resource invariants).
+await phase("monitors", true, async () => {
+  const r = await node(["scripts/qa/monitors.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "monitors.json"), null);
+  if (!c) return { status: "FAIL", detail: `monitors ${r.status}, no report`, evidence: r.tail };
+  return c.violations.length
+    ? { status: "FAIL", detail: `${c.violations.length} violation(s): ${[...new Set(c.violations.map((v) => v.rule))].join(", ")}`, evidence: "artifacts/qa/monitors.json" }
+    : { status: "PASS", detail: `no ordering/liveness/invariant violations over the drive` };
+});
+
 // 4a) DETERMINISM — the sim's golden-trace MR: same (seed, fixed tape) ⇒ same
 // simHash() every frame. The backbone the record-replay/autonomous tier stands on.
 await phase("determinism", true, async () => {
@@ -310,7 +322,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "stability", "coverage", "determinism", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "determinism", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
