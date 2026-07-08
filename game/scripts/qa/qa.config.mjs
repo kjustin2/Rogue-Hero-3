@@ -53,6 +53,15 @@ export default {
     shimmerGate: 1.0, scdGate: 12, cambiWarn: 1.0,
   },
 
+  // Blind comprehension probe (qa/comprehend.mjs): articulability gate over flow()
+  // + context-free constrained-choice reads of raw frames, scored vs flow(). Judged
+  // via the claude CLI on a cheap model; frames go out under neutral paths.
+  comprehension: {
+    beats: ["menu", "room:combat", "boss:warden"],
+    model: "haiku",
+    warnBelow: 0.5,
+  },
+
   // Event-coverage matrix: emits counted by the typed bus (debug.coverage()).
   // Anything required that never fired during chaos+suite = untested content.
   coverage: {

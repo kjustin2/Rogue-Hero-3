@@ -221,6 +221,19 @@ await phase("selftest", FULL, async () => {
     : { status: "PASS", detail: `${c.results.length}/${c.results.length} detector suites proven (fire on fault, quiet clean)` };
 });
 
+// 8c) COMPREHENSION (full mode — costs cheap claude calls) — articulability gate
+// over flow() + the blind context-free legibility probe scored against flow().
+await phase("comprehension", FULL, async () => {
+  const r = await node(["scripts/qa/comprehend.mjs"], { minutes: 16 });
+  const c = readJSON(join(OUT, "comprehend.json"), null);
+  if (!c) return { status: "FAIL", detail: `comprehend ${r.status}, no report`, evidence: r.tail };
+  if (c.failures) return { status: "FAIL", detail: `${c.failures} inarticulate/failed beat(s) — see comprehend.json`, evidence: "artifacts/qa/comprehend.json" };
+  const low = (c.results || []).filter((x) => typeof x.rate === "number" && x.rate < 0.5);
+  return low.length
+    ? { status: "WARN", detail: `${low.length} beat(s) hard to read blind: ${low.map((x) => x.beat).join(", ")} ($${c.costUSD})`, evidence: "artifacts/qa/comprehend.json" }
+    : { status: "PASS", detail: `all beats articulable + legible to a blind reader ($${c.costUSD})` };
+});
+
 // 9) JUDGE — AI visual verdicts (opt-in; costs a claude call)
 await phase("judge", JUDGE, async () => {
   const r = await node(["scripts/qa/judge.mjs"], { minutes: 18 });
@@ -236,7 +249,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "visual", "glitch", "perf", "runtime", "selftest", "judge"];
+const order = ["build", "functional", "stability", "coverage", "collision-truth", "reachability", "temporal", "animation", "render-diag", "visual", "glitch", "perf", "runtime", "comprehension", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

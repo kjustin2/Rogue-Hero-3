@@ -20,6 +20,7 @@ const SUITES = [
   ["temporal", ["scripts/qa/temporal.mjs", "--selftest"]],
   ["animation", ["scripts/qa/animation-metrics.mjs", "--selftest"]],
   ["render-diag", ["scripts/qa/render-diag.mjs", "--selftest"]],
+  ["comprehend", ["scripts/qa/comprehend.mjs", "--selftest"]], // costs a couple cheap claude calls
 ];
 
 const results = [];

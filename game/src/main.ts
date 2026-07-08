@@ -2322,7 +2322,13 @@ void boot();
       const boss = livingBoss();
       const foes = ctx.enemies.living().filter((e) => e.kind !== "boss").length;
       switch (state) {
-        case "menu": return { screen: "menu", goal: "begin a run", nextAction: "click PLAY (or press Enter)" };
+        case "menu": {
+          // Save-aware: with a checkpoint the menu leads with CONTINUE RUN, and a
+          // first-time reader of the frame correctly infers "resume", not "begin"
+          // (the blind probe caught this ground truth being imprecise).
+          if (document.querySelector(".continue")) return { screen: "menu", goal: "continue the saved run", nextAction: "click CONTINUE RUN" };
+          return { screen: "menu", goal: "begin a run", nextAction: "click PLAY (or press Enter)" };
+        }
         case "cutscene": return { screen: "cutscene", goal: "watch the story beat", nextAction: "press Space to skip" };
         case "paused": return { screen: "paused", goal: "resume the run", nextAction: "press Escape or click RESUME" };
         case "dead": return { screen: "death", goal: "start a new run", nextAction: "click the retry button" };
