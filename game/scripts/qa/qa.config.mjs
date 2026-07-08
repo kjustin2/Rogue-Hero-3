@@ -113,6 +113,19 @@ export default {
     bossOrder: ["warden", "spire", "colossus", "tyrant", "unmaker"], // echo/wound are gated add-ons
   },
 
+  // Photosensitivity / WCAG 2.3.1 flash-rate (photosensitivity.mjs).
+  photosensitivity: {
+    gridN: 20, frames: 78, dt: 1 / 60, fps: 60,
+    swing: 0.1, darkMax: 0.8, redSwing: 0.12, flashesPerSec: 3, areaFrac: 0.25,
+  },
+
+  // Colorblind / CVD distinguishability (colorblind.mjs): min redmean distance
+  // below which two simulated zone colors read as one.
+  colorblind: { minDistinct: 45 },
+
+  // Input-latency feel budget (latency.mjs).
+  latency: { gateMs: 100, maxFrames: 30, fps: 60 },
+
   // AI judge (qa/judge.mjs): binary per-criterion verdicts over the contact
   // sheet + a stepper-driven combat filmstrip.
   judge: {

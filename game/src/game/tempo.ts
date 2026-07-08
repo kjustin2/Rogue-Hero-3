@@ -22,7 +22,7 @@ export const CRASH_THRESHOLD = 85;
 
 // Default zone palette (cyan→green→orange→red) is hard for red-green colorblindness;
 // the alternate ramp (blue→ice→amber→magenta) keeps hue AND brightness distinct.
-const ZONE_PALETTE = {
+export const ZONE_PALETTE = {
   default: [
     { color: 0x4488ff, css: "#4f8dff" },
     { color: 0x44ff88, css: "#3df59a" },

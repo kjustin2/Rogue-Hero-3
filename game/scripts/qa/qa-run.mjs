@@ -196,6 +196,42 @@ await phase("audio", true, async () => {
   return { status: "PASS", detail: `all gameplay events audible; music bed tracks state` };
 });
 
+// 3i) PHOTOSENSITIVITY — WCAG 2.3.1: no FX clip may exceed 3 flashes/s over 25% area.
+await phase("photosensitivity", true, async () => {
+  const r = await node(["scripts/qa/photosensitivity.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "photosensitivity.json"), null);
+  if (!c) return { status: "FAIL", detail: `photosensitivity ${r.status}, no report`, evidence: r.tail };
+  if (c.failures) {
+    const bad = (c.report.clips ?? []).filter((x) => x.fail).map((x) => `${x.clip} ${(x.generalArea * 100).toFixed(0)}%`);
+    return { status: "FAIL", detail: `${c.failures} clip(s) over the flash threshold: ${bad.join(", ")}`, evidence: "artifacts/qa/photosensitivity.json" };
+  }
+  return { status: c.report.warnings ? "WARN" : "PASS", detail: c.report.warnings ? `no flashes, but ${c.report.warnings} clip(s) looked frozen (result unreliable)` : `no clip exceeds WCAG 2.3.1 flash limits` };
+});
+
+// 3j) COLORBLIND — tempo zones must stay distinguishable under protan/deutan/tritan;
+// reduce-motion honored.
+await phase("colorblind", true, async () => {
+  const r = await node(["scripts/qa/colorblind.mjs"], { minutes: 5 });
+  const c = readJSON(join(OUT, "colorblind.json"), null);
+  if (!c) return { status: "FAIL", detail: `colorblind ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} CVD/reduce-motion finding(s)`, evidence: "artifacts/qa/colorblind.json" }
+    : { status: "PASS", detail: `tempo zones distinguishable under all CVD types; reduce-motion honored` };
+});
+
+// 3k) LATENCY — every core verb must respond within the feel budget (100ms).
+await phase("latency", true, async () => {
+  const r = await node(["scripts/qa/latency.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "latency.json"), null);
+  if (!c) return { status: "FAIL", detail: `latency ${r.status}, no report`, evidence: r.tail };
+  if (c.failures) {
+    const slow = (c.report.verbs ?? []).filter((v) => v.over).map((v) => `${v.verb} ${v.ms ?? "∞"}ms`);
+    return { status: "FAIL", detail: `${c.failures} sluggish verb(s): ${slow.join(", ")}`, evidence: "artifacts/qa/latency.json" };
+  }
+  const worst = Math.max(...(c.report.verbs ?? [{ ms: 0 }]).map((v) => v.ms ?? 0));
+  return { status: "PASS", detail: `all verbs responsive (worst ${worst}ms)` };
+});
+
 // 4b) COLLISION-TRUTH — render geometry and the collider set must agree about
 // where solid matter is (walk-through props + invisible walls, both directions).
 await phase("collision-truth", true, async () => {
@@ -380,7 +416,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "audio", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
