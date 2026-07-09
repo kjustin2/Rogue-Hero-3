@@ -221,6 +221,18 @@ await phase("balance", true, async () => {
     : { status: "PASS", detail: `difficulty ladder monotonic, bounded, heals preserved` };
 });
 
+// 3g2) BALANCE-LEDGER — measured per-card dps + honed-vs-base value; outliers are a
+// WARN for review (tuning is the owner's call), not a hard gate. qa:full only (slow).
+await phase("balance-ledger", FULL, async () => {
+  const r = await node(["scripts/qa/balance-ledger.mjs"], { minutes: 12 });
+  const c = readJSON(join(OUT, "balance-ledger.json"), null);
+  if (!c) return { status: "FAIL", detail: `balance-ledger ${r.status}, no report`, evidence: r.tail };
+  const flags = c.report.flags ?? [];
+  return flags.length
+    ? { status: "WARN", detail: `${flags.length} card(s) for review: ${flags.map((f) => `${f.id}(${f.flag})`).join(", ")}`, evidence: "artifacts/qa/balance-ledger.json" }
+    : { status: "PASS", detail: `card dps + upgrade values within band (median ${c.report.median})` };
+});
+
 // 3h) AUDIO — every gameplay event must be audible (soundCount grows) and the
 // music bed must track the game state (menu/combat/boss). Hardware-free.
 await phase("audio", true, async () => {
@@ -479,7 +491,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
+const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
