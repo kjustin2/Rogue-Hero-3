@@ -6,6 +6,8 @@
   "main": "electron-main.cjs",
   "scripts": {
     "test": "vitest run",
+    "scan": "node scripts/qa/scan.mjs",
+    "scan:selftest": "node scripts/qa/scan.mjs --selftest",
     "test:watch": "vitest",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

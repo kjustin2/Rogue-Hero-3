@@ -60,12 +60,28 @@ const phase = async (name, enabled, fn) => {
 
 const server = await ensureServer({ log });
 
-// 1) BUILD — tsc + vite
+// 0) CPU LANE — vitest units + static scanners, all lock-free (never touch the GPU
+// guard lock), run IN PARALLEL as a fast preflight. The GPU dimensions below are
+// serial under the lock; this is where the parallelism safely lives. Fail fast.
+await phase("cpu", true, async () => {
+  const [unit, scanR, det] = await Promise.all([
+    run("npm", ["test"], { minutes: 5, label: "vitest" }),
+    node(["scripts/qa/scan.mjs"], { minutes: 3, label: "scan" }),
+    node(["scripts/qa/determinism-lint.mjs"], { minutes: 3, label: "det-lint" }),
+  ]);
+  const bad = [["unit", unit], ["scan", scanR], ["det-lint", det]].filter(([, r]) => r.status !== "PASS");
+  return bad.length
+    ? { status: "FAIL", detail: `${bad.map(([n]) => n).join(", ")} failed`, evidence: bad.map(([, r]) => r.tail).join("\n").slice(-800) }
+    : { status: "PASS", detail: "vitest units + static scanners clean (parallel, off the GPU lock)" };
+});
+if (dims.cpu?.status === "FAIL" && !ONLY) bail("CPU lane failing (unit/scanner) — fix before the GPU fleet");
+
+// 1) BUILD — tsc + vite (units already ran in the CPU preflight, so build-only here)
 await phase("build", !ARGS.includes("--skip-build"), async () => {
-  const r = await run("npm", ["run", "verify"], { minutes: 10, label: "verify" });
+  const r = await run("npm", ["run", "build"], { minutes: 10, label: "build" });
   return r.status === "PASS"
     ? { status: "PASS", detail: "tsc --noEmit && vite build clean" }
-    : { status: "FAIL", detail: `verify ${r.status}`, evidence: r.tail };
+    : { status: "FAIL", detail: `build ${r.status}`, evidence: r.tail };
 });
 if (dims.build?.status === "FAIL" && !ONLY) bail("build is broken — fix that first");
 
@@ -463,7 +479,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
+const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

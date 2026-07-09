@@ -15,6 +15,8 @@ guard({ name: "qa-selftest", maxMinutes: 45 });
 const log = (...a) => console.log("[selftest]", ...a);
 
 const SUITES = [
+  ["scan", ["scripts/qa/scan.mjs", "--selftest"]],
+  ["det-lint", ["scripts/qa/determinism-lint.mjs", "--selftest"]],
   ["determinism", ["scripts/qa/determinism.mjs", "--selftest"]],
   ["tutorial", ["scripts/qa/tutorial.mjs", "--selftest"]],
   ["monitors", ["scripts/qa/monitors.mjs", "--selftest"]],
