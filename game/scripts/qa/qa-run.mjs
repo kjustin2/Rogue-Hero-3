@@ -233,6 +233,22 @@ await phase("balance-ledger", FULL, async () => {
     : { status: "PASS", detail: `card dps + upgrade values within band (median ${c.report.median})` };
 });
 
+// 3g3) FAIRNESS — every enemy/boss attack must have a dodge window ≥ floor ("an
+// undodgeable attack is a bug" — a hard gate; no bot-skill confound).
+await phase("fairness", true, async () => {
+  const r = await node(["scripts/qa/fairness.mjs"], { minutes: 14 });
+  const c = readJSON(join(OUT, "fairness.json"), null);
+  if (!c) return { status: "FAIL", detail: `fairness ${r.status}, no report`, evidence: r.tail };
+  if (c.failures) {
+    const bad = (c.report.units ?? []).filter((u) => u.undodgeable > 0).map((u) => `${u.unit}(${u.undodgeable}@${u.minDodge}s)`);
+    return { status: "FAIL", detail: `${c.failures} undodgeable attack(s): ${bad.join(", ")}`, evidence: "artifacts/qa/fairness.json" };
+  }
+  const warn = c.report.warnings?.length ?? 0;
+  return warn
+    ? { status: "WARN", detail: `all telegraphed attacks dodgeable; ${warn} unit(s) produced no telegraph in the drive: ${c.report.warnings.join(", ")}`, evidence: "artifacts/qa/fairness.json" }
+    : { status: "PASS", detail: `every attack across ${c.report.units.length} units has a dodge window ≥ floor` };
+});
+
 // 3h) AUDIO — every gameplay event must be audible (soundCount grows) and the
 // music bed must track the game state (menu/combat/boss). Hardware-free.
 await phase("audio", true, async () => {
@@ -491,7 +507,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
+const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "fairness", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

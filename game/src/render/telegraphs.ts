@@ -38,6 +38,16 @@ export interface TelegraphHandle {
 export class Telegraphs {
   private pool: Telegraph[] = [];
 
+  /** Test seam: a capped ring of every telegraph's dodge window (its `duration` —
+   *  the warning lead time before the attack strikes). The fairness oracle stages
+   *  each enemy/boss in isolation and asserts min(dur) ≥ a dodgeable floor
+   *  ("an undodgeable attack is a bug"). Cosmetic only — never read by the game. */
+  readonly recent: { shape: string; dur: number }[] = [];
+  private logTele(shape: string, dur: number): void {
+    this.recent.push({ shape, dur });
+    if (this.recent.length > 256) this.recent.shift();
+  }
+
   constructor(private scene: THREE.Scene) {
     const outlineGeo = new THREE.RingGeometry(0.93, 1.0, 48);
     outlineGeo.rotateX(-Math.PI / 2);
@@ -96,6 +106,7 @@ export class Telegraphs {
     t.shape = "circle";
     t.t = 0;
     t.dur = duration;
+    this.logTele(t.shape, duration);
     t.radius = radius;
     t.group.visible = true;
     t.group.position.set(x, 0.05, z);
@@ -122,6 +133,7 @@ export class Telegraphs {
     t.shape = "line";
     t.t = 0;
     t.dur = duration;
+    this.logTele(t.shape, duration);
     t.length = length;
     t.group.visible = true;
     t.group.position.set(x, 0.05, z);
@@ -148,6 +160,7 @@ export class Telegraphs {
     t.shape = "ring";
     t.t = 0;
     t.dur = duration;
+    this.logTele(t.shape, duration);
     t.group.visible = true;
     t.group.position.set(x, 0.05, z);
     t.group.rotation.y = 0;

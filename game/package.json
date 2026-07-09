@@ -46,6 +46,8 @@
     "qa:cross-family-selftest": "node scripts/qa/cross-family.mjs --selftest",
     "qa:ledger": "node scripts/qa/balance-ledger.mjs",
     "qa:ledger-selftest": "node scripts/qa/balance-ledger.mjs --selftest",
+    "qa:fairness": "node scripts/qa/fairness.mjs",
+    "qa:fairness-selftest": "node scripts/qa/fairness.mjs --selftest",
     "qa:balance": "node scripts/qa/balance.mjs",
     "qa:balance-selftest": "node scripts/qa/balance.mjs --selftest",
     "qa:monitors": "node scripts/qa/monitors.mjs",
