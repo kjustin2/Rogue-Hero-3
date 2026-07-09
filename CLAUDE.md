@@ -97,49 +97,32 @@ build → must stay QUIET. `npm run qa:selftest` sweeps them; `qa:full` includes
   0.12, drag-fault 1.1), jitter 60 m/s² (clean ~5, jolt-fault ~350), SPARC advisory. Drive
   starts from the arena centre — blocked-walking poisons the ratio.
 
-### The round-5 senses (2026-07-08 — 15 new dimensions; `qa:selftest` now sweeps 24 suites)
+### The round-5 senses (2026-07-08 — 15 dimensions; `qa:selftest` sweeps 24 suites)
 
-Doctrine + portable recipes: /game-perception. Every one ships `--selftest`.
+Doctrine + recipes: /game-perception. Every one ships `--selftest`. Gate semantics:
 
-- **determinism** (`qa:determinism`) + **differential** (`qa:differential`) — the sim is
-  bit-deterministic: 39 sim `Math.random()` sites route through `ctx.rng`, 28 cosmetic ones
-  (dt-gated particle emission, camera kick-roll, jitter) STAY on `Math.random` and are
-  annotated `// cosmetic:` (routing a cosmetic dt-gated draw into `ctx.rng` DESYNCS the
-  stream — `determinism-lint` greps for un-annotated leaks). `debug.simHash()` = FNV-1a over
-  float-quantized state, EXCLUDING camera-derived `facing` + pre-reseed staged-boss `t`.
-  Golden-trace MR = same (seed, tape) ⇒ identical hash sequence (fresh page per trace; stage
-  `enemy:husk` to banish the wave director; spawn OFF-AXIS). `differential` pins a COMMITTED
-  golden (`scripts/qa/golden/differential.json`) and diffs every build — **divergence = the
-  sim changed; re-bless with `qa:differential-bless` if intended, else bisect** the frame.
-- **tutorial** (`qa:tutorial`) — D2 completability (hard gate: every step's verb advances via
-  real input to completion) + D1 required-but-never-taught (WARN: run needs ~12 verbs, the
-  tutorial teaches 5 — detect+report, owner decides, no auto-redesign).
-- **monitors** (`qa:monitors`) — Dwyer runtime-verification on the EventBus: precedence
-  (BOSS_INTRO before DEFEATED/PHASE, PLAYER_HIT before DIED), bounded response (ROOM_START →
-  CLEARED/DIED = soft-lock as a discharge failure), invariants (BOSS_HP∈[0,max], TEMPO_ZONE
-  no >1 upward skip, CARD_RESTORED ≤ CARD_STOLEN).
-- **content** (`qa:content`) — per-id: every card casts (`CARD_CAST.id` emits only on a
-  successful dispatch → a throwing card = id GAP), every enemy kind spawns+dies (`KILL.kind`).
-- **save-determinism** (`qa:save`) — plan purity + restore idempotence + the resume-reseed
-  source guard. **state-graph** (`qa:state-graph`) — flow-graph completability (empty fork =
-  soft-lock, boss ladder ordered). **balance** (`qa:balance`) — `difficultyFor` monotonic/
-  bounded/heals-never-zeroed.
-- **audio** (`qa:audio`) — SFX event-accounting (`sfx.soundCount`, hardware-free) + music-state
-  (`music.playingKey` tracks state). **photosensitivity** (`qa:photosensitivity`) — WCAG 2.3.1
-  flash-rate (3 flashes/s over 25% area) with a frozen-capture guard. **colorblind**
-  (`qa:colorblind`) — Machado CVD distinguishability over the tempo palettes + reduce-motion.
-  **latency** (`qa:latency`) — input→response ≤100ms/verb.
-- **render-oracles** (`qa:render-oracles`) — NaN materials, degenerate geometry, failed shader
-  programs over the live scene. **invariants** (`qa:invariants`) — Daikon-lite: mine+confirm
-  (holdout-failures DISCARDED, not bugs) + a semantic safety gate. **cross-family**
-  (`qa:cross-family`) — opt-in second-family (Ollama) comprehension; DORMANT (doctor SKIP)
-  until `ollama pull qwen2.5vl:7b`.
+| Dimension (`qa:…`) | Gates |
+|---|---|
+| determinism / differential | sim bit-deterministic under (seed, tape); a COMMITTED golden trace (`golden/differential.json`) catches cross-build sim changes — re-bless if intended, else bisect the frame |
+| tutorial | D2 completability (hard) + D1 required-but-never-taught (WARN, owner decides) |
+| monitors | EventBus ordering/liveness (Dwyer): precedence, bounded response (soft-lock as discharge failure), invariants |
+| content | per-id: every card casts (`CARD_CAST.id`), every enemy kind dies (`KILL.kind`) |
+| save-determinism | plan purity + restore idempotence + resume-reseed source guard |
+| state-graph | flow-graph completability (empty fork = soft-lock; boss ladder ordered) |
+| balance | `difficultyFor` monotonic / bounded / heals-never-zeroed |
+| audio | SFX event-accounting (`sfx.soundCount`) + music-state (`music.playingKey`) tracks state |
+| photosensitivity | WCAG 2.3.1 flash-rate (3/s over 25% area) + frozen-capture guard |
+| colorblind | Machado CVD distinguishability of tempo palettes + reduce-motion honored |
+| latency | input→response ≤100ms/verb |
+| render-oracles | NaN materials / degenerate geometry / failed shader links |
+| invariants | Daikon-lite discovery (holdout-failures DISCARDED) + semantic safety gate |
+| cross-family | opt-in 2nd-family (Ollama) comprehension; DORMANT until `ollama pull qwen2.5vl:7b` |
 
-**HARD RULE (sim determinism): sim-affecting randomness goes through `ctx.rng`; cosmetic FX
-randomness stays on `Math.random` and is annotated `// cosmetic:`.** Two real bugs the golden
-trace forced out: the resume path never re-seeded `ctx.rng` (resumed runs were
-non-reproducible), and spawn-grace decremented by a wall-clock `performance.now` term. After
-any intended sim/tuning change, `npm run qa:differential-bless` and commit the golden.
+**HARD RULE (sim determinism): sim randomness → `ctx.rng`; cosmetic FX randomness stays on
+`Math.random` + `// cosmetic:`** (`determinism-lint` greps un-annotated leaks; `simHash()` excludes
+camera-derived `facing`). Two real bugs the golden trace forced out: resume never reseeded
+`ctx.rng` (resumed runs non-reproducible); spawn-grace used wall-clock `performance.now`. **After
+any intended sim/tuning change, `npm run qa:differential-bless` and commit the golden.**
 
 **HARD RULE (found by the temporal gate, 2 shipped instances fixed): no private
 `requestAnimationFrame` / wall-clock animation loops in game code** — they defeat
