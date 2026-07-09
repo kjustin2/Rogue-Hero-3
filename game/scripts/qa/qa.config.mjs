@@ -5,12 +5,13 @@
 // scripts/lib/guard.cjs + scripts/loop/lib.mjs + scripts/run-suite.mjs +
 // scripts/shot-audit.mjs and edit ONLY this config (seam name, scenario names,
 // key bindings, budgets).
+const SEAM = "__rh3"; // referenced in blocks that embed window.<seam> in page evals
 export default {
   name: "rogue-hero-3",
 
   // The debug-seam prefix: window.<seam> (wiring hub), window.<seam>debug,
   // window.<seam>perf, window.<seam>state().
-  seam: "__rh3",
+  seam: SEAM,
 
   // Which existing harness pieces each doctor phase runs.
   phases: {
@@ -136,6 +137,18 @@ export default {
 
   // Daikon-lite invariant mining (invariants.mjs): drive length + train/holdout split.
   invariants: { frames: 300, seed: 20260707, trainFrac: 0.7, eps: 1e-6 },
+
+  // Cross-family comprehension (cross-family.mjs): opt-in second-family VLM (Ollama).
+  // Dormant unless the model is pulled — never a hard dependency.
+  crossFamily: {
+    model: "qwen2.5vl:7b",
+    beats: [
+      { name: "menu", stage: `window.${SEAM}debug.scenario("menu")`, goal: "start or continue a run from the title menu" },
+      { name: "combat", stage: `window.${SEAM}.run.debugLoadNode("combat", 1)`, goal: "fight the enemies in the arena" },
+      { name: "pause", stage: null, key: "Escape", goal: "resume, adjust settings, or quit from the pause menu" },
+    ],
+    decoys: ["buy an item from a shop", "read a story cutscene", "pick a card reward", "view the world map"],
+  },
 
   // AI judge (qa/judge.mjs): binary per-criterion verdicts over the contact
   // sheet + a stepper-driven combat filmstrip.

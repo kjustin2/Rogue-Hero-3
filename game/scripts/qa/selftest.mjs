@@ -35,6 +35,7 @@ const SUITES = [
   ["render-diag", ["scripts/qa/render-diag.mjs", "--selftest"]],
   ["render-oracles", ["scripts/qa/render-oracles.mjs", "--selftest"]],
   ["comprehend", ["scripts/qa/comprehend.mjs", "--selftest"]], // costs a couple cheap claude calls
+  ["cross-family", ["scripts/qa/cross-family.mjs", "--selftest"]], // no Ollama needed for the selftest
   ["ui-audit", ["scripts/qa/ui-audit.mjs", "--selftest"]],
   ["style-drift", ["scripts/qa/style-drift.mjs", "--selftest"]],
   ["pixel-ui", ["scripts/qa/pixel-ui.mjs", "--selftest"]],

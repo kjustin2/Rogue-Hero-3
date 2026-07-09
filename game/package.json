@@ -38,6 +38,8 @@
     "qa:differential-selftest": "node scripts/qa/differential.mjs --selftest",
     "qa:invariants": "node scripts/qa/invariants.mjs",
     "qa:invariants-selftest": "node scripts/qa/invariants.mjs --selftest",
+    "qa:cross-family": "node scripts/qa/cross-family.mjs",
+    "qa:cross-family-selftest": "node scripts/qa/cross-family.mjs --selftest",
     "qa:balance": "node scripts/qa/balance.mjs",
     "qa:balance-selftest": "node scripts/qa/balance.mjs --selftest",
     "qa:monitors": "node scripts/qa/monitors.mjs",

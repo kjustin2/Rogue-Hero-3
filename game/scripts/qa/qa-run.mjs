@@ -255,6 +255,18 @@ await phase("latency", true, async () => {
   return { status: "PASS", detail: `all verbs responsive (worst ${worst}ms)` };
 });
 
+// 3l) CROSS-FAMILY — opt-in second-family (Ollama) comprehension check; DORMANT
+// (skips) unless the model is pulled. Never a hard dependency.
+await phase("cross-family", true, async () => {
+  const r = await node(["scripts/qa/cross-family.mjs"], { minutes: 12 });
+  const c = readJSON(join(OUT, "cross-family.json"), null);
+  if (!c) return { status: "FAIL", detail: `cross-family ${r.status}, no report`, evidence: r.tail };
+  if (c.report?.dormant) return { status: "SKIP", detail: `dormant — pull qwen2.5vl:7b to enable second-family review` };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} beat(s) the cross-family VLM misread while flow() was confident`, evidence: "artifacts/qa/cross-family.json" }
+    : { status: "PASS", detail: `cross-family VLM agrees with flow() on every beat` };
+});
+
 // 4a2) RENDER-ORACLES — live scene-graph + GL-program validation: NaN materials,
 // degenerate geometry, failed shader links (glitch fuel render-diag/temporal miss).
 await phase("render-oracles", true, async () => {
@@ -451,7 +463,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
