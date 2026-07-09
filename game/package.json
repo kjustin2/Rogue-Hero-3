@@ -48,6 +48,8 @@
     "qa:ledger-selftest": "node scripts/qa/balance-ledger.mjs --selftest",
     "qa:fairness": "node scripts/qa/fairness.mjs",
     "qa:fairness-selftest": "node scripts/qa/fairness.mjs --selftest",
+    "qa:sim": "node scripts/qa/balance-sim.mjs",
+    "qa:sim-selftest": "node scripts/qa/balance-sim.mjs --selftest",
     "qa:balance": "node scripts/qa/balance.mjs",
     "qa:balance-selftest": "node scripts/qa/balance.mjs --selftest",
     "qa:monitors": "node scripts/qa/monitors.mjs",

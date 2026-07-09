@@ -103,6 +103,11 @@ export class Input {
   readonly aimPoint = new THREE.Vector3();
   enabled = true;
 
+  /** Test seam: when set, the action layer returns BOT intent instead of real
+   *  input — the balance microbench drives the real controller/combat with a
+   *  scripted policy. Null in normal play (every hook below is a no-op then). */
+  bot: { move: { x: number; z: number }; aimX: number; aimZ: number; down: Set<string>; pressed: Set<string> } | null = null;
+
   bindings: Bindings = loadBindings();
 
   // Gamepad
@@ -219,12 +224,14 @@ export class Input {
   // ------------------------------------------------------------ action layer
   actionDown(a: Action): boolean {
     if (!this.enabled) return false;
+    if (this.bot) return this.bot.down.has(a);
     if (this.bindings[a].some((c) => this.codeDown(c))) return true;
     return (PAD_ACTION[a] ?? []).some((b) => this.padHeld[b]);
   }
 
   actionPressed(a: Action): boolean {
     if (!this.enabled) return false;
+    if (this.bot) return this.bot.pressed.has(a);
     if (this.bindings[a].some((c) => this.codePressed(c))) return true;
     return (PAD_ACTION[a] ?? []).some((b) => this.padPressed[b]);
   }
@@ -239,6 +246,7 @@ export class Input {
   moveVector(): { x: number; z: number } {
     const out = this.moveScratch;
     if (!this.enabled) { out.x = 0; out.z = 0; return out; }
+    if (this.bot) { out.x = this.bot.move.x; out.z = this.bot.move.z; return out; }
     const gx = this.padAxes[0] ?? 0;
     const gz = this.padAxes[1] ?? 0;
     if (Math.hypot(gx, gz) > DEADZONE) {
@@ -348,6 +356,7 @@ export class Input {
 
   // ------------------------------------------------------------ aim raycast
   updateAim(camera: THREE.Camera, planeY = 0): void {
+    if (this.bot) { this.aimPoint.set(this.bot.aimX, planeY, this.bot.aimZ); return; }
     this.groundPlane.constant = -planeY;
     this.ray.setFromCamera(this.pointer, camera);
     if (this.ray.ray.intersectPlane(this.groundPlane, this.aimHit)) {

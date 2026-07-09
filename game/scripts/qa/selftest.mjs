@@ -26,6 +26,7 @@ const SUITES = [
   ["balance", ["scripts/qa/balance.mjs", "--selftest"]],
   ["balance-ledger", ["scripts/qa/balance-ledger.mjs", "--selftest"]],
   ["fairness", ["scripts/qa/fairness.mjs", "--selftest"]],
+  ["balance-sim", ["scripts/qa/balance-sim.mjs", "--selftest"]],
   ["differential", ["scripts/qa/differential.mjs", "--selftest"]],
   ["invariants", ["scripts/qa/invariants.mjs", "--selftest"]],
   ["audio", ["scripts/qa/audio.mjs", "--selftest"]],

@@ -233,6 +233,18 @@ await phase("balance-ledger", FULL, async () => {
     : { status: "PASS", detail: `card dps + upgrade values within band (median ${c.report.median})` };
 });
 
+// 3g2b) BALANCE-SIM — scripted-bot microbench: a fixed-skill bot clears the canonical
+// pack across depths; clear-time must rise (difficulty biting). WARN/report, qa:full.
+await phase("balance-sim", FULL, async () => {
+  const r = await node(["scripts/qa/balance-sim.mjs"], { minutes: 12 });
+  const c = readJSON(join(OUT, "balance-sim.json"), null);
+  if (!c) return { status: "FAIL", detail: `balance-sim ${r.status}, no report`, evidence: r.tail };
+  const flags = c.report.flags ?? [];
+  if (flags.length) return { status: "WARN", detail: flags.join("; "), evidence: "artifacts/qa/balance-sim.json" };
+  const rows = c.report.rows ?? [];
+  return { status: "PASS", detail: `bot clears the pack across depths; clear-time ${rows[0]?.frames}f→${rows[rows.length - 1]?.frames}f (difficulty ${c.report.bites ? "bites" : "flat"})` };
+});
+
 // 3g3) FAIRNESS — every enemy/boss attack must have a dodge window ≥ floor ("an
 // undodgeable attack is a bug" — a hard gate; no bot-skill confound).
 await phase("fairness", true, async () => {
@@ -507,7 +519,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "fairness", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
+const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "balance-sim", "fairness", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
