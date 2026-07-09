@@ -232,6 +232,18 @@ await phase("latency", true, async () => {
   return { status: "PASS", detail: `all verbs responsive (worst ${worst}ms)` };
 });
 
+// 4a2) RENDER-ORACLES — live scene-graph + GL-program validation: NaN materials,
+// degenerate geometry, failed shader links (glitch fuel render-diag/temporal miss).
+await phase("render-oracles", true, async () => {
+  const r = await node(["scripts/qa/render-oracles.mjs"], { minutes: 10 });
+  const c = readJSON(join(OUT, "render-oracles.json"), null);
+  if (!c) return { status: "FAIL", detail: `render-oracles ${r.status}, no report`, evidence: r.tail };
+  const n = (c.report.scenes ?? []).reduce((a, x) => a + (x.findings ?? 0), 0);
+  return n
+    ? { status: "FAIL", detail: `${n} render finding(s): ${(c.report.scenes ?? []).filter((x) => x.findings).map((x) => `${x.scene}(${x.findings})`).join(", ")}`, evidence: "artifacts/qa/render-oracles.json" }
+    : { status: "PASS", detail: `no NaN materials, degenerate geometry, or failed programs in ${(c.report.scenes ?? []).length} scenes` };
+});
+
 // 4b) COLLISION-TRUTH — render geometry and the collider set must agree about
 // where solid matter is (walk-through props + invisible walls, both directions).
 await phase("collision-truth", true, async () => {
@@ -416,7 +428,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
