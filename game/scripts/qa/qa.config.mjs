@@ -126,6 +126,17 @@ export default {
   // Input-latency feel budget (latency.mjs).
   latency: { gateMs: 100, maxFrames: 30, fps: 60 },
 
+  // Differential record-replay (differential.mjs): the golden tape. Same substrate
+  // as the determinism golden-trace (banished-boss holding room, fixed seed/spawn).
+  differential: {
+    seed: 20260707, frames: 150,
+    spawn: [["husk", -6, -3], ["caster", 6, -3], ["leaper", 3, 7], ["brute", -4, 5]],
+    scenario: "enemy:husk",
+  },
+
+  // Daikon-lite invariant mining (invariants.mjs): drive length + train/holdout split.
+  invariants: { frames: 300, seed: 20260707, trainFrac: 0.7, eps: 1e-6 },
+
   // AI judge (qa/judge.mjs): binary per-criterion verdicts over the contact
   // sheet + a stepper-driven combat filmstrip.
   judge: {

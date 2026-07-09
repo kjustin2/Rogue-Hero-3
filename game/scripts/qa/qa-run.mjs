@@ -138,6 +138,29 @@ await phase("determinism", true, async () => {
     : { status: "PASS", detail: `sim bit-deterministic under (seed, fixed tape); cosmetic RNG stays out of the hash` };
 });
 
+// 3c2) DIFFERENTIAL — replay a committed golden simHash trace; divergence = the sim
+// changed since it was blessed (re-bless with qa:differential-bless if intended).
+await phase("differential", true, async () => {
+  const r = await node(["scripts/qa/differential.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "differential.json"), null);
+  if (!c) return { status: "FAIL", detail: `differential ${r.status}, no report`, evidence: r.tail };
+  if (c.report?.status === "NO-GOLDEN") return { status: "WARN", detail: `no golden yet — run qa:differential-bless and commit it`, evidence: "artifacts/qa/differential.json" };
+  return c.failures
+    ? { status: "FAIL", detail: `sim diverged from golden (${c.report.blessedAt}→${c.report.now}) at frame ${c.report.divergedAt} — re-bless if intended, else bisect`, evidence: "artifacts/qa/differential.json" }
+    : { status: "PASS", detail: `sim replay matches the golden blessed at ${c.report.blessedAt}` };
+});
+
+// 3c3) INVARIANTS — Daikon-lite: mine + confirm invariants (spec discovery) + a
+// semantic safety gate (hp∈[0,maxHp], tempo∈[0,100], …) over the whole trace.
+await phase("invariants", true, async () => {
+  const r = await node(["scripts/qa/invariants.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "invariants.json"), null);
+  if (!c) return { status: "FAIL", detail: `invariants ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} safety-invariant violation(s): ${(c.report.safetyViolations ?? []).map((v) => v.inv).join(", ")}`, evidence: "artifacts/qa/invariants.json" }
+    : { status: "PASS", detail: `${(c.report.confirmed ?? []).length} invariants confirmed; safety gate holds` };
+});
+
 // 3d) CONTENT — per-id coverage: every card must cast (a dispatch that throws /
 // no-ops never emits CARD_CAST → id gap) and every enemy kind must spawn+die.
 await phase("content", true, async () => {
@@ -428,7 +451,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
+const order = ["build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
