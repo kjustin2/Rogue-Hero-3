@@ -124,6 +124,37 @@ camera-derived `facing`). Two real bugs the golden trace forced out: resume neve
 `ctx.rng` (resumed runs non-reproducible); spawn-grace used wall-clock `performance.now`. **After
 any intended sim/tuning change, `npm run qa:differential-bless` and commit the golden.**
 
+### The round-6 pyramid + senses (2026-07-09 — the CPU lane + 8 dimensions; `qa:selftest` = 35)
+
+**The test pyramid + lanes** (taxonomy in /game-testing). The guard lock has no CPU/GPU split, so
+it forces everything serial. The fix: a **CPU lane** (`npm test` vitest units + `npm run scan` static
+scanners + `determinism-lint`) kept OFF `loop/lib.mjs` (never arms the lock) runs PARALLEL as the
+doctor's `cpu` preflight; the GPU/browser dimensions stay SERIAL under the lock. Never two GPU scripts
+at once. `verify` = tsc → 34 vitest units → build.
+
+| Dimension (`qa:…`) | Gates |
+|---|---|
+| cpu | vitest units (rng/events/tempo/difficulty/blessings/mapgen) + scan + det-lint, PARALLEL preflight |
+| scan (`npm run scan`) | 7 static rules: damage-funnel, tempo-mutation, no-hitstop, no-asset-files, strict-ts-escape, placeholder-text, term-rift-depth (player term is "Rift Depth", never "Ascension"). `// scan-ok` to waive |
+| balance-ledger (`qa:ledger`) | measured per-card dps + honed-vs-base value; outliers WARN (utility-tagged excluded from dps math) |
+| balance-sim (`qa:sim`) | scripted-bot clear-time rises with depth (bot-intent via `input.bot` seam) |
+| fairness (`qa:fairness`) | every attack's dodge window ≥ 0.25s (telegraph `dur` = the window; hard gate) |
+| contact (`qa:contact`) | player↔enemy separation resolves forced overlap (regression proof for the fix) |
+| confinement (`qa:confine`) | player never leaves the arena (rim + dashes) |
+| aim (`qa:aim`) | swing lands where aimed at every angle |
+| text-pacing (`qa:text`) | no wall-of-text auto-advancing before read, no empty beat (dwell vs read-time) |
+| balance-review / narrative (`--judge`) | AI reasons OVER the deterministic ledger/sim/fairness / story corpus |
+
+**Gameplay change (round 6): player↔enemy soft separation** (`controller.ts`) — the player is pushed
+to touching distance out of any enemy body (bodies used to interpenetrate). Skipped mid-dodge (dash
+i-frames pass through) + boss-exempt (a big boss radius would break melee reach). Inert in normal play
+(enemies keep attack-spacing > touching), so the golden trace still matches — no re-bless needed.
+
+**Known balance findings the tools surfaced (owner's call, not auto-fixed):** difficulty PLATEAUS in
+the top half of the ladder (bot clear-time flat depth 7→15, 560f→572f); `hemorrhage`'s honed deals
+LESS than base; `aegis` base is near-worthless (9× honed ratio); `tempo-theft`/`flame-channel` are
+damage-tagged but tuned like utility. See `artifacts/qa/balance-review.json`.
+
 **HARD RULE (found by the temporal gate, 2 shipped instances fixed): no private
 `requestAnimationFrame` / wall-clock animation loops in game code** — they defeat
 `freezeForTest`/`frames(n,dt)` and make every capture nondeterministic (the dodge-ghost +
