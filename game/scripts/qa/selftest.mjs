@@ -31,6 +31,8 @@ const SUITES = [
   ["confinement", ["scripts/qa/confinement.mjs", "--selftest"]],
   ["aim", ["scripts/qa/aim.mjs", "--selftest"]],
   ["balance-review", ["scripts/qa/balance-review.mjs", "--selftest"]],
+  ["text-pacing", ["scripts/qa/text-pacing.mjs", "--selftest"]],
+  ["narrative", ["scripts/qa/narrative.mjs", "--selftest"]],
   ["differential", ["scripts/qa/differential.mjs", "--selftest"]],
   ["invariants", ["scripts/qa/invariants.mjs", "--selftest"]],
   ["audio", ["scripts/qa/audio.mjs", "--selftest"]],

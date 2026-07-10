@@ -303,6 +303,27 @@ await phase("balance-review", JUDGE, async () => {
   return { status: concerns.length ? "WARN" : "PASS", detail: `${concerns.length} balance concern(s)${high ? ` (${high} high)` : ""}; curve: ${c.review?.curveVerdict ?? "—"}`, evidence: "artifacts/qa/balance-review.json" };
 });
 
+// 3g8) TEXT-PACING — no wall-of-text that auto-advances before it can be read, and
+// no empty/contextless beat. Deterministic (read-time vs the dwell formula). Report.
+await phase("text-pacing", true, async () => {
+  const r = await node(["scripts/qa/text-pacing.mjs"], { minutes: 5 });
+  const c = readJSON(join(OUT, "text-pacing.json"), null);
+  if (!c) return { status: "FAIL", detail: `text-pacing ${r.status}, no report`, evidence: r.tail };
+  const flags = c.report.flags ?? [];
+  return flags.length
+    ? { status: "WARN", detail: `${flags.length} pacing flag(s): ${flags.slice(0, 4).map((f) => `${f.beat}(${f.flag})`).join(", ")}`, evidence: "artifacts/qa/text-pacing.json" }
+    : { status: "PASS", detail: `${c.report.beats} story beats + card descs paced right` };
+});
+
+// 3g9) NARRATIVE — AI cohesion read over the assembled story corpus. --judge only.
+await phase("narrative", JUDGE, async () => {
+  const r = await node(["scripts/qa/narrative.mjs"], { minutes: 6 });
+  const c = readJSON(join(OUT, "narrative.json"), null);
+  if (!c || c.skipped) return { status: "SKIP", detail: c?.skipped ? `skipped: ${c.skipped}` : "no report" };
+  const issues = c.review?.issues ?? [];
+  return { status: issues.length ? "WARN" : "PASS", detail: `cohesion ${c.review?.cohesion ?? "?"}, ending-earned ${c.review?.endingEarned}; ${issues.length} beat issue(s)`, evidence: "artifacts/qa/narrative.json" };
+});
+
 // 3h) AUDIO — every gameplay event must be audible (soundCount grows) and the
 // music bed must track the game state (menu/combat/boss). Hardware-free.
 await phase("audio", true, async () => {
@@ -561,7 +582,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "balance-sim", "fairness", "contact", "confinement", "aim", "balance-review", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
+const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "balance-sim", "fairness", "contact", "confinement", "aim", "balance-review", "text-pacing", "narrative", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);

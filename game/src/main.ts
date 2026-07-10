@@ -2123,6 +2123,8 @@ void boot();
   w.__rh3 = ctx;
   w.__rh3gen = { generatePlan, difficultyFor, MAX_DEPTH };
   w.__rh3palettes = { default: ZONE_PALETTE.default.map((p) => p.color), colorblind: ZONE_PALETTE.colorblind.map((p) => p.color) };
+  // Player-facing narrative corpus for the text-pacing + narrative-cohesion QA oracles.
+  w.__rh3text = { story: STORY_LINES, actStory: ACT_STORY, endings: ENDING_LINES, mercyEndings: MERCY_ENDING_LINES, heroEndings: HERO_ENDING, actFlavor: ACT_FLAVOR, bossEpitaphs: BOSS_EPITAPHS };
   w.__rh3cards = CARDS;
   w.__rh3heroes = HEROES;
   w.__rh3menus = menus;

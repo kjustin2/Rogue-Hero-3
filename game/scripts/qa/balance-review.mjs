@@ -63,7 +63,7 @@ if (!ledger) { log("no balance-ledger.json — run `npm run qa:ledger` (or qa:fu
 const server = await ensureServer({ log }); // not strictly needed, but keeps the guard/env consistent
 const prompt = buildPrompt(ledger, sim, fairness);
 log(`asking claude to synthesise ${ledger.rows?.length ?? 0} cards + curve + dodge windows…`);
-const r = runClaude(prompt, { allowedTools: [], model: cfg.judge?.model, timeoutMs: 180000, log });
+const r = runClaude(prompt, { allowedTools: ["Read"], model: cfg.judge?.model, timeoutMs: 180000, log });
 review = extractJSON(r.result) ?? { raw: r.result?.slice(0, 500), parseError: true };
 const concerns = review.concerns ?? [];
 for (const c of concerns.slice(0, 8)) log(`  [${c.severity}] ${c.subject}: ${c.note} (${c.evidence})`);

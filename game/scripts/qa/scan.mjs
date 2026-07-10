@@ -53,6 +53,20 @@ const RULES = [
     allow: () => false,
     hint: "no escape hatches — strict TS with noUnusedLocals/Parameters is the contract",
   },
+  {
+    name: "placeholder-text", severity: "FAIL",
+    re: /"[^"]*\b(lorem|ipsum|placeholder|PLACEHOLDER|TBD|WIP)\b[^"]*"/,
+    allow: () => false,
+    hint: "placeholder copy left in a player-facing string",
+  },
+  {
+    // player-facing term is "Rift Depth"; "Ascension" is internal-only (code/CSS/events).
+    name: "term-rift-depth", severity: "FAIL",
+    re: /"[^"]*Ascension[^"]*"/,
+    only: (rel) => /ui\/menus\.ts$|ui\/hud\.ts$/.test(rel),
+    allow: () => false,
+    hint: 'player-facing term is "Rift Depth", not internal "Ascension"',
+  },
 ];
 
 /** PURE per-file scan (reused by the selftest). Returns [{ rule, at, line }]. */
@@ -60,6 +74,7 @@ function scanFile(rel, text, rules) {
   const out = [];
   const lines = text.split(/\r?\n/);
   for (const rule of rules) {
+    if (rule.only && !rule.only(rel)) continue;  // file-scoped rules (e.g. player-facing text)
     if (rule.allow(rel)) continue;
     lines.forEach((ln, i) => {
       if (rule.re.test(ln) && !/\/\/\s*scan-ok/.test(ln)) out.push({ rule: rule.name, severity: rule.severity, at: `${rel}:${i + 1}`, line: ln.trim().slice(0, 100), hint: rule.hint });
@@ -94,6 +109,8 @@ if (!SELFTEST) {
     { rule: "no-hitstop", bad: "src/game/combat.ts", good: null, line: "dt *= 0.2; // slowmo" },
     { rule: "no-asset-files", bad: "src/render/arena.ts", good: null, line: 'const m = loader.load("hero.glb");' },
     { rule: "strict-ts-escape", bad: "src/game/deck.ts", good: null, line: "const x = y as any;" },
+    { rule: "placeholder-text", bad: "src/ui/menus.ts", good: null, line: 'const t = "lorem ipsum dolor";' },
+    { rule: "term-rift-depth", bad: "src/ui/menus.ts", good: "src/game/difficulty.ts", line: 'label: "Ascension Depth",' },
   ];
   let fail = 0;
   for (const c of cases) {
