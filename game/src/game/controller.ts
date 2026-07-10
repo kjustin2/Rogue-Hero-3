@@ -189,6 +189,31 @@ export class Controller {
     }
     this.ctx.arena.resolveObstacles(player.pos, player.radius);
 
+    // Player↔enemy soft separation: the player rides the SURFACE of a body, never
+    // stands inside it (the "looks wrong when interacting with another character"
+    // bug — bodies could freely interpenetrate). Push the player out to touching
+    // distance (radii sum), which is still inside melee reach, so it doesn't hurt
+    // combat. SKIPPED mid-dodge: the dash grants i-frames THROUGH enemies by design.
+    if (!this.dodging) {
+      for (const e of this.ctx.enemies.living()) {
+        // Boss exempt (matches shove()/clamp): a large boss radius would push the
+        // player out of melee reach. Separation is for the regular-enemy case.
+        if (e.hp <= 0 || e.kind === "boss") continue;
+        const dx = player.pos.x - e.pos.x;
+        const dz = player.pos.z - e.pos.z;
+        const min = player.radius + e.radius;
+        const d2 = dx * dx + dz * dz;
+        if (d2 <= 1e-6 || d2 >= min * min) continue;
+        const d = Math.sqrt(d2);
+        const push = (min - d) / d;
+        player.pos.x += dx * push;
+        player.pos.z += dz * push;
+      }
+      // being shoved off an enemy must not eject the player past the arena rim.
+      const r2 = Math.hypot(player.pos.x, player.pos.z);
+      if (r2 > maxR) { player.pos.x *= maxR / r2; player.pos.z *= maxR / r2; }
+    }
+
     const speedBase = Math.max(0.001, player.hero.speed);
     const rightX = Math.cos(player.facing);
     const rightZ = -Math.sin(player.facing);

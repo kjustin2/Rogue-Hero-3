@@ -261,6 +261,48 @@ await phase("fairness", true, async () => {
     : { status: "PASS", detail: `every attack across ${c.report.units.length} units has a dodge window ≥ floor` };
 });
 
+// 3g4) CONTACT — the player must be separated out of every enemy body (no standing
+// inside another character). Regression proof for the player↔enemy separation.
+await phase("contact", true, async () => {
+  const r = await node(["scripts/qa/contact.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "contact.json"), null);
+  if (!c) return { status: "FAIL", detail: `contact ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} interpenetration(s) — player stands inside a body`, evidence: "artifacts/qa/contact.json" }
+    : { status: "PASS", detail: `player separated out of every enemy body` };
+});
+
+// 3g5) CONFINEMENT — the player can never leave the arena (rim ramming + dashes).
+await phase("confinement", true, async () => {
+  const r = await node(["scripts/qa/confinement.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "confinement.json"), null);
+  if (!c) return { status: "FAIL", detail: `confinement ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `player escaped the arena (max r ${c.report.maxR} > ${c.report.arenaR})`, evidence: "artifacts/qa/confinement.json" }
+    : { status: "PASS", detail: `player contained (max r ${c.report.maxR} ≤ arena ${c.report.arenaR})` };
+});
+
+// 3g6) AIM — the swing lands where the player aims at every angle.
+await phase("aim", true, async () => {
+  const r = await node(["scripts/qa/aim.mjs"], { minutes: 8 });
+  const c = readJSON(join(OUT, "aim.json"), null);
+  if (!c) return { status: "FAIL", detail: `aim ${r.status}, no report`, evidence: r.tail };
+  return c.failures
+    ? { status: "FAIL", detail: `${c.failures} mis-aimed angle(s) — swing doesn't follow aim`, evidence: "artifacts/qa/aim.json" }
+    : { status: "PASS", detail: `swing lands where aimed at every angle` };
+});
+
+// 3g7) BALANCE-REVIEW — AI reasons OVER the deterministic ledger/sim/fairness JSONs
+// for a ranked balance report. Cost-gated (one claude call, --judge only).
+await phase("balance-review", JUDGE, async () => {
+  const r = await node(["scripts/qa/balance-review.mjs"], { minutes: 6 });
+  const c = readJSON(join(OUT, "balance-review.json"), null);
+  if (!c || c.skipped) return { status: "SKIP", detail: c?.skipped ? `skipped: ${c.skipped}` : "no report" };
+  const concerns = c.review?.concerns ?? [];
+  const high = concerns.filter((x) => x.severity === "high").length;
+  return { status: concerns.length ? "WARN" : "PASS", detail: `${concerns.length} balance concern(s)${high ? ` (${high} high)` : ""}; curve: ${c.review?.curveVerdict ?? "—"}`, evidence: "artifacts/qa/balance-review.json" };
+});
+
 // 3h) AUDIO — every gameplay event must be audible (soundCount grows) and the
 // music bed must track the game state (menu/combat/boss). Hardware-free.
 await phase("audio", true, async () => {
@@ -519,7 +561,7 @@ if (server.owned) { log("stopping dev server we started"); server.stop(); }
 
 // ── the health card ─────────────────────────────────────────────────────────
 const ICON = { PASS: "✅", WARN: "⚠️", FAIL: "❌", SKIP: "➖" };
-const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "balance-sim", "fairness", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
+const order = ["cpu", "build", "functional", "tutorial", "monitors", "stability", "coverage", "content", "determinism", "differential", "invariants", "save-determinism", "state-graph", "balance", "balance-ledger", "balance-sim", "fairness", "contact", "confinement", "aim", "balance-review", "audio", "photosensitivity", "colorblind", "latency", "collision-truth", "reachability", "temporal", "animation", "render-diag", "render-oracles", "ui-audit", "pixel-ui", "visual", "glitch", "perf", "runtime", "comprehension", "cross-family", "style-drift", "selftest", "judge"];
 const rows = order.filter((k) => dims[k]).map((k) => ({ dim: k, ...dims[k] }));
 const failed = rows.filter((r) => r.status === "FAIL");
 const totalMin = Math.round((Date.now() - startedAt) / 60_000);
