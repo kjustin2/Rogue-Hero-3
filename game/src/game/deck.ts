@@ -1,8 +1,6 @@
 import type { Ctx } from "./ctx";
 import { CARDS, cardById, type CardDef } from "./cards";
 
-export const HAND_SIZE = 3;
-
 /**
  * The hand: three slots on keys 1/2/3, cooldown-gated. After each cleared
  * room the player drafts one of three cards — filling an empty slot or

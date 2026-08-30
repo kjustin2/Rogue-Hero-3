@@ -31,7 +31,7 @@ const OUT_DIR = join(GAME_DIR, "artifacts", "suite");
 const BUDGET_MIN = {
   default: 6,
   "smoke-flow": 9, "smoke-map": 9, "smoke-meta": 9, "smoke-release": 9,
-  "shot-flicker": 9, "verify-suite": 12, "smoke-perf-stress": 8,
+  "shot-flicker": 9, "smoke-perf-stress": 8,
   "smoke-electron.cjs": 10, "perf-soak-electron.cjs": 16,
 };
 const budgetFor = (f) => (BUDGET_MIN[f.replace(/\.mjs$/, "")] ?? BUDGET_MIN[f] ?? BUDGET_MIN.default) * 60_000;

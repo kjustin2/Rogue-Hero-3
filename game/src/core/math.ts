@@ -31,12 +31,6 @@ export function angleDelta(a: number, b: number): number {
   return d;
 }
 
-export function dist2d(ax: number, az: number, bx: number, bz: number): number {
-  const dx = bx - ax;
-  const dz = bz - az;
-  return Math.sqrt(dx * dx + dz * dz);
-}
-
 /** Ease helpers for animation curves. */
 export const ease = {
   outCubic: (t: number) => 1 - Math.pow(1 - t, 3),

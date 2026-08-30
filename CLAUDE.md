@@ -229,7 +229,6 @@ node scripts/smoke-menu-perf.mjs # 3×-throttled CPU: menu/hero-select/settings 
 node scripts/smoke-death-perf.mjs# forces HIGH quality, boss room → kills player; asserts the playing→dead flip relinks 0 programs (no freeze)
 node scripts/smoke-loop-resilience.mjs # warden entrance plays with boss ALIVE (no crash); the setAnimationLoop guard recovers from an injected frame fault (no permanent freeze)
 node scripts/smoke-perf.mjs / smoke-perf-stress.mjs  # combat frame budget under load
-node scripts/shot-loader.mjs     # eyeball the boot loading screen (shots/loader-*.png)
 ```
 
 ### Performance + AI-visual harness

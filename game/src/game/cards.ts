@@ -130,8 +130,6 @@ const CARD_TAGS: Record<string, string[]> = {
 };
 for (const c of CARDS) c.tags = CARD_TAGS[c.id] ?? [];
 
-export const STARTING_HAND = ["dash-strike", "arc-bolt"];
-
 export function cardById(id: string): CardDef {
   const c = CARDS.find((c) => c.id === id);
   if (!c) throw new Error(`Unknown card: ${id}`);

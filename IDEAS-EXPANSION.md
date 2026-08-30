@@ -6,8 +6,6 @@ and the cutscene performances in `BOSS-CUTSCENE-AUDIT.md` — none repeated here
 
 ---
 
-## 1. ~~The true final boss~~ — SHIPPED (THE WOUND BENEATH, depth 3+)
-
 ## 2. A new combat system (options, ranked)
 
 **A. Break / Posture system (recommended).** Every non-trash enemy gets a
