@@ -732,7 +732,7 @@ export class Player {
     // Crash readiness: announce the rising edge, then keep the blast radius visible
     const crashReady = this.ctx.tempo.crashReady && this.alive;
     if (crashReady && !this.wasCrashReady) {
-      this.ctx.floaters.spawn(this.pos.x, 2.2, this.pos.z, "CRASH READY [F]", "tempo");
+      this.ctx.floaters.spawn(this.pos.x, 2.2, this.pos.z, `CRASH READY [${this.ctx.input.label("crash")}]`, "tempo");
       this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 6, color: 0xff4252, duration: 0.6 });
       this.ctx.sfx.cardReady();
     }

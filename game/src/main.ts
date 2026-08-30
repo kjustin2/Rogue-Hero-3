@@ -40,7 +40,7 @@ import { CardCaster } from "./game/cards";
 import { RunManager } from "./game/run";
 import { MapFeatures } from "./game/features";
 import { Hud } from "./ui/hud";
-import { Menus } from "./ui/menus";
+import { Menus, storyDwellMs } from "./ui/menus";
 import { MenuNav } from "./ui/menuNav";
 import { Tutorial } from "./game/tutorial";
 import { generatePlan } from "./game/mapgen";
@@ -361,16 +361,16 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   ctx.cam.menuOrbit();
   ctx.fx.ambientColor = THEMES.rift.ember;
   ctx.fx.ambientRate = 18;
-  const introFx = window.setInterval(() => {
-    const a = Math.random() * Math.PI * 2;
-    const r = 6 + Math.random() * 11;
+  stormEmitter = { t: 0, every: 0.2, fn: () => {
+    const a = Math.random() * Math.PI * 2; // cosmetic: ember placement
+    const r = 6 + Math.random() * 11;      // cosmetic:
     ctx.fx.burst({
       x: Math.sin(a) * r, y: 0.2, z: Math.cos(a) * r,
       count: 4, color: [0xff7733, 0x55ccff], speed: [0.4, 2], up: 2.4, size: [0.25, 0.6], life: [0.9, 1.7], gravity: 0.3, drag: 1.1, jitter: 0.6,
     });
-  }, 200);
+  } };
   menus.storyIntro(STORY_LINES, () => {
-    window.clearInterval(introFx);
+    stormEmitter = null;
     menus.clear();
     ctx.cam.mode = "follow";
     ctx.fx.ambientRate = 7;
@@ -396,9 +396,8 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
 let interlude: {
   pads: { x: number; z: number; kind: "mend" | "shards"; ring: THREE.Mesh; mat: THREE.MeshBasicMaterial; label: string; color: number; badge: HTMLElement }[];
   group: THREE.Group;
-  timers: number[];
-  /** Just the story-banner timers — cleared when the words are skipped early. */
-  wordTimers: number[];
+  /** Story/release/soft-lock beats, timed on the interlude's OWN clock. */
+  schedule: InterludeBeat[];
   skipBtn: HTMLElement;
   hint: HTMLElement;
   onDone: () => void;
@@ -409,12 +408,23 @@ let interlude: {
   locked: boolean;
 } | null = null;
 
+/** One scheduled interlude beat, on the interlude's own clock (seconds). */
+interface InterludeBeat {
+  at: number;
+  /** A story-banner beat: dropped when the player skips the words. */
+  word: boolean;
+  fn: () => void;
+}
+
 /** Skip the remaining story banners and release the hero to the choice (click / key
  *  during the words, or the release timer firing). Does NOT skip the whole interlude —
  *  the player still walks into a light for its boon. */
 function releaseInterludeWords(): void {
   if (!interlude || !interlude.locked) return;
-  interlude.wordTimers.forEach((t) => window.clearTimeout(t)); // no more words after this
+  // Drop the remaining word beats, and rebase the soft-lock auto-cross so that
+  // skipping the story still leaves a full 45s to walk into a light.
+  interlude.schedule = interlude.schedule.filter((b) => !b.word);
+  for (const b of interlude.schedule) b.at = interlude.t + 45;
   interlude.locked = false;
   interlude.hint.remove();
   ctx.sfx.cardReady();
@@ -428,7 +438,6 @@ function finishInterlude(chosen: "mend" | "shards" | null, proceed = true): void
   const it = interlude;
   interlude = null;
   ctx.input.enabled = true; // the words-lock may have disabled it; the next node needs movement
-  it.timers.forEach((t) => window.clearTimeout(t));
   it.skipBtn.remove();
   it.hint.remove();
   for (const pad of it.pads) pad.badge.remove();
@@ -482,6 +491,14 @@ function updateInterlude(dt: number): void {
   if (!interlude) return;
   const it = interlude;
   it.t += dt;
+  // Story beats run on THIS clock, which only advances while the game is actually
+  // playing. On wall-clock timers the act's words played out behind the pause
+  // menu, and the 45s soft-lock guard could cross the causeway -- silently
+  // forfeiting the boon -- while the player sat in the pause screen.
+  while (it.schedule.length && it.schedule[0].at <= it.t) {
+    it.schedule.shift()!.fn();
+    if (interlude !== it) return; // a beat tore the interlude down
+  }
   positionInterludeBadges();
   // While the act's words play, the hero is paused at the causeway mouth: no
   // crossing until the story has come and gone (or the player clicks to skip them).
@@ -562,7 +579,7 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   const makeBadge = (color: number, title: string, sub: string): HTMLElement => {
     const el = document.createElement("div");
     const hex = "#" + color.toString(16).padStart(6, "0");
-    el.style.cssText = `position:fixed;transform:translate(-50%,-50%);pointer-events:none;z-index:40;text-align:center;white-space:nowrap;font-family:var(--font-display,'Cinzel',serif);`;
+    el.style.cssText = `position:fixed;transform:translate(-50%,-50%);pointer-events:none;z-index:29;text-align:center;white-space:nowrap;font-family:var(--font-display,'Cinzel',serif);`;
     el.innerHTML =
       `<div style="font-size:30px;font-weight:700;letter-spacing:4px;color:${hex};text-shadow:0 0 16px ${hex},0 0 32px ${hex},0 2px 8px #000;">${title}</div>` +
       `<div style="font-size:15px;letter-spacing:3px;margin-top:3px;color:#eef4ff;text-shadow:0 0 8px ${hex},0 1px 4px #000;font-family:var(--font-body,sans-serif);">${sub}</div>`;
@@ -595,11 +612,12 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   // A click / Space / Enter anywhere else during the words SKIPS THROUGH THE WORDS
   // (releases the hero to the choice) without skipping the boon — read at your pace.
   const hint = document.createElement("div");
-  hint.style.cssText = `position:fixed;left:50%;bottom:16%;transform:translateX(-50%);z-index:41;pointer-events:none;color:rgba(223,232,255,0.72);font-size:14px;letter-spacing:2px;text-shadow:0 1px 4px #000;`;
+  hint.style.cssText = `position:fixed;left:50%;bottom:16%;transform:translateX(-50%);z-index:29;pointer-events:none;color:rgba(223,232,255,0.72);font-size:14px;letter-spacing:2px;text-shadow:0 1px 4px #000;`;
   hint.textContent = "click / space to skip the words ▸";
   document.body.appendChild(hint);
   const onAdvance = (e: Event): void => {
     if (!interlude || !interlude.locked) return;
+    if (state !== "playing") return; // a click on the pause menu is not a skip
     if (e.target === skipBtn) return; // that button skips the whole beat
     if (e.type === "keydown" && !["Space", "Enter", "KeyE"].includes((e as KeyboardEvent).code)) return;
     releaseInterludeWords();
@@ -607,23 +625,31 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   window.addEventListener("pointerdown", onAdvance);
   window.addEventListener("keydown", onAdvance);
 
-  // The story drifts past as banners while the hero walks.
-  const timers: number[] = [];
-  const wordTimers: number[] = [];
+  // The story drifts past as banners while the hero walks. Each beat is timed in
+  // SECONDS on the interlude's own clock (see updateInterlude).
+  const schedule: InterludeBeat[] = [];
   const lines = [...(ACT_STORY[node.act] ?? [])];
-  const LINE_START = 4200, LINE_GAP = 6200, LAMENT_MS = 8200; // last line uses banner--lament (8.2s dwell)
-  wordTimers.push(window.setTimeout(() => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long"), 500));
-  lines.forEach((line, i) => {
-    wordTimers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), LINE_START + i * LINE_GAP));
-  });
+  const ACT_CARD_S = 5.6; // .banner--long animation duration
+  const LAMENT_S = 8.2;   // .banner--lament animation duration
+  schedule.push({ at: 0.5, word: true, fn: () => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long") });
+  // The act title card now plays out IN FULL before the first line: it used to be
+  // cut off at ~3.7s of its 5.6s animation by a fixed 4.2s line start.
+  let cursor = 0.5 + ACT_CARD_S;
+  for (const line of lines) {
+    const at = cursor;
+    schedule.push({ at, word: true, fn: () => hud.banner(line, "", "banner--long banner--lament") });
+    // The project's dwell rule, from the same function storyIntro uses -- a line is
+    // never replaced before it can be read. The old fixed 6.2s gap cut off act
+    // lines of 120-137 characters, which need ~9.5s.
+    cursor += Math.max(LAMENT_S, storyDwellMs(line) / 1000);
+  }
+  const wordsEnd = lines.length ? cursor : 3.2;
   // Release the hero once the last word has come and gone (or a click gets there first).
-  const wordsEndMs = lines.length ? LINE_START + (lines.length - 1) * LINE_GAP + LAMENT_MS : 3200;
-  timers.push(window.setTimeout(() => releaseInterludeWords(), wordsEndMs));
-  // Soft-lock guard: if nothing is chosen in 45s (past the words), cross without a gift.
-  timers.push(window.setTimeout(() => finishInterlude(null), 45000));
-  timers.push(...wordTimers);
+  schedule.push({ at: wordsEnd, word: false, fn: () => releaseInterludeWords() });
+  // Soft-lock guard: if nothing is chosen 45s AFTER the words, cross without a gift.
+  schedule.push({ at: wordsEnd + 45, word: false, fn: () => finishInterlude(null) });
 
-  interlude = { pads, group, timers, wordTimers, skipBtn, hint, onDone, onAdvance, t: 0, locked: true };
+  interlude = { pads, group, schedule, skipBtn, hint, onDone, onAdvance, t: 0, locked: true };
 }
 
 /** Present the current fork: a forced node auto-enters; a choice fork opens the map. */
@@ -633,11 +659,13 @@ function presentFork(): void {
     state = "draft";
     ctx.input.enabled = false;
     ctx.music.map();
+    // A fork used to be a dead end for the Escape key: no back, no pause, no way
+    // to reach Settings or quit without first committing to a node.
     menus.showMap(ctx.run.forkOptions(), ctx.run.position, ctx.run.totalForks, (i) => {
       menus.clear();
       ctx.run.select(i);
       enterCurrentNode();
-    });
+    }, () => menus.showSettings(() => presentFork()));
   } else {
     ctx.run.select(0);
     enterCurrentNode();
@@ -658,6 +686,7 @@ function enterCurrentNode(): void {
         hud.setVisible(true);
         state = "playing";
         ctx.input.enabled = true;
+        ctx.music.duckTo(1); // playActTransition ducks to 0.7 and nothing else restored it
         warmCombatShaders();
         ctx.run.loadCurrentNode();
       };
@@ -1170,6 +1199,9 @@ function playUnmakerRekindle(x: number, z: number): void {
 }
 
 ctx.events.on("ACT_START", ({ act, name }) => {
+  // Acts 2+ already got a full title card during the causeway interlude --
+  // announcing the same act again 30 seconds later read as a bug.
+  if (act > 1 && act === lastActStory) return;
   menus.actIntro(`ACT ${ROMAN[act - 1]}`, name, ACT_FLAVOR[act - 1]);
 });
 
@@ -1193,8 +1225,13 @@ let cutsceneFreezeWorld = false;
 let musicLament = false;
 /** A brief grace window so the attack click the player is holding doesn't instantly skip the beat. */
 let cutsceneSkipReadyTs = 0;
-/** Repeating environmental FX during a boss entrance (cleared on finish). */
-let bossStormInterval: number | null = null;
+/**
+ * The one repeating environmental FX emitter (opening crawl embers, boss-entrance
+ * storm). Driven by the frame loop's dt, NOT setInterval: a private wall-clock
+ * loop defeats freezeForTest()/frames(n,dt) and makes every capture
+ * nondeterministic (a hard rule in CLAUDE.md).
+ */
+let stormEmitter: { t: number; every: number; fn: () => void } | null = null;
 /** Temporary meshes owned by the active boss cutscene. Cleared on skip/finish. */
 let cutsceneTemps: THREE.Object3D[] = [];
 
@@ -1269,7 +1306,8 @@ function finishCutscene(): void {
   ctx.input.enabled = true;
   ctx.music.duckTo(musicLament ? 0.25 : 1); // keep the lament quiet through the fade
   cutsceneFreezeWorld = false;
-  if (bossStormInterval !== null) { window.clearInterval(bossStormInterval); bossStormInterval = null; }
+  hud.revealBossBar(); // skipping the entrance must not leave the fight bar-less
+  stormEmitter = null;
   clearCutsceneTemps();
   if (state === "cutscene") state = "playing";
 }
@@ -1588,9 +1626,9 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
   faceHeroToward(bx, bz);
   const queueBeat = (t: number, fn: () => void) => cutsceneTimers.push(window.setTimeout(fn, t));
 
-  bossStormInterval = window.setInterval(() => {
-    const a = Math.random() * Math.PI * 2;
-    const r = 7 + Math.random() * 10;
+  stormEmitter = { t: 0, every: cfg.quiet ? 0.18 : 0.14, fn: () => {
+    const a = Math.random() * Math.PI * 2; // cosmetic: storm ember placement
+    const r = 7 + Math.random() * 10;      // cosmetic:
     ctx.fx.burst({
       x: Math.sin(a) * r, y: 0.3, z: Math.cos(a) * r,
       count: cfg.quiet ? 2 : 3,
@@ -1603,7 +1641,7 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
       drag: cfg.quiet ? 0.65 : 1.1,
       jitter: cfg.quiet ? 1.5 : 0.8,
     });
-  }, cfg.quiet ? 180 : 140);
+  } };
 
   const introBeats = buildBossIntroBeats(kind, cfg, name, title);
   for (const beat of introBeats) {
@@ -1751,6 +1789,9 @@ function doMercy(): void {
 }
 
 ctx.events.on("PLAYER_DIED", () => {
+  // The run is already won: a lingering projectile landing inside the 2.8s
+  // victory-resolution window must not replace the ending with a death screen.
+  if (runResolved) return;
   // Training Grounds is forgiving — pick the hero back up and keep teaching.
   if (inTutorial) {
     ctx.player.alive = true;
@@ -1789,6 +1830,10 @@ ctx.events.on("PLAYER_DIED", () => {
 
 window.addEventListener("keydown", (e) => {
   if (e.code !== "Escape") return;
+  if (state === "cutscene") return; // story screens own Escape (skip) -- see Menus.storyIntro
+  // An open overlay with a Back control closes THAT first, so Escape inside
+  // Settings returns to the pause menu instead of resuming the fight beneath it.
+  if (menus.back()) return;
   if (state === "playing") pause();
   else if (state === "paused") resume();
 });
@@ -1915,7 +1960,7 @@ const runFrame = (now: number, forcedDt: number | null = null): void => {
         hud.setSparePrompt(true, spareHold / SPARE_TIME);
       }
     }
-    hud.update();
+    hud.update(dt);
   } else if (state === "cutscene") {
     // Cinematics: the world breathes, spawns materialize, nothing fights.
     // A controller button skips the boss entrance just like a key/click does
@@ -1927,9 +1972,16 @@ const runFrame = (now: number, forcedDt: number | null = null): void => {
     if (!cutsceneFreezeWorld) ctx.enemies.update(dt);
     ctx.player.getBladePoints(trailTip, trailBase);
     ctx.trail.update(dt, trailTip, trailBase, false);
-  } else if (state === "draft" || state === "paused") {
-    // World idles but the hero still breathes
+  } else if (state === "draft" || state === "paused" || state === "menu") {
+    // World idles but the hero still breathes -- including on the title screen,
+    // where the camera orbits him and a frozen pose reads as a broken build.
     ctx.player.update(0.0001);
+  }
+
+  // The one repeating-FX emitter, on the threaded dt.
+  if (stormEmitter && state !== "paused") {
+    stormEmitter.t += dt;
+    while (stormEmitter.t >= stormEmitter.every) { stormEmitter.t -= stormEmitter.every; stormEmitter.fn(); }
   }
 
   // Low-HP swell: the bed leans in as the hero nears death.
@@ -2124,7 +2176,7 @@ void boot();
   w.__rh3gen = { generatePlan, difficultyFor, MAX_DEPTH };
   w.__rh3palettes = { default: ZONE_PALETTE.default.map((p) => p.color), colorblind: ZONE_PALETTE.colorblind.map((p) => p.color) };
   // Player-facing narrative corpus for the text-pacing + narrative-cohesion QA oracles.
-  w.__rh3text = { story: STORY_LINES, actStory: ACT_STORY, endings: ENDING_LINES, mercyEndings: MERCY_ENDING_LINES, heroEndings: HERO_ENDING, actFlavor: ACT_FLAVOR, bossEpitaphs: BOSS_EPITAPHS };
+  w.__rh3text = { dwellMs: (s: string) => storyDwellMs(s), story: STORY_LINES, actStory: ACT_STORY, endings: ENDING_LINES, mercyEndings: MERCY_ENDING_LINES, heroEndings: HERO_ENDING, actFlavor: ACT_FLAVOR, bossEpitaphs: BOSS_EPITAPHS };
   w.__rh3cards = CARDS;
   w.__rh3heroes = HEROES;
   w.__rh3menus = menus;

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Ctx } from "../game/ctx";
+import type { EventBus } from "../core/events";
 import type { Enemy } from "../game/enemies";
 import { ZONES, CRASH_THRESHOLD } from "../game/tempo";
 import { ROMAN } from "../game/run";
@@ -56,7 +57,7 @@ export class Hud {
   private threatCandidates: { e: Enemy | null; d: number; sx: number; sy: number; ang: number }[] =
     Array.from({ length: 5 }, () => ({ e: null, d: 0, sx: 0, sy: 0, ang: 0 }));
   private combo = 0;
-  private comboExpiry = 0;
+  private comboTimer = 0; // seconds of slack left on the combo (dt-driven, so a pause can't eat it)
   private lastComboMilestone = 0;
   private ghostHp = 1;
   private lastSlotIds: (string | null)[] = [null, null, null];
@@ -115,7 +116,7 @@ export class Hud {
           <div class="tempo__tick"></div>
           <div class="tempo__value"><span class="num">50</span><span class="tempo__zonename">FLOWING</span></div>
         </div>
-        <div class="tempo__crash">CRASH&nbsp;&nbsp;[F]</div>
+        <div class="tempo__crash">CRASH</div>
       </div>
       <div class="bossbar">
         <div class="bossbar__name"></div>
@@ -126,10 +127,7 @@ export class Hud {
       <div class="combo"><span class="combo__n">0</span><span class="combo__x">HIT</span></div>
       <div class="banner"><div class="banner__title"></div><div class="banner__sub"></div></div>
       <div class="objective"></div>
-      <div class="hints">
-        <div><b>WASD</b> move&nbsp;&nbsp;<b>LMB</b> attack&nbsp;&nbsp;<b>SPACE</b> dodge</div>
-        <div><b>1·2·3</b> cards&nbsp;&nbsp;<b>F</b> crash at 85+&nbsp;&nbsp;<b>ESC</b> pause</div>
-      </div>
+      <div class="hints"></div>
     `;
     const q = (sel: string) => this.root.querySelector(sel) as HTMLElement;
     this.hpFill = q(".plate__hp");
@@ -220,9 +218,20 @@ export class Hud {
         t.style.left = `${(f * 100).toFixed(1)}%`;
         wrap.appendChild(t);
       }
-      window.setTimeout(() => this.bossBar.classList.add("bossbar--show"), 2600);
+      // Backstop only — main.ts calls revealBossBar() the moment the entrance
+      // ends, so skipping it doesn't leave the fight without a health bar.
+      window.setTimeout(() => this.revealBossBar(), 2600);
     });
-    events.on("BOSS_PHASE", ({ line }) => this.banner(line, "", "banner--boss"));
+    this.wireBossEvents(events);
+  }
+
+  /** Show the boss health bar now (entrance finished, or skipped). */
+  revealBossBar(): void {
+    if (this.bossName.textContent) this.bossBar.classList.add("bossbar--show");
+  }
+
+  private wireBossEvents(events: EventBus): void {
+    events.on("BOSS_PHASE", ({ line }) => this.banner(line, "", "banner--boss banner--speech"));
     events.on("BOSS_HP", ({ hp, maxHp }) => {
       this.bossFill.style.width = `${(hp / maxHp) * 100}%`;
     });
@@ -266,13 +275,14 @@ export class Hud {
     });
     events.on("PERFECT_DODGE", () => {
       this.replay(this.flashRing, "flashring--go");
-      this.flash("#7df3ff", 0.32);
+      this.flash("#7df3ff", 0.24);
     });
     // Screen flashes on the big beats — additive 'screen' blend, fast fade.
-    events.on("CRASH", () => this.flash("#ff5a4a", 0.5));
-    events.on("COLD_CRASH", () => this.flash("#6cc4ff", 0.42));
-    events.on("BOSS_DEFEATED", () => this.flash("#ffe39a", 0.55));
-    events.on("RUN_VICTORY", () => this.flash("#ffffff", 0.72));
+    events.on("CRASH", () => this.flash("#ff5a4a", 0.34));
+    events.on("COLD_CRASH", () => this.flash("#6cc4ff", 0.3));
+    events.on("BOSS_DEFEATED", () => this.flash("#ffe39a", 0.36));
+    // Warm gold, not white: RUN_VICTORY lands in the same frame as BOSS_DEFEATED.
+    events.on("RUN_VICTORY", () => this.flash("#ffd9a0", 0.34));
     // Combo counter — climbs on every enemy hit, resets when the player is hit.
     events.on("ENEMY_HIT", () => this.bumpCombo());
     events.on("PLAYER_HIT", ({ srcX, srcZ }) => {
@@ -298,12 +308,17 @@ export class Hud {
     el.classList.add(cls);
   }
 
-  /** Brief full-screen additive flash (screen blend), fades out fast. */
+  /**
+   * Impact flash. Deliberately NOT a flat full-screen plate: the fill is an
+   * edge burst that stays clear through the middle ~40% of the frame, so the
+   * hero, the boss and the telegraphs remain readable through every hit. A
+   * white plate over the whole screen is the single most-reported FX complaint.
+   */
   flash(color: string, intensity: number): void {
     const k = this.ctx.cam.shakeScale <= 0 ? 0.35 : 1; // reduce-motion-friendly
     const el = this.screenFlash;
     el.style.transition = "none";
-    el.style.background = color;
+    el.style.background = `radial-gradient(ellipse 74% 74% at 50% 50%, transparent 34%, ${color} 100%)`;
     el.style.opacity = String(intensity * k);
     void el.offsetWidth;
     el.style.transition = "opacity 0.45s ease-out";
@@ -312,7 +327,7 @@ export class Hud {
 
   private bumpCombo(): void {
     this.combo++;
-    this.comboExpiry = performance.now() + 2200;
+    this.comboTimer = 2.2;
     this.comboNum.textContent = String(this.combo);
     this.comboEl.classList.add("combo--show");
     this.comboEl.classList.toggle("combo--hot", this.combo >= 10);
@@ -421,18 +436,41 @@ export class Hud {
     if (!this.spareEl) {
       this.spareEl = document.createElement("div");
       this.spareEl.className = "spareprompt";
-      this.spareEl.innerHTML = `<div class="spareprompt__text">HOLD&nbsp;[Q]&nbsp;TO SPARE THE STAR<br><span>— or strike it down —</span></div><div class="spareprompt__bar"><div class="spareprompt__fill"></div></div>`;
+      this.spareEl.innerHTML = `<div class="spareprompt__text"></div><div class="spareprompt__bar"><div class="spareprompt__fill"></div></div>`;
       this.root.appendChild(this.spareEl);
+    }
+    if (show) {
+      (this.spareEl.querySelector(".spareprompt__text") as HTMLElement).innerHTML =
+        `HOLD&nbsp;[${this.ctx.input.label("mercy")}]&nbsp;TO SPARE THE STAR<br><span>— or strike it down —</span>`;
     }
     this.spareEl.classList.toggle("spareprompt--on", show);
     (this.spareEl.querySelector(".spareprompt__fill") as HTMLElement).style.width = `${Math.round(Math.min(1, frac) * 100)}%`;
   }
 
-  update(): void {
+  private hintSig = "";
+  /** Rewrite the control hints + crash pip from the CURRENT bindings. */
+  private refreshHints(): void {
+    const i = this.ctx.input;
+    const move = i.usingGamepad ? "L-STICK" : i.labels("up", "left", "down", "right");
+    const cards = `${i.label("card1")}·${i.label("card2")}·${i.label("card3")}`;
+    const sig = `${move}|${cards}|${i.label("attack")}|${i.label("dodge")}|${i.label("crash")}|${i.label("pause")}`;
+    if (sig === this.hintSig) return;
+    this.hintSig = sig;
+    this.hintsEl.innerHTML =
+      `<div><b>${move}</b> move&nbsp;&nbsp;<b>${i.label("attack")}</b> attack&nbsp;&nbsp;<b>${i.label("dodge")}</b> dodge</div>` +
+      `<div><b>${cards}</b> cards&nbsp;&nbsp;<b>${i.label("crash")}</b> crash at ${CRASH_THRESHOLD}+&nbsp;&nbsp;<b>${i.label("pause")}</b> pause</div>`;
+    this.tempoCrash.textContent = `CRASH  [${i.label("crash")}]`;
+  }
+
+  update(dt = 0): void {
     const { player, tempo, deck } = this.ctx;
+    this.refreshHints();
 
     // Combo decays if you go too long without landing a hit
-    if (this.combo > 0 && performance.now() > this.comboExpiry) this.resetCombo();
+    if (this.combo > 0) {
+      this.comboTimer -= dt;
+      if (this.comboTimer <= 0) this.resetCombo();
+    }
 
     // HP. The ghost bar drains smoothly behind the real bar, so it animates every
     // frame; everything else is written only when its value actually changes

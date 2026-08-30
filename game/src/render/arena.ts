@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { Stage } from "./stage";
+import { Rng } from "../core/rng";
 
 export const ARENA_RADIUS = 19;
 
@@ -227,6 +228,14 @@ export class Arena {
   private floorTextureTheme = THEMES.rift.name;
   private crystalMats: THREE.MeshStandardMaterial[] = [];
   private rocks: { mesh: THREE.Mesh; baseY: number; spin: number; bob: number; phase: number }[] = [];
+  /**
+   * Fixed-seed RNG for every one-off LOOK decision made at construction: edge
+   * dressing placement, drifting void rocks, and the painted floor textures.
+   * These used this.look.next(), so the arena looked slightly different every
+   * launch and `visual:diff` could never hold a tight threshold on it. Cosmetic
+   * only -- it never touches the sim, which uses ctx.rng.
+   */
+  private readonly look = new Rng(0x51ce);
   private dressings: Record<Dressing, THREE.Group | null> = { rift: null, spire: null, forge: null, void: null };
   private sharedGeos = new Map<string, THREE.BufferGeometry>();
   private t = 0;
@@ -317,7 +326,7 @@ export class Arena {
       });
       const pillar = new THREE.Mesh(new THREE.CylinderGeometry(d.r * 0.82, d.r, h, 7), rock);
       pillar.position.set(d.x, h / 2, d.z);
-      pillar.rotation.y = Math.random() * Math.PI;
+      pillar.rotation.y = this.look.next() * Math.PI;
       pillar.castShadow = true;
       const ring = new THREE.Mesh(new THREE.TorusGeometry(d.r * 0.92, 0.09, 8, 24), band);
       ring.rotation.x = Math.PI / 2;
@@ -589,13 +598,13 @@ export class Arena {
     this.dressings.rift = this.buildDressing(scene, (group, mat) => {
       // Act I: clustered crystal shards
       const crystalGeo = this.shareGeo("cone", () => new THREE.ConeGeometry(0.55, 3.2, 5));
-      const n = 2 + Math.floor(Math.random() * 3);
+      const n = 2 + Math.floor(this.look.next() * 3);
       for (let c = 0; c < n; c++) {
         const m = new THREE.Mesh(crystalGeo, mat);
-        const s = 0.5 + Math.random() * 0.9;
-        m.scale.set(s, s * (0.8 + Math.random() * 1.6), s);
-        m.position.set((Math.random() - 0.5) * 1.6, m.scale.y * 1.4, (Math.random() - 0.5) * 1.6);
-        m.rotation.set((Math.random() - 0.5) * 0.35, Math.random() * Math.PI, (Math.random() - 0.5) * 0.35);
+        const s = 0.5 + this.look.next() * 0.9;
+        m.scale.set(s, s * (0.8 + this.look.next() * 1.6), s);
+        m.position.set((this.look.next() - 0.5) * 1.6, m.scale.y * 1.4, (this.look.next() - 0.5) * 1.6);
+        m.rotation.set((this.look.next() - 0.5) * 0.35, this.look.next() * Math.PI, (this.look.next() - 0.5) * 0.35);
         m.castShadow = true;
         group.add(m);
       }
@@ -604,17 +613,17 @@ export class Arena {
       // Act II: tall glass pillars with glowing caps
       const pillarGeo = this.shareGeo("hex", () => new THREE.CylinderGeometry(0.42, 0.55, 1, 6));
       const capGeo = this.shareGeo("oct", () => new THREE.OctahedronGeometry(0.5));
-      const n = 1 + Math.floor(Math.random() * 2);
+      const n = 1 + Math.floor(this.look.next() * 2);
       for (let c = 0; c < n; c++) {
-        const h = 4.5 + Math.random() * 3.5;
+        const h = 4.5 + this.look.next() * 3.5;
         const pillar = new THREE.Mesh(pillarGeo, dark);
         pillar.scale.set(1, h, 1);
-        pillar.position.set((Math.random() - 0.5) * 1.8, h / 2 - 0.4, (Math.random() - 0.5) * 1.8);
-        pillar.rotation.y = Math.random() * Math.PI;
+        pillar.position.set((this.look.next() - 0.5) * 1.8, h / 2 - 0.4, (this.look.next() - 0.5) * 1.8);
+        pillar.rotation.y = this.look.next() * Math.PI;
         pillar.castShadow = true;
         const cap = new THREE.Mesh(capGeo, mat);
         cap.position.set(pillar.position.x, h - 0.2, pillar.position.z);
-        cap.rotation.y = Math.random() * Math.PI;
+        cap.rotation.y = this.look.next() * Math.PI;
         group.add(pillar, cap);
       }
     });
@@ -622,16 +631,16 @@ export class Arena {
       // Act III: low jagged slag anvils with molten tips
       const slabGeo = this.shareGeo("slab", () => new THREE.BoxGeometry(1, 1, 1));
       const tipGeo = this.shareGeo("tip", () => new THREE.ConeGeometry(0.22, 1.0, 4));
-      const n = 2 + Math.floor(Math.random() * 3);
+      const n = 2 + Math.floor(this.look.next() * 3);
       for (let c = 0; c < n; c++) {
         const slab = new THREE.Mesh(slabGeo, dark);
-        slab.scale.set(0.9 + Math.random() * 1.3, 0.8 + Math.random() * 1.8, 0.9 + Math.random() * 1.3);
-        slab.position.set((Math.random() - 0.5) * 2.2, slab.scale.y / 2 - 0.3, (Math.random() - 0.5) * 2.2);
-        slab.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
+        slab.scale.set(0.9 + this.look.next() * 1.3, 0.8 + this.look.next() * 1.8, 0.9 + this.look.next() * 1.3);
+        slab.position.set((this.look.next() - 0.5) * 2.2, slab.scale.y / 2 - 0.3, (this.look.next() - 0.5) * 2.2);
+        slab.rotation.set((this.look.next() - 0.5) * 0.3, this.look.next() * Math.PI, (this.look.next() - 0.5) * 0.3);
         slab.castShadow = true;
         const tip = new THREE.Mesh(tipGeo, mat);
         tip.position.set(slab.position.x, slab.scale.y + 0.2, slab.position.z);
-        tip.rotation.z = (Math.random() - 0.5) * 0.6;
+        tip.rotation.z = (this.look.next() - 0.5) * 0.6;
         group.add(slab, tip);
       }
     });
@@ -639,19 +648,19 @@ export class Arena {
       // Act IV: broken obelisks haloed by floating rift shards
       const obGeo = this.shareGeo("obelisk", () => new THREE.BoxGeometry(0.9, 1, 0.9));
       const shardGeo = this.shareGeo("voidshard", () => new THREE.OctahedronGeometry(0.4));
-      const h = 4 + Math.random() * 3.5;
+      const h = 4 + this.look.next() * 3.5;
       const ob = new THREE.Mesh(obGeo, dark);
       ob.scale.set(1, h, 1);
-      ob.position.set((Math.random() - 0.5) * 1.4, h / 2 - 0.4, (Math.random() - 0.5) * 1.4);
-      ob.rotation.set((Math.random() - 0.5) * 0.18, Math.random() * Math.PI, (Math.random() - 0.5) * 0.18);
+      ob.position.set((this.look.next() - 0.5) * 1.4, h / 2 - 0.4, (this.look.next() - 0.5) * 1.4);
+      ob.rotation.set((this.look.next() - 0.5) * 0.18, this.look.next() * Math.PI, (this.look.next() - 0.5) * 0.18);
       ob.castShadow = true;
       group.add(ob);
-      const n = 2 + Math.floor(Math.random() * 3);
+      const n = 2 + Math.floor(this.look.next() * 3);
       for (let c = 0; c < n; c++) {
         const sh = new THREE.Mesh(shardGeo, mat);
-        sh.scale.setScalar(0.5 + Math.random() * 0.8);
-        sh.position.set(ob.position.x + (Math.random() - 0.5) * 2.6, h * 0.5 + Math.random() * h * 0.7, ob.position.z + (Math.random() - 0.5) * 2.6);
-        sh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+        sh.scale.setScalar(0.5 + this.look.next() * 0.8);
+        sh.position.set(ob.position.x + (this.look.next() - 0.5) * 2.6, h * 0.5 + this.look.next() * h * 0.7, ob.position.z + (this.look.next() - 0.5) * 2.6);
+        sh.rotation.set(this.look.next() * 3, this.look.next() * 3, this.look.next() * 3);
         group.add(sh);
       }
     });
@@ -673,20 +682,20 @@ export class Arena {
     const rockMat = this.rockMat;
     for (let i = 0; i < 22; i++) {
       const m = new THREE.Mesh(rockGeo, rockMat);
-      const a = Math.random() * Math.PI * 2;
-      const r = ARENA_RADIUS + 8 + Math.random() * 26;
-      const y = -6 + Math.random() * 14;
+      const a = this.look.next() * Math.PI * 2;
+      const r = ARENA_RADIUS + 8 + this.look.next() * 26;
+      const y = -6 + this.look.next() * 14;
       m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
-      m.scale.setScalar(0.8 + Math.random() * 2.8);
-      m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+      m.scale.setScalar(0.8 + this.look.next() * 2.8);
+      m.rotation.set(this.look.next() * 3, this.look.next() * 3, this.look.next() * 3);
       m.userData.solidity = "nonsolid"; // drifting void rocks, far outside reach
       scene.add(m);
       this.rocks.push({
         mesh: m,
         baseY: y,
-        spin: (Math.random() - 0.5) * 0.25,
-        bob: 0.4 + Math.random() * 0.8,
-        phase: Math.random() * Math.PI * 2,
+        spin: (this.look.next() - 0.5) * 0.25,
+        bob: 0.4 + this.look.next() * 0.8,
+        phase: this.look.next() * Math.PI * 2,
       });
     }
 
@@ -742,9 +751,9 @@ export class Arena {
       g.lineWidth = width;
       g.beginPath();
       g.moveTo(x, y);
-      const steps = 4 + Math.floor(Math.random() * 5);
+      const steps = 4 + Math.floor(this.look.next() * 5);
       for (let i = 0; i < steps; i++) {
-        angle += (Math.random() - 0.5) * 0.65;
+        angle += (this.look.next() - 0.5) * 0.65;
         x += Math.cos(angle) * length / steps;
         y += Math.sin(angle) * length / steps;
         g.lineTo(x, y);
@@ -769,10 +778,10 @@ export class Arena {
 
     // Subtle noise speckle
     for (let i = 0; i < 2600; i++) {
-      const a = Math.random() * (family === "hollow" ? 0.065 : 0.05);
+      const a = this.look.next() * (family === "hollow" ? 0.065 : 0.05);
       g.fillStyle = i % 9 === 0 ? rgba(accent, a * 1.4) : `rgba(255,255,255,${a})`;
-      const s = 1 + Math.random() * 1.4;
-      g.fillRect(Math.random() * size, Math.random() * size, s, s);
+      const s = 1 + this.look.next() * 1.4;
+      g.fillRect(this.look.next() * size, this.look.next() * size, s, s);
     }
 
     if (family === "spire") {
@@ -804,21 +813,21 @@ export class Arena {
         g.closePath();
         g.fill();
       }
-      for (let i = 0; i < 42; i++) crack(Math.random() * size, Math.random() * size, 50 + Math.random() * 170, Math.random() * Math.PI * 2, accent, 0.12, 0.9);
+      for (let i = 0; i < 42; i++) crack(this.look.next() * size, this.look.next() * size, 50 + this.look.next() * 170, this.look.next() * Math.PI * 2, accent, 0.12, 0.9);
     } else if (family === "forge") {
       for (let i = 0; i < 34; i++) {
-        const x = Math.random() * size;
-        const y = Math.random() * size;
-        const sides = 5 + Math.floor(Math.random() * 3);
-        const r = 42 + Math.random() * 100;
+        const x = this.look.next() * size;
+        const y = this.look.next() * size;
+        const sides = 5 + Math.floor(this.look.next() * 3);
+        const r = 42 + this.look.next() * 100;
         g.fillStyle = i % 2 ? "rgba(0,0,0,0.12)" : rgba(ember, 0.02);
         g.strokeStyle = rgba(ember, 0.09);
         g.lineWidth = 1.5;
         g.beginPath();
         for (let p = 0; p < sides; p++) {
-          const a = (p / sides) * Math.PI * 2 + Math.random() * 0.35;
-          const px = x + Math.cos(a) * r * (0.7 + Math.random() * 0.45);
-          const py = y + Math.sin(a) * r * (0.7 + Math.random() * 0.45);
+          const a = (p / sides) * Math.PI * 2 + this.look.next() * 0.35;
+          const px = x + Math.cos(a) * r * (0.7 + this.look.next() * 0.45);
+          const py = y + Math.sin(a) * r * (0.7 + this.look.next() * 0.45);
           if (p === 0) g.moveTo(px, py);
           else g.lineTo(px, py);
         }
@@ -826,32 +835,32 @@ export class Arena {
         g.fill();
         g.stroke();
       }
-      for (let i = 0; i < 22; i++) crack(Math.random() * size, Math.random() * size, 80 + Math.random() * 205, Math.random() * Math.PI * 2, ember, 0.13, 1.4 + Math.random() * 1.8);
-      for (let i = 0; i < 14; i++) glow(Math.random() * size, Math.random() * size, 18 + Math.random() * 32, ember, 0.22);
+      for (let i = 0; i < 22; i++) crack(this.look.next() * size, this.look.next() * size, 80 + this.look.next() * 205, this.look.next() * Math.PI * 2, ember, 0.13, 1.4 + this.look.next() * 1.8);
+      for (let i = 0; i < 14; i++) glow(this.look.next() * size, this.look.next() * size, 18 + this.look.next() * 32, ember, 0.22);
     } else if (family === "void") {
       for (let i = 0; i < 18; i++) {
-        const x = Math.random() * size;
-        const y = Math.random() * size;
-        const r = 45 + Math.random() * 120;
+        const x = this.look.next() * size;
+        const y = this.look.next() * size;
+        const r = 45 + this.look.next() * 120;
         g.fillStyle = "rgba(0,0,0,0.42)";
         g.beginPath();
         for (let p = 0; p < 5; p++) {
-          const a = (p / 5) * Math.PI * 2 + Math.random();
-          const px = x + Math.cos(a) * r * (0.45 + Math.random());
-          const py = y + Math.sin(a) * r * (0.45 + Math.random());
+          const a = (p / 5) * Math.PI * 2 + this.look.next();
+          const px = x + Math.cos(a) * r * (0.45 + this.look.next());
+          const py = y + Math.sin(a) * r * (0.45 + this.look.next());
           if (p === 0) g.moveTo(px, py);
           else g.lineTo(px, py);
         }
         g.closePath();
         g.fill();
       }
-      for (let i = 0; i < 95; i++) glow(Math.random() * size, Math.random() * size, 3 + Math.random() * 7, accent, 0.18);
+      for (let i = 0; i < 95; i++) glow(this.look.next() * size, this.look.next() * size, 3 + this.look.next() * 7, accent, 0.18);
       for (let i = 0; i < 11; i++) {
-        const a = Math.random() * Math.PI * 2;
+        const a = this.look.next() * Math.PI * 2;
         g.strokeStyle = rgba(accent, 0.1);
         g.lineWidth = 2;
         g.beginPath();
-        g.arc(c, c, 120 + i * 31 + Math.random() * 12, a, a + 0.45 + Math.random() * 0.9);
+        g.arc(c, c, 120 + i * 31 + this.look.next() * 12, a, a + 0.45 + this.look.next() * 0.9);
         g.stroke();
       }
     } else if (family === "hollow") {
@@ -876,12 +885,12 @@ export class Arena {
         else g.lineTo(x, y);
       }
       g.stroke();
-      for (let i = 0; i < 36; i++) glow(Math.random() * size, Math.random() * size, 5 + Math.random() * 12, new THREE.Color(0xffffff), 0.18);
+      for (let i = 0; i < 36; i++) glow(this.look.next() * size, this.look.next() * size, 5 + this.look.next() * 12, new THREE.Color(0xffffff), 0.18);
     } else {
       for (let i = 0; i < 34; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 70 + Math.random() * 380;
-        crack(c + Math.cos(a) * r, c + Math.sin(a) * r, 55 + Math.random() * 145, a + Math.PI * 0.5, accent, 0.12, 1.2);
+        const a = this.look.next() * Math.PI * 2;
+        const r = 70 + this.look.next() * 380;
+        crack(c + Math.cos(a) * r, c + Math.sin(a) * r, 55 + this.look.next() * 145, a + Math.PI * 0.5, accent, 0.12, 1.2);
       }
       for (let i = 0; i < 8; i++) {
         const a0 = (i / 8) * Math.PI * 2 + 0.18;

@@ -131,6 +131,22 @@ export function loadSettings(): Settings {
   return { ...SETTINGS_DEFAULTS, quality: detectDefaultQuality() };
 }
 
+/**
+ * How long one story beat must stay on screen: careful reading time, plus a 2s
+ * settle, plus ~1.5s for each paragraph already shown (later beats of a run of
+ * lines hold progressively longer), never under a 3.4s floor.
+ *
+ * This is the SINGLE source for the project's text-dwell rule -- storyIntro,
+ * the act-transition banners in main.ts, and the qa:text oracle (via the
+ * __rh3text seam) all read it, so the gate can never green-light a beat the
+ * game actually shows for less time.
+ */
+export function storyDwellMs(line: string, extraHoldMs = 0, perParagraphMs = 0, paragraph = 1): number {
+  const len = line.replace(/<[^>]*>/g, "").length;
+  const read = Math.min(6000, Math.max(3400, 1400 + len * 42));
+  return read + 2000 + extraHoldMs + paragraph * perParagraphMs;
+}
+
 export interface MenuCallbacks {
   onStartRun(hero: HeroDef, depth: number, blessing?: string): void;
   onNewRun(): void;
@@ -336,6 +352,21 @@ export class Menus {
     return el;
   }
 
+  /**
+   * Render a column of choice buttons. Sentence-length labels (the event,
+   * shrine and wager choices run 40-66 characters) get `btn--choice`, which
+   * drops the nav-chrome caps + 5px tracking that wrapped them into towers.
+   */
+  private choiceButtons(wrap: Element, choices: { label: string }[], onPick: (i: number) => void): void {
+    choices.forEach((ch, i) => {
+      const b = document.createElement("button");
+      b.className = `btn${i === 0 ? " btn--primary" : ""}${ch.label.length > 26 ? " btn--choice" : ""}`;
+      b.textContent = ch.label;
+      b.addEventListener("click", () => { this.ctx.events.emit("UI_CLICK", {}); onPick(i); });
+      wrap.appendChild(b);
+    });
+  }
+
   private wireButtons(scope: HTMLElement): void {
     scope.querySelectorAll("button").forEach((b) => {
       b.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
@@ -345,6 +376,29 @@ export class Menus {
         (b as HTMLButtonElement).blur();
       });
     });
+  }
+
+  /**
+   * Close the topmost overlay the way its own Back control would. Returns false
+   * if the current screen has no back path, so the caller can fall through.
+   * The Escape key and the gamepad's B button both route here -- before this,
+   * Escape did nothing on Armory / Progress / Settings / Controls / Credits /
+   * Achievements, and mid-run it RESUMED THE FIGHT from inside Settings.
+   */
+  back(): boolean {
+    const s = this.root.querySelector<HTMLElement>(".screen");
+    if (!s) return false;
+    const skip = s.querySelector<HTMLElement>(".story-skip, .draft-skip");
+    const btn = [...s.querySelectorAll<HTMLElement>("button:not([disabled])")].find(
+      (e) =>
+        e.dataset.act === "back" ||
+        e.dataset.act === "leave" ||
+        /^(back|leave|move on|cancel|no,|not now)/i.test((e.textContent || "").trim())
+    );
+    const target = btn ?? skip;
+    if (!target) return false;
+    target.click();
+    return true;
   }
 
   // ---------------------------------------------------------------- main menu
@@ -1238,7 +1292,7 @@ export class Menus {
   }
 
   // ---------------------------------------------------------------- map (fork choice)
-  showMap(options: MapNode[], position: number, total: number, onPick: (i: number) => void): void {
+  showMap(options: MapNode[], position: number, total: number, onPick: (i: number) => void, onSettings?: () => void): void {
     const s = this.screen();
     const act = options[0]?.act ?? 1;
     // Path intel: peek at the kinds waiting one chamber deeper.
@@ -1250,6 +1304,7 @@ export class Menus {
       <div class="draft-title">CHOOSE YOUR PATH</div>
       <div class="draft-sub">ACT ${ROMAN[act - 1] ?? act} &nbsp;·&nbsp; CHAMBER ${position + 1} / ${total} — pick what you'll brave next${aheadIcons}</div>
       <div class="map-row"></div>
+      ${onSettings ? '<button class="btn btn--sm" data-act="settings" style="margin-top:30px">Settings</button>' : ""}
     `;
     const row = s.querySelector(".map-row")!;
     options.forEach((node, i) => {
@@ -1349,6 +1404,7 @@ export class Menus {
         const c = this.ctx.deck.slots[i]!;
         const wrap = document.createElement("div");
         wrap.className = "hone-pick";
+        wrap.dataset.nav = ""; // the whole choice is one nav target: card + upgrade text
         wrap.appendChild(this.cardEl(c, () => {
           this.ctx.deck.upgrade(i);
           this.ctx.sfx.relicPickup();
@@ -1497,13 +1553,7 @@ export class Menus {
       </div>
     `;
     const wrap = s.querySelector(".menu-buttons")!;
-    v.choices.forEach((ch, i) => {
-      const b = document.createElement("button");
-      b.className = `btn${i === 0 ? " btn--primary" : ""}`;
-      b.textContent = ch.label;
-      b.addEventListener("click", () => { this.ctx.events.emit("UI_CLICK", {}); ch.run(); onDone(); });
-      wrap.appendChild(b);
-    });
+    this.choiceButtons(wrap, v.choices, (i) => { v.choices[i].run(); onDone(); });
     this.wireButtons(s);
   }
 
@@ -1523,13 +1573,7 @@ export class Menus {
     if (relicOffer) choices.push({ label: `Carve your strength — lose 20 HP, take ${relicOffer.name}`, run: () => { c.player.hp = Math.max(1, c.player.hp - 20); c.relics.add(relicOffer); } });
     choices.push({ label: "Trade 10 MAX HP for ◆ 130 shards", run: () => { c.player.maxHp = Math.max(40, c.player.maxHp - 10); c.player.hp = Math.min(c.player.hp, c.player.maxHp); c.stats.shards += 130; } });
     choices.push({ label: "Leave the altar cold", run: () => { const h = Math.min(8, c.player.maxHp - c.player.hp); c.player.hp += h; if (h > 0) c.events.emit("HEAL", { amount: h }); } });
-    choices.forEach((ch, i) => {
-      const b = document.createElement("button");
-      b.className = `btn${i === 0 ? " btn--primary" : ""}`;
-      b.textContent = ch.label;
-      b.addEventListener("click", () => { this.ctx.events.emit("UI_CLICK", {}); ch.run(); onDone(); });
-      wrap.appendChild(b);
-    });
+    this.choiceButtons(wrap, choices, (i) => { choices[i].run(); onDone(); });
     this.wireButtons(s);
   }
 
@@ -1559,13 +1603,7 @@ export class Menus {
       if (relicOffer && c.stats.shards >= 60) choices.push({ label: `Wager ◆ 60 — 65% to win ${relicOffer.name}`, run: () => { c.stats.shards -= 60; if (c.rng.chance(0.65)) { c.relics.add(relicOffer); return `The dice land true — ${relicOffer.name} is yours.`; } return "The dice betray you. The shards are gone."; } });
       if (c.stats.shards >= 40) choices.push({ label: "Wager ◆ 40 — 50% to double it", run: () => { c.stats.shards -= 40; if (c.rng.chance(0.5)) { c.stats.shards += 80; return "Doubled! ◆ 80 clatters into your hand."; } return "Lost. The Rift swallows your wager."; } });
       choices.push({ label: "Pocket your shards and walk away", run: () => "You keep what you have. Wise, perhaps." });
-      choices.forEach((ch, i) => {
-        const b = document.createElement("button");
-        b.className = `btn${i === 0 ? " btn--primary" : ""}`;
-        b.textContent = ch.label;
-        b.addEventListener("click", () => { this.ctx.events.emit("UI_CLICK", {}); render(ch.run()); });
-        wrap.appendChild(b);
-      });
+      this.choiceButtons(wrap, choices, (i) => render(choices[i].run()));
       this.wireButtons(s);
     };
     render();
@@ -1829,11 +1867,23 @@ export class Menus {
     let idx = 0;
     let autoTimer = 0;
     let finished = false;
+    const hintText = this.ctx.input.usingGamepad
+      ? "[A] CONTINUE  \u00b7  [B] SKIP"
+      : "CLICK OR [SPACE] TO CONTINUE  \u00b7  [ESC] SKIP";
     const finish = () => {
       if (finished) return;
       finished = true;
       window.clearTimeout(autoTimer);
+      window.removeEventListener("keydown", onKey);
       onDone();
+    };
+    // Keyboard parity with the mouse and the pad: advance on Space/Enter/E,
+    // skip the whole beat on Escape. Without this a keyboard player had to
+    // reach for the mouse through the opening crawl and both endings.
+    const onKey = (e: KeyboardEvent): void => {
+      if (finished) return;
+      if (e.code === "Escape") { e.preventDefault(); finish(); return; }
+      if (["Space", "Enter", "NumpadEnter", "KeyE"].includes(e.code)) { e.preventDefault(); show(); }
     };
     const show = () => {
       if (idx >= lines.length) {
@@ -1843,7 +1893,7 @@ export class Menus {
       const line = lines[idx];
       s.innerHTML = `
         <div class="story__line">${line}</div>
-        <div class="story__hint">CLICK TO CONTINUE</div>
+        <div class="story__hint">${hintText}</div>
         <button class="story-skip">SKIP ▸</button>
       `;
       s.querySelector(".story-skip")!.addEventListener("click", (e) => {
@@ -1858,10 +1908,11 @@ export class Menus {
       // `extraHoldMs` lets act transitions linger longer act-over-act; `perParagraphMs`
       // adds that much for EACH paragraph shown (idx is 1-based here, post-increment), so
       // later beats of an act's story hold progressively longer on screen.
-      const readMs = Math.min(6000, Math.max(3400, 1400 + line.replace(/<[^>]*>/g, "").length * 42)) + 2000 + extraHoldMs + idx * perParagraphMs;
+      const readMs = storyDwellMs(line, extraHoldMs, perParagraphMs, idx);
       autoTimer = window.setTimeout(show, readMs);
     };
     s.addEventListener("click", show);
+    window.addEventListener("keydown", onKey);
     show();
   }
 }

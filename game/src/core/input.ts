@@ -94,6 +94,9 @@ export function codeLabel(code: string): string {
   return code.replace(/Left|Right/, "").trim() || code;
 }
 
+/** Display glyphs for the standard-mapping button indices in PAD_ACTION. */
+const PAD_GLYPH: Record<number, string> = { 0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB", 6: "LT", 7: "RT", 8: "BACK", 9: "START" };
+
 export class Input {
   private held = new Set<string>();
   private pressedThisFrame = new Set<string>();
@@ -222,6 +225,28 @@ export class Input {
   }
 
   // ------------------------------------------------------------ action layer
+  /**
+   * Display label for an action's PRIMARY binding — the single source the HUD
+   * reads so a rebind (or picking up a controller) is reflected on screen.
+   * Returns the pad glyph while a controller is the active input device.
+   */
+  label(a: Action): string {
+    if (this.usingGamepad) {
+      const b = PAD_ACTION[a]?.[0];
+      if (b !== undefined && PAD_GLYPH[b]) return PAD_GLYPH[b];
+    }
+    return codeLabel(this.bindings[a]?.[0] ?? "").toUpperCase();
+  }
+
+  /** Labels for every binding of an action, e.g. movement as `W/A/S/D`. */
+  labels(...actions: Action[]): string {
+    if (this.usingGamepad && actions.length > 1) {
+      const g = actions.map((a) => PAD_ACTION[a]?.[0]).filter((b) => b !== undefined);
+      if (g.length === actions.length) return g.map((b) => PAD_GLYPH[b as number]).join("/");
+    }
+    return actions.map((a) => this.label(a)).join("/");
+  }
+
   actionDown(a: Action): boolean {
     if (!this.enabled) return false;
     if (this.bot) return this.bot.down.has(a);

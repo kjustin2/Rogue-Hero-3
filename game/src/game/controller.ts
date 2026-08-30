@@ -177,6 +177,7 @@ export class Controller {
     this.vel.y += this.impulse.y;
     this.impulse.set(0, 0);
 
+    const preX = player.pos.x, preZ = player.pos.z;
     player.pos.x += this.vel.x * dt;
     player.pos.z += this.vel.y * dt;
 
@@ -214,14 +215,16 @@ export class Controller {
       if (r2 > maxR) { player.pos.x *= maxR / r2; player.pos.z *= maxR / r2; }
     }
 
-    const speedBase = Math.max(0.001, player.hero.speed);
+    const speedBase = Math.max(0.001, player.hero.speed * speedMult);
     const rightX = Math.cos(player.facing);
     const rightZ = -Math.sin(player.facing);
     const fwdX = Math.sin(player.facing);
     const fwdZ = Math.cos(player.facing);
-    player.animMoveAmount = clamp01(this.vel.length() / speedBase);
-    player.animMoveX = Math.max(-1, Math.min(1, (this.vel.x * rightX + this.vel.y * rightZ) / speedBase));
-    player.animMoveZ = Math.max(-1, Math.min(1, (this.vel.x * fwdX + this.vel.y * fwdZ) / speedBase));
+    const movX = dt > 0 ? (player.pos.x - preX) / dt : 0;
+    const movZ = dt > 0 ? (player.pos.z - preZ) / dt : 0;
+    player.animMoveAmount = clamp01(Math.hypot(movX, movZ) / speedBase);
+    player.animMoveX = Math.max(-1, Math.min(1, (movX * rightX + movZ * rightZ) / speedBase));
+    player.animMoveZ = Math.max(-1, Math.min(1, (movX * fwdX + movZ * fwdZ) / speedBase));
     this.ctx.cam.setSpeed(player.animMoveAmount); // speed widens FOV + dollies out (IDEAS-GRAPHICS #49)
     this.ctx.cam.target.set(player.pos.x, 0, player.pos.z);
   }

@@ -1237,8 +1237,14 @@ body.rh-no-anim .menu-sigil {
 .banner--lament.banner--show { animation-duration: 8.2s; }
 .banner__title {
   font-family: var(--font-display);
-  font-size: 44px;
-  letter-spacing: 14px;
+  /* Scales with the viewport and CANNOT run past the frame: a long line wraps
+     to balanced lines inside the box instead of laying out ~3000px wide. */
+  font-size: clamp(26px, 3.3vw, 44px);
+  letter-spacing: clamp(5px, 0.75vw, 14px);
+  max-width: min(1080px, 86vw);
+  margin: 0 auto;
+  line-height: 1.2;
+  text-wrap: balance;
   color: var(--ui-text);
   text-shadow: 0 0 30px rgba(120, 200, 255, 0.35), 0 4px 18px rgba(0, 0, 0, 0.8);
 }
@@ -1255,7 +1261,7 @@ body.rh-no-anim .menu-sigil {
   display: inline-block;
   padding: 0 30px 10px;
   border-bottom: 1px solid color-mix(in srgb, currentColor 45%, transparent);
-  letter-spacing: 16px;
+  letter-spacing: clamp(6px, 0.85vw, 16px);
 }
 .banner--cutscene .banner__sub {
   color: rgba(235, 244, 255, 0.78);
@@ -1330,7 +1336,16 @@ body.rh-no-anim .menu-sigil {
 /* The Hollow Star's last words — a quiet whisper, not a war cry, but still
    readable: a dim panel + strong black halo keeps it legible over the blazing
    dying star without breaking the hush. */
-.banner--lament .banner__title {
+/* Boss phase lines are SPEECH, not a title card. banner--speech shares the
+   lament's dim panel + halo so a 68-character line reads as two comfortable
+   lines of prose; only the dwell differs (a mid-fight beat, not the finale). */
+.banner--speech.banner--show { animation-duration: 5.6s; }
+.banner--speech .banner__sub {
+  color: rgba(235, 244, 255, 0.7);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+}
+.banner--lament .banner__title,
+.banner--speech .banner__title {
   display: inline-block;
   color: #e8edff;
   font-family: var(--font-ui);
@@ -1348,7 +1363,7 @@ body.rh-no-anim .menu-sigil {
   text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 3px 14px rgba(0, 0, 0, 0.95), 0 0 26px rgba(150, 170, 230, 0.35);
 }
 @keyframes banner-in {
-  0% { opacity: 0; transform: translateY(26px) scale(0.96); letter-spacing: 20px; }
+  0% { opacity: 0; transform: translateY(26px) scale(0.96); }
   14% { opacity: 1; transform: translateY(0) scale(1); }
   80% { opacity: 1; }
   100% { opacity: 0; transform: translateY(-14px); }
@@ -1403,10 +1418,20 @@ body.rh-no-anim .menu-sigil {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
   pointer-events: auto;
   animation: screen-fade 0.45s ease;
+  /* Short viewports must still reach the bottom control. Without this the
+     hero-select stack overflows at 1280x720 and BACK is unreachable. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2vh 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(95, 224, 255, 0.35) transparent;
 }
+.screen > * { flex-shrink: 0; }
+.screen::-webkit-scrollbar { width: 9px; }
+.screen::-webkit-scrollbar-thumb { background: rgba(95, 224, 255, 0.28); border-radius: 5px; }
 .screen--dim {
   background: radial-gradient(ellipse at 50% 40%, rgba(7, 8, 16, 0.55) 0%, rgba(5, 6, 12, 0.92) 100%);
 }
@@ -1512,7 +1537,22 @@ body.rh-no-anim .menu-sigil {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  width: 300px;
+  width: min(300px, 88vw);
+}
+/* Event/shrine/gamble choices are sentences, not nav chrome. At the nav .btn's
+   caps + 5px tracking a 66-character label wrapped to five lines and overflowed
+   the panel; as prose it reads on one or two. Applied by Menus.choiceButtons. */
+.menu-buttons:has(.btn--choice) { width: min(520px, 90vw); }
+.btn--choice {
+  font-family: var(--font-body, var(--font-ui));
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: none;
+  line-height: 1.45;
+  white-space: normal;
+  text-wrap: pretty;
+  padding: 13px 22px;
 }
 .btn {
   position: relative;
@@ -1746,7 +1786,10 @@ body.rh-no-anim .menu-sigil {
 .setting-select:disabled { opacity: 0.4; cursor: not-allowed; }
 .setting-select option { background: #0a0e18; color: var(--ui-text); }
 
-.panel .btn { margin-top: 30px; width: 100%; }
+/* No margin-top: .menu-buttons already supplies the 14px gap, and stacking
+   both made the pause stack read at ~3x the main menu's spacing. */
+.panel .btn { width: 100%; }
+.panel > .btn { margin-top: 30px; } /* a lone button directly on the slab still needs the gap */
 
 /* --- draft --- */
 .draft-title {
@@ -1764,6 +1807,8 @@ body.rh-no-anim .menu-sigil {
 }
 .draft-row {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 26px;
 }
 .card {
@@ -2568,7 +2613,6 @@ body.rh-no-anim .menu-sigil {
 .story::before { top: 0; }
 .story::after { bottom: 0; }
 @keyframes story-bars { from { height: 0; } to { height: 12vh; } }
-.story-skip { z-index: 2; }
 .story__line {
   max-width: 640px;
   font-family: var(--font-display);
@@ -2602,6 +2646,7 @@ body.rh-no-anim .menu-sigil {
 }
 .story-skip {
   position: absolute;
+  z-index: 2; /* above .story::after, the bottom letterbox bar */
   bottom: 5vh;
   right: 5vw;
   font-family: var(--font-ui);

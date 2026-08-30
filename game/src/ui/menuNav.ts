@@ -11,7 +11,11 @@ import type { Input } from "../core/input";
  * Focus is tracked manually (not native DOM focus) so it works on the menus'
  * clickable <div>s (cards, hero tiles, map nodes) without retrofitting tabindex.
  */
-const NAV_SEL = 'button:not([disabled]), .hero-card, .card, .mapnode, .shop-item, [data-nav]';
+// A [data-nav] wrapper is ONE nav target, so its inner .card is excluded --
+// otherwise the rest screen offered the same choice twice and the ring framed
+// only the card, leaving the upgrade text it describes outside the highlight.
+const NAV_SEL =
+  'button:not([disabled]), .hero-card, .card:not([data-nav] .card), .mapnode, .shop-item, [data-nav]';
 const REPEAT_DELAY = 0.4; // first hold-to-repeat delay (s)
 const REPEAT_RATE = 0.14; // subsequent repeats (s)
 

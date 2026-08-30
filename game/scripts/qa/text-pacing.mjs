@@ -32,17 +32,23 @@ const TP = cfg.textPacing ?? {
 };
 const log = (...a) => console.log("[text-pacing]", ...a);
 
-/** The game's dwell for one beat (menus.ts storyIntro, single-line: per-paragraph
- *  + extraHold only ADD, so this is the conservative floor). */
+/**
+ * The game's dwell for one beat. This USED to be a hand-copied duplicate of the
+ * storyIntro formula, which meant two things could drift apart -- and did: the
+ * act-transition banners ran on a fixed 6.2s gap while this modelled them at 8s,
+ * so the gate green-lit beats the game cut off. Both paths now call
+ * menus.ts storyDwellMs(), which the page exposes on the text seam; `len` is
+ * kept as the fallback for a build that predates it.
+ */
 const dwellMs = (len) => Math.min(6000, Math.max(3400, 1400 + 42 * len)) + 2000;
 /** Careful reading estimate. */
 const readMs = (len, o) => len * o.readMsPerChar + o.readBaseMs;
 
 /** PURE per-beat classification (reused by the selftest). */
-function classify(text, o) {
+function classify(text, o, pageDwell) {
   const len = text.trim().length;
   if (len < o.minChars) return { flag: "TOO-LITTLE", len, detail: `beat has ${len} chars — no context shown` };
-  const dwell = dwellMs(len), read = readMs(len, o);
+  const dwell = pageDwell ?? dwellMs(len), read = readMs(len, o);
   if (read > dwell) return { flag: "TOO-MUCH", len, detail: `~${(read / 1000).toFixed(1)}s to read but auto-advances at ${(dwell / 1000).toFixed(1)}s — a wall of text` };
   return null;
 }
@@ -58,18 +64,19 @@ if (!SELFTEST) {
   const data = await page.evaluate(`(() => {
     const t = window.${S}text, cards = window.${S}cards;
     const beats = [];
-    const push = (label, arr) => (arr || []).forEach((s, i) => beats.push({ label: label + "#" + i, text: String(s) }));
+    const dw = typeof t.dwellMs === "function" ? t.dwellMs : null;
+    const push = (label, arr) => (arr || []).forEach((s, i) => beats.push({ label: label + "#" + i, text: String(s), dwell: dw ? dw(String(s)) : null }));
     push("story", t.story);
     for (const k in (t.actStory || {})) push("act" + k, t.actStory[k]);
     push("ending", t.endings); push("mercy", t.mercyEndings);
     push("actFlavor", t.actFlavor);
     for (const k in (t.bossEpitaphs || {})) { push("epitaph:" + k, t.bossEpitaphs[k]); }
-    for (const k in (t.heroEndings || {})) beats.push({ label: "heroEnding:" + k, text: String(t.heroEndings[k]) });
+    for (const k in (t.heroEndings || {})) beats.push({ label: "heroEnding:" + k, text: String(t.heroEndings[k]), dwell: dw ? dw(String(t.heroEndings[k])) : null });
     return { beats, cardDescs: cards.map((c) => ({ id: c.id, desc: c.desc, up: c.upDesc })) };
   })()`);
   report.beats = data.beats.length;
   for (const b of data.beats) {
-    const f = classify(b.text, TP);
+    const f = classify(b.text, TP, b.dwell);
     if (f) { report.flags.push({ beat: b.label, ...f }); log(`  ${f.flag} ${b.label}: ${f.detail}`); failures++; }
   }
   // card descs: leisure-read, so only an OVERLONG wall in a small card is flagged.
