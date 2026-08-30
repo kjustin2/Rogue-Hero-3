@@ -226,19 +226,24 @@ try {
   if (heldMove) { try { await page.keyboard.up(heldMove); } catch { /* ignore */ } }
 
   // ── coverage matrix + final health readbacks ───────────────────────────
-  let coverage = {}, missing = [], perfSnap = null;
+  let readError = null;
+  let coverage = {}, missing = [], perfSnap = null, coverageRead = false;
   try {
     coverage = await page.evaluate(`(window.${S}debug && window.${S}debug.coverage) ? window.${S}debug.coverage() : {}`);
+    coverageRead = true;
     missing = cfg.coverage.required.filter((e) => !(coverage[e] > 0));
     perfSnap = await page.evaluate(`window.${S}perf ? window.${S}perf.report() : null`);
-  } catch { /* browser may be gone after a hard violation */ }
+  } catch (e) { readError = String(e?.message ?? e); } // browser may be gone after a hard violation
 
   const progEnd = perfSnap?.snap?.programs ?? -1;
   const out = {
     at: new Date().toISOString(), seed: SEED, seconds: SECONDS,
     violations,
     consoleErrors: errors.slice(0, 20),
-    coverage, missingCoverage: missing,
+    // coverageRead distinguishes "every required event genuinely never fired"
+    // from "the page was gone so we could not ask" — the second used to be
+    // reported as the first, i.e. a full sheet of phantom untested-content gaps.
+    coverage, missingCoverage: missing, coverageRead, readError,
     // >0 after warm-up = a first-use compile the warm-up missed (hitch fuel)
     programsDelta: progBase >= 0 && progEnd >= 0 ? progEnd - progBase : null,
     perf: perfSnap ? { fps: perfSnap.fps, p95: perfSnap.p95, calls: perfSnap.snap?.calls, programs: perfSnap.snap?.programs, heapMB: perfSnap.snap?.heapMB } : null,
@@ -246,7 +251,8 @@ try {
   writeJSON(join(GAME_DIR, "artifacts", "qa", "chaos.json"), out);
 
   log(`done — ${violations.length} violation(s), ${errors.length} console error(s)`);
-  if (missing.length) log(`coverage gaps (never fired): ${missing.join(", ")}`);
+  if (!coverageRead) log(`coverage NOT MEASURED — the page was unreachable at readback (${readError})`);
+  else if (missing.length) log(`coverage gaps (never fired): ${missing.join(", ")}`);
   else log("coverage: all required events fired");
   await browser.close();
   if (server.owned) server.stop();

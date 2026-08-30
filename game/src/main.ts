@@ -2237,6 +2237,15 @@ void boot();
     scenario(name: string, opts: ScenarioOpts = {}): boolean {
       finishInterlude(null, false); // a debug jump must not leave interlude badges/timers lingering
       const parts = String(name).split(":");
+      // Jumping straight into a fight from the MENU used to leave the main-menu
+      // overlay pasted on top of live combat with the HUD hidden: the state read
+      // "combat" while every screenshot showed the title screen, so the visual
+      // gates (render-diag, temporal, style-drift) were auditing the wrong frame.
+      // The real node path does this in load(); the debug path has to as well.
+      if (parts[0] === "boss" || parts[0] === "enemy" || parts[0] === "room") {
+        menus.clear();
+        hud.setVisible(true);
+      }
       switch (parts[0]) {
         case "boss": return debug.boss(parts[1], parts[2], opts);
         case "enemy": return debug.enemy(parts[1], opts);

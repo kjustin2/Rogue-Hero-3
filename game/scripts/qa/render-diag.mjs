@@ -33,7 +33,12 @@ const S = cfg.seam;
 const RD = cfg.renderDiag ?? {
   scenes: [
     { scene: "room:combat", subjects: [{ name: "player", get: "c.player.root", minPx: 400 }] },
-    { scene: "boss:warden", subjects: [{ name: "player", get: "c.player.root", minPx: 400 }, { name: "boss", get: "c.enemies.living().find(e => e.kind === 'boss')?.root", minPx: 800 }] },
+    // A boss needs longer than a normal room: even with the entrance skipped it
+    // carries a 5s spawn grace and then WALKS IN from the far side of the arena.
+    // At the 2.2s default it is still materializing off the top of the frame, and
+    // the gate read that as SUBJECT-INVISIBLE -- a capture-timing artifact, not a
+    // render bug (measured: 0px at 2.2s, fully framed by ~9s).
+    { scene: "boss:warden", settle: 9000, subjects: [{ name: "player", get: "c.player.root", minPx: 400 }, { name: "boss", get: "c.enemies.living().find(e => e.kind === 'boss')?.root", minPx: 800 }] },
   ],
   settleMs: 2200,
 };
@@ -141,8 +146,8 @@ const COPLANAR = `(() => {
 const results = [];
 let failures = 0;
 
-async function audit({ scene, subjects }) {
-  await gotoScenario(page, scene, { settle: RD.settleMs ?? 2200 });
+async function audit({ scene, subjects, settle }) {
+  await gotoScenario(page, scene, { settle: settle ?? RD.settleMs ?? 2200 });
   await page.evaluate(`window.${S}debug.freezeForTest(true); window.${S}debug.frames(30); 0`);
   const r = { scene, subjects: [], findings: [] };
   for (const sub of subjects) {
