@@ -314,9 +314,53 @@ npm run preview      # production bundle in browser at :4173
 - **Dispose what you create** — enemies own their geometries/materials and release them in `dispose()`; anything added straight to the scene needs explicit cleanup (see `RunManager.loadRoom` clears).
 - **Tempo changes go through `tempo.gain/drain/crash`** — never assign `tempo.value` directly (zone-change events would be skipped). The cold-crash latch in `combat.ts` is the one exception.
 - **Dash Strike is a commitment, not a coin flip** — it grants i-frames through the dash (`controller.grantIframes`) and a generous contact window along the path (`cards.ts` `dispatch`). Keep both when touching it.
-- **Story/boss/act text dwell** = base reading time + ~2s + ~1.5s per paragraph shown (`Menus.storyIntro` — reading-speed clamp + 2000ms + `perParagraphMs`). Never auto-advance boss-phase/act text in under ~3s. This rule took 5+ corrections to stick — don't shorten dwell times.
+- **Story/boss/act text dwell** = base reading time + ~2s + ~1.5s per paragraph shown. `storyDwellMs()`
+  in `ui/menus.ts` is the **single source**: `storyIntro`, the act-transition banners in `main.ts`, AND the
+  `qa:text` oracle (via `__rh3text.dwellMs` on the seam) all read it. They used to each carry their own copy
+  and drifted — the act path ran a fixed 6.2s gap against 137-char lines while the gate modelled 8s, so the
+  gate green-lit beats the game cut off. Never auto-advance in under ~3s; this rule took 5+ corrections to
+  stick — **lengthen dwell, never shorten it**, and never re-hardcode the formula anywhere.
+- **HUD key labels come from `Input.label()`/`labels()`** (`core/input.ts`), never hardcoded strings. Bindings
+  are rebindable and the game ships full gamepad support, so `SPACE`/`[F]`/`[Q]` in markup is a lie the
+  moment a player rebinds or picks up a pad. `label()` returns the pad glyph while a controller is active.
+- **Escape routes through `Menus.back()`** — one Back resolver shared with the gamepad's B button. It
+  deliberately has **no skip fallback**: Escape on a card draft must never click `.draft-skip` and forfeit
+  the reward. Story screens own Escape themselves in `storyIntro`.
+- **Boss phase dialogue uses `banner--speech`**, which shares the `banner--lament` panel treatment. A boss
+  line is a SENTENCE (up to 68 chars); at the title-card 44px/14px tracking it laid out ~3100px wide and
+  swallowed the middle of the fight. `banner__title` is also `max-width`-capped — never remove that.
+- **The act interlude runs on its OWN dt clock** (`InterludeBeat[]` ticked by `updateInterlude`), not
+  `window.setTimeout`. On wall-clock timers the act's words played out behind the pause menu and the 45s
+  soft-lock guard could cross the causeway — forfeiting the boon — while the player sat in the menu.
 
 ## Pitfalls
+
+- **`__rh3debug.scenario()` must leave the DOM in the state the real path would.** A `boss:`/`enemy:`/`room:`
+  jump taken from the menu used to leave the main-menu overlay pasted on top of live combat with the HUD
+  hidden: `flow()` reported `combat` while every captured frame showed the title screen, so render-diag,
+  temporal, style-drift and pixel-ui were all auditing the wrong frame — and ui-audit's "clean" was a false
+  pass because it could not see the HUD at all. The real node path does `menus.clear()` + `hud.setVisible(true)`
+  in `load()`; the seam does it too. **When a visual gate is suspiciously clean, check what it can actually see.**
+- **A boss needs ~9s of settle, not the 2.2s default.** Even with the entrance skipped it carries a 5s spawn
+  grace and then WALKS IN from the far side. Measured: the warden covers 0px at 2.2s and 27,951px by 9s — a
+  capture-timing artifact that reads exactly like SUBJECT-INVISIBLE. Same cause as the temporal gate's
+  standing TRANSIENT-INSTABILITY warn on `boss:warden`.
+- **`auditUI` overlap compares GLYPH INK, not layout boxes** (`inkRect`, a Range over each *text node* — a
+  Range over the *element* returns line boxes, which for a block span the full width regardless of
+  `text-align`). Boxes reported the HUD's left hero plate and right room title as a 320×21px collision no
+  player can see. An element with no glyphs is skipped entirely: two EMPTY full-width HUD slots once
+  "collided" at 1302px. Related: the pseudoloc pass **stashes and restores** every string it grows — the HUD
+  only rewrites a field when its value changes, so re-staging the screen did not undo it and the inflated
+  text leaked into the next viewport's BASE pass, i.e. the hard gate.
+- **A gate that starts failing after a seam fix is usually reporting pre-existing truth.** Fix the
+  measurement first, then look at what survives — 119 overlap findings reduced to one real bug
+  (`.combo__n` at `line-height:1` on a 40px face ran into the HIT label). Prove the gate still fires on its
+  injected faults (`--selftest`) so it was not blunted into passing.
+- **Locomotion is driven by RESOLVED displacement, damped into `animVel`** (`game/controller.ts`), not by
+  `this.vel`. The rim clamp, `resolveObstacles()` and the enemy separation all correct `pos` without zeroing
+  `vel`, so walking into a wall ran the stride cycle at full tilt while going nowhere. `animVel` is
+  deliberately separate from `this.vel` so the sim is untouched and the differential golden still matches;
+  raw displacement/dt is correct but noisy (measured jerk 5.85 → 37.22 m/s² until it was damped).
 
 - `electron-main.cjs` serves `dist/` over loopback HTTP because `file://` breaks Vite's absolute asset paths — don't "simplify" it to `loadFile`.
 - **Saves depend on a FIXED loopback port.** `localStorage` (run checkpoints, profile, unlocks, cosmetics) is partitioned by origin, and the origin includes the port. `electron-main.cjs` binds a constant `PREFERRED_PORT` (with single-instance lock + EADDRINUSE fallback) so the origin is stable across launches — reverting it to `listen(0)` silently boots every launch on an empty store and loses all saved progress. Guarded by `npm run smoke:save-persist`. Relatedly, only `/assets/` (content-hashed) is cached immutably; index.html/music/icons are `no-cache` so an app update isn't masked by a stale cached `index.html`.
