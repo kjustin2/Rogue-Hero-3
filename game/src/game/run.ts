@@ -94,6 +94,7 @@ export class RunManager {
   private prevAct = 0;
   /** Whether the Ascension true-final fight has been staged this run. */
   private woundFought = false;
+  private warmedBosses = new Set<BossKind>();
 
   constructor(private ctx: Ctx) {
     ctx.events.on("BOSS_DEFEATED", () => {
@@ -194,6 +195,8 @@ export class RunManager {
     ctx.projectiles.clear();
     ctx.hostiles.clear();
     ctx.caster.clear();
+    ctx.fx.clear();
+    ctx.vfx.clear();
     ctx.decals.clear(); // a fresh room must not inherit the last room's scorch/crack marks
 
     ctx.arena.applyTheme(THEMES[node.theme]);
@@ -315,11 +318,14 @@ export class RunManager {
   /** Jump straight to a specific boss (incl. the optional Rift Echo) for tests. */
   debugLoadBoss(bossKind: BossKind, act = 4, seed = 424242, depth = 5): boolean {
     this.begin(generatePlan(seed, depth));
+    const bossTheme = bossKind === "warden" ? "ember" : bossKind === "spire" ? "tempest"
+      : bossKind === "colossus" ? "core" : bossKind === "unmaker" ? "starfall"
+      : bossKind === "wound" ? "wound" : bossKind === "tyrant" ? "voidcrown" : "abyss";
     // Land on a real mid-map fork, then swap in a synthetic boss node of the requested kind.
     this.position = Math.min(act * 4 - 2, this.plan.forks.length - 2);
     this.currentNode = {
       id: -1, kind: "boss", act, actName: "DEBUG", name: bossKind === "echo" ? "A Rift Tear" : "Boss",
-      theme: "abyss", reward: "relic", bossKind, waves: [],
+      theme: bossTheme, reward: "relic", bossKind, waves: [],
     };
     this.loadCurrentNode();
     return true;
@@ -329,16 +335,19 @@ export class RunManager {
    *  enemy registry, so the first time one is constructed mid-run its materials
    *  compile on a live frame (a ~250ms+ stall). Build each off-screen, warm the
    *  whole scene, then dispose — so no boss ever compiles during play. */
-  warmBosses(): void {
+  async warmBosses(kinds: readonly BossKind[] = Object.keys(BOSSES) as BossKind[]): Promise<void> {
     const dummies: Enemy[] = [];
-    for (const key of Object.keys(BOSSES) as BossKind[]) {
+    for (const key of kinds) {
+      if (this.warmedBosses.has(key)) continue;
       try {
         const b = BOSSES[key].make(this.ctx, 0, -1000);
         b.warmVisuals();
         dummies.push(b);
+        this.warmedBosses.add(key);
       } catch { /* skip a bad ctor */ }
     }
-    this.ctx.stage.warmUp();
+    if (!dummies.length) return;
+    await this.ctx.stage.warmUpAsync();
     for (const b of dummies) b.dispose();
   }
 }

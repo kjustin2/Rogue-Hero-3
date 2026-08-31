@@ -13,6 +13,7 @@ import { setTempoPalette } from "../game/tempo";
 import { difficultyFor, MAX_DEPTH } from "../game/difficulty";
 import type { MapNode, NodeKind } from "../game/mapgen";
 import { BLESSINGS, blessingById } from "../game/blessings";
+import { ACT_SET_PROFILES, actSetFor } from "../presentation/profiles";
 
 /** Shards to reroll a draft (spend agency over RNG). */
 const REROLL_COST = 15;
@@ -156,9 +157,8 @@ export class Menus {
   /** Depth chosen on the hero-select screen, carried into the run. */
   private heroDepth = 0;
   private heroBlessing = "";
-  private heroPreviewTimer = 0;
-  private heroPreviewFrame = 0;
-  private heroPreviewId = "";
+  /** Focused hero in the gallery. The surrounding heroes are navigation, not six equal CTAs. */
+  private heroCarouselIndex = 0;
   /** Live fullscreen state (kept in sync with native + the Fullscreen API). */
   private fsState = false;
   /** Cached primary-display metrics (Electron only); null in the browser. */
@@ -198,6 +198,8 @@ export class Menus {
     // Reduce Motion overrides shake to zero (also dims screen flashes, which key off shakeScale)
     this.ctx.cam.shakeScale = this.settings.reduceMotion ? 0 : this.settings.shake;
     this.ctx.stage.applyQuality(this.settings.quality);
+    this.ctx.vfx.setQuality(this.settings.quality);
+    this.ctx.arena.setPresentationQuality(this.settings.quality, this.settings.reduceMotion);
     this.ctx.stage.setRenderScale(this.settings.renderScale);
     this.ctx.stage.setExposure(this.settings.brightness);
     this.ctx.cam.setBaseFov(this.settings.fov);
@@ -276,43 +278,7 @@ export class Menus {
   }
 
   clear(): void {
-    this.cancelHeroPreview();
     this.root.innerHTML = "";
-  }
-
-  private cancelHeroPreview(): void {
-    if (this.heroPreviewTimer) {
-      window.clearTimeout(this.heroPreviewTimer);
-      this.heroPreviewTimer = 0;
-    }
-    if (this.heroPreviewFrame) {
-      cancelAnimationFrame(this.heroPreviewFrame);
-      this.heroPreviewFrame = 0;
-    }
-  }
-
-  private previewHero(hero: HeroDef): void {
-    // The live 3D hero swap rebuilds the whole procedural mesh on the main thread
-    // (`applyHero`) — a real hover hitch on lighter machines. It's a "high"-only
-    // nicety; the CSS card silhouette already reads the hero everywhere else.
-    if (this.settings.quality !== "high") return;
-    if (this.ctx.player.hero.id === hero.id && this.heroPreviewFrame === 0 && this.heroPreviewTimer === 0) {
-      this.heroPreviewId = hero.id;
-      return;
-    }
-    if (this.heroPreviewId === hero.id && (this.heroPreviewFrame !== 0 || this.heroPreviewTimer !== 0)) return;
-    this.heroPreviewId = hero.id;
-    this.cancelHeroPreview();
-    // Longer settle window so a quick sweep across the row rebuilds once, not six times.
-    this.heroPreviewTimer = window.setTimeout(() => {
-      this.heroPreviewTimer = 0;
-      this.heroPreviewFrame = requestAnimationFrame(() => {
-        this.heroPreviewFrame = 0;
-        if (this.heroPreviewId !== hero.id) return;
-        this.ctx.player.applyHero(hero, this.ctx.profile.data.equipped.cape, this.ctx.profile.data.equipped.blade);
-        this.ctx.player.hp = Math.min(this.ctx.player.hp, this.ctx.player.maxHp);
-      });
-    }, 220);
   }
 
   private blessingDesc(): string {
@@ -332,6 +298,12 @@ export class Menus {
     this.clear();
     const el = document.createElement("div");
     el.className = `screen ${extraClass}`;
+    const node = this.ctx.run?.currentNode;
+    const setId = actSetFor(node?.act ?? 1, node?.bossKind);
+    const set = ACT_SET_PROFILES[setId];
+    el.classList.add(`screen--set-${setId}`);
+    el.style.setProperty("--act-accent", `#${set.accent.toString(16).padStart(6, "0")}`);
+    el.style.setProperty("--act-secondary", `#${set.secondary.toString(16).padStart(6, "0")}`);
     this.root.appendChild(el);
     return el;
   }
@@ -369,17 +341,22 @@ export class Menus {
         <span class="menu-sigil menu-sigil--three"></span>
         <span class="menu-sigil menu-sigil--four"></span>
       </div>
-      <div class="title">ROGUE<br>HERO</div>
-      <div class="title-rule"><span class="subtitle">III &nbsp;·&nbsp; The Ember Rift</span></div>
-      <div class="menu-strip">${strip}</div>
-      <div class="menu-buttons">
-        ${hasSave ? '<button class="btn btn--primary" data-act="continue">Continue Run</button>' : ""}
-        <button class="btn${hasSave ? "" : " btn--primary"}" data-act="start">${hasSave ? "New Run" : "Begin Run"}</button>
+      <div class="menu-brand">
+        <div class="title">ROGUE<br>HERO</div>
+        <div class="title-rule"><span class="subtitle">III &nbsp;·&nbsp; The Ember Rift</span></div>
+        <div class="menu-strip">${strip}</div>
       </div>
-      <div class="menu-sub">
-        <button class="btn btn--sm" data-act="armory">Armory</button>
-        <button class="btn btn--sm" data-act="progress">Progress</button>
-        <button class="btn btn--sm" data-act="settings">Settings</button>
+      <div class="menu-command">
+        <div class="menu-command__eyebrow">DESCEND INTO THE BASILICA</div>
+        <div class="menu-buttons">
+          ${hasSave ? '<button class="btn btn--primary" data-act="continue">Continue Run</button>' : ""}
+          <button class="btn${hasSave ? "" : " btn--primary"}" data-act="start">${hasSave ? "New Run" : "Begin Run"}</button>
+        </div>
+        <div class="menu-sub">
+          <button class="btn btn--sm" data-act="armory">Armory</button>
+          <button class="btn btn--sm" data-act="progress">Progress</button>
+          <button class="btn btn--sm" data-act="settings">Settings</button>
+        </div>
       </div>
       <div class="menu-footer">
         <button class="menu-link" data-act="howto">How to Play</button>
@@ -489,17 +466,22 @@ export class Menus {
     }
   }
 
-  warmHeroSelect(): void {
+  async warmHeroSelect(): Promise<void> {
     this.bakeHeroPortraits();
     this.renderHeroSelect();
-    void document.body.offsetHeight; // force the layout/paint now, while hidden
+    // Data-URL portraits decode asynchronously. Waiting here, behind the opaque
+    // loader, prevents the first real hero-select open from pausing on image decode.
+    const images = [...this.root.querySelectorAll<HTMLImageElement>(".hero-portrait")];
+    await Promise.all(images.map((img) => img.decode().catch(() => undefined)));
+    void document.body.offsetHeight;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     this.showMain();
   }
 
   showHeroSelect(): void {
-    this.heroPreviewId = "";
     const maxD = this.ctx.profile.data.maxDepth;
     this.heroDepth = Math.max(0, Math.min(this.heroDepth || maxD, maxD));
+    this.heroCarouselIndex = Math.max(0, Math.min(this.heroCarouselIndex, HEROES.length - 1));
     this.renderHeroSelect();
   }
 
@@ -538,7 +520,12 @@ export class Menus {
         }).join("")}
       </div>
       <div class="blessing-desc">${this.blessingDesc()}</div>
-      <div class="hero-row"></div>
+      <div class="hero-carousel">
+        <button class="hero-carousel__nav" data-hero-nav="prev" aria-label="Previous hero">&#x2039;</button>
+        <div class="hero-row"></div>
+        <button class="hero-carousel__nav" data-hero-nav="next" aria-label="Next hero">&#x203a;</button>
+      </div>
+      <button class="btn btn--primary hero-confirm">ENTER THE RIFT</button>
       <button class="draft-skip">BACK</button>
     `;
     const row = s.querySelector(".hero-row")!;
@@ -562,10 +549,17 @@ export class Menus {
       </div>`;
     };
 
-    for (const hero of HEROES) {
+    const visibleHeroIndices = [
+      this.heroCarouselIndex,
+      (this.heroCarouselIndex - 1 + HEROES.length) % HEROES.length,
+      (this.heroCarouselIndex + 1) % HEROES.length,
+    ];
+    for (const [visibleIndex, heroIndex] of visibleHeroIndices.entries()) {
+      const hero = HEROES[heroIndex];
       const unlocked = this.ctx.profile.isUnlocked(`hero:${hero.id}`);
       const el = document.createElement("div");
-      el.className = `hero-card${unlocked ? "" : " hero-card--locked"}`;
+      const positionClass = visibleIndex === 0 ? "hero-card--active" : visibleIndex === 1 ? "hero-card--prev" : "hero-card--next";
+      el.className = `hero-card ${positionClass}${unlocked ? "" : " hero-card--locked"}`;
       el.style.setProperty("--accent", hero.color);
       const handIcons = hero.startingHand.map((id) => {
         const c = cardById(id);
@@ -610,20 +604,45 @@ export class Menus {
           <div class="hero-card__title">${hero.title}</div>
           <div class="hero-card__desc hero-card__desc--hint">${this.ctx.profile.unlockHintFor(`hero:${hero.id}`)}</div>`;
       if (unlocked) {
-        el.addEventListener("mouseenter", () => {
-          this.ctx.events.emit("UI_HOVER", {});
-          this.previewHero(hero);
-        });
+        // The baked portrait is the preview. Rebuilding the live 3D hero on
+        // hover created a visible main-thread hitch on the selection screen.
+        el.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
         el.addEventListener("click", () => {
-          this.cancelHeroPreview();
           this.ctx.events.emit("UI_CLICK", {});
-          this.cb.onStartRun(hero, this.heroDepth, this.heroBlessing);
+          if (heroIndex === this.heroCarouselIndex) {
+            this.cb.onStartRun(hero, this.heroDepth, this.heroBlessing);
+          } else {
+            this.heroCarouselIndex = heroIndex;
+            this.renderHeroSelect();
+          }
+        });
+      } else {
+        el.addEventListener("click", () => {
+          if (heroIndex === this.heroCarouselIndex) return;
+          this.ctx.events.emit("UI_CLICK", {});
+          this.heroCarouselIndex = heroIndex;
+          this.renderHeroSelect();
         });
       }
       heroFrag.appendChild(el);
     }
     row.appendChild(heroFrag);
     this.wireButtons(s);
+    const moveHero = (delta: number) => {
+      this.heroCarouselIndex = (this.heroCarouselIndex + delta + HEROES.length) % HEROES.length;
+      this.renderHeroSelect();
+    };
+    s.querySelector('[data-hero-nav="prev"]')?.addEventListener("click", () => moveHero(-1));
+    s.querySelector('[data-hero-nav="next"]')?.addEventListener("click", () => moveHero(1));
+    const focusedHero = HEROES[this.heroCarouselIndex];
+    const confirm = s.querySelector(".hero-confirm") as HTMLButtonElement;
+    const focusedUnlocked = this.ctx.profile.isUnlocked(`hero:${focusedHero.id}`);
+    confirm.disabled = !focusedUnlocked;
+    confirm.textContent = focusedUnlocked ? `ENTER AS ${focusedHero.name.toUpperCase()}` : "HERO LOCKED";
+    confirm.addEventListener("click", () => {
+      if (!focusedUnlocked) return;
+      this.cb.onStartRun(focusedHero, this.heroDepth, this.heroBlessing);
+    });
     const refreshDepth = () => {
       const nextDiff = difficultyFor(this.heroDepth);
       const nextMods = this.heroDepth === 0
@@ -1131,6 +1150,7 @@ export class Menus {
 
   // ---------------------------------------------------------------- draft
   showDraft(choices: CardDef[], onDone: () => void): void {
+    this.ctx.events.emit("DRAFT_OPEN", {});
     const s = this.screen();
     let pool = choices;
     const renderPick = () => {
@@ -1247,13 +1267,41 @@ export class Menus {
       ? `&nbsp;&nbsp;·&nbsp;&nbsp;AHEAD: ${[...new Set(ahead.map((n) => NODE_ICON[n.kind]))].join(" ")}`
       : "";
     s.innerHTML = `
-      <div class="draft-title">CHOOSE YOUR PATH</div>
-      <div class="draft-sub">ACT ${ROMAN[act - 1] ?? act} &nbsp;·&nbsp; CHAMBER ${position + 1} / ${total} — pick what you'll brave next${aheadIcons}</div>
-      <div class="map-row"></div>
+      <div class="route-map">
+        <div class="route-map__header">
+          <div class="draft-title">CHOOSE YOUR PATH</div>
+          <div class="draft-sub">ACT ${ROMAN[act - 1] ?? act} &nbsp;·&nbsp; CHAMBER ${position + 1} / ${total}${aheadIcons}</div>
+        </div>
+        <div class="route-map__body">
+          <div class="route-spine" aria-hidden="true"><span class="route-spine__you">YOU</span><span class="route-spine__rift">THE RIFT</span></div>
+          <div class="map-row"></div>
+          <aside class="route-preview" aria-live="polite">
+            <div class="route-preview__eyebrow">NEXT CHAMBER</div>
+            <div class="route-preview__scene" aria-hidden="true"><span></span><span></span><span></span><i></i></div>
+            <div class="route-preview__icon"></div>
+            <div class="route-preview__name">Choose a branch</div>
+            <div class="route-preview__kind">The route divides here.</div>
+            <div class="route-preview__blurb">Inspect a chamber to see what waits beyond the threshold.</div>
+          </aside>
+        </div>
+      </div>
     `;
     const row = s.querySelector(".map-row")!;
+    const preview = s.querySelector(".route-preview")!;
+    const showPreview = (node: MapNode, el: HTMLElement) => {
+      const setId = actSetFor(node.act, node.bossKind);
+      const set = ACT_SET_PROFILES[setId];
+      (preview as HTMLElement).style.setProperty("--mn", getComputedStyle(el).getPropertyValue("--mn"));
+      (preview as HTMLElement).style.setProperty("--preview-accent", `#${set.accent.toString(16).padStart(6, "0")}`);
+      preview.className = `route-preview route-preview--${set.mapSilhouette}`;
+      (preview.querySelector(".route-preview__icon") as HTMLElement).textContent = NODE_ICON[node.kind];
+      (preview.querySelector(".route-preview__name") as HTMLElement).textContent = node.name;
+      (preview.querySelector(".route-preview__kind") as HTMLElement).textContent = node.kind.toUpperCase();
+      (preview.querySelector(".route-preview__blurb") as HTMLElement).textContent = NODE_BLURB[node.kind];
+    };
     options.forEach((node, i) => {
-      const el = document.createElement("div");
+      const el = document.createElement("button");
+      el.type = "button";
       el.className = `mapnode mapnode--${node.kind}`;
       el.innerHTML = `
         <div class="mapnode__icon">${NODE_ICON[node.kind]}</div>
@@ -1261,10 +1309,13 @@ export class Menus {
         <div class="mapnode__kind">${node.kind}</div>
         <div class="mapnode__blurb">${NODE_BLURB[node.kind]}</div>
       `;
-      el.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
-      el.addEventListener("click", () => { this.ctx.events.emit("UI_CLICK", {}); onPick(i); });
+      el.addEventListener("mouseenter", () => showPreview(node, el));
+      el.addEventListener("focus", () => showPreview(node, el));
+      el.addEventListener("click", () => onPick(i));
       row.appendChild(el);
     });
+    const first = row.querySelector<HTMLElement>(".mapnode");
+    if (first && options[0]) showPreview(options[0], first);
     this.wireButtons(s);
   }
 
@@ -1305,6 +1356,7 @@ export class Menus {
 
   // ---------------------------------------------------------------- rest
   showRest(onDone: () => void): void {
+    this.ctx.events.emit("COACH_TRIGGER", { topic: "hone" });
     const render = () => {
       const honeCount = this.ctx.deck.upgradableSlots().length;
       const s = this.screen();
@@ -1573,6 +1625,7 @@ export class Menus {
 
   // ---------------------------------------------------------------- shop (between acts)
   showShop(onDone: () => void): void {
+    this.ctx.events.emit("COACH_TRIGGER", { topic: "shop" });
     const PRICE = { heal: 25, card: 40, relic: 65, hone: 55 };
     let cardOffer: CardDef | null = this.ctx.deck.buyableChoices(1)[0] ?? null;
     let relicOffer: RelicDef | null = this.ctx.relics.draftChoices()[0] ?? null;
@@ -1736,6 +1789,8 @@ export class Menus {
   }
 
   showDeath(stats: RunStats, unlocks: UnlockedItem[] = []): void {
+    const combatHud = document.getElementById("hud");
+    if (combatHud) combatHud.style.display = "none";
     const s = this.screen();
     s.innerHTML = `
       <div class="end-title end-title--death">YOU FELL</div>
@@ -1754,6 +1809,8 @@ export class Menus {
   }
 
   showVictory(stats: RunStats, unlocks: UnlockedItem[] = [], mercy = false): void {
+    const combatHud = document.getElementById("hud");
+    if (combatHud) combatHud.style.display = "none";
     const s = this.screen();
     const title = mercy ? "THE LIGHT ENDURES" : "THE RIFT IS SEALED";
     const sub = mercy ? "YOU CARRIED THE EMBER HOME" : "A GREY DAWN — AND THE WORLD GOES ON, A LITTLE DIMMER";
@@ -1823,7 +1880,7 @@ export class Menus {
    * Opening story crawl: lines advance on click (or auto), SKIP bails out.
    * Plays over the live arena before the first chamber loads.
    */
-  storyIntro(lines: string[], onDone: () => void, extraHoldMs = 0, perParagraphMs = 0): void {
+  storyIntro(lines: string[], onDone: () => void, extraHoldMs = 0, perParagraphMs = 0, onBeat?: (index: number) => void): void {
     const s = this.screen("");
     s.classList.add("story");
     let idx = 0;
@@ -1841,6 +1898,8 @@ export class Menus {
         return;
       }
       const line = lines[idx];
+      onBeat?.(idx);
+      s.dataset.beat = String(idx);
       s.innerHTML = `
         <div class="story__line">${line}</div>
         <div class="story__hint">CLICK TO CONTINUE</div>

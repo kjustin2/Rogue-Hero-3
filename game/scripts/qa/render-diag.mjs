@@ -143,6 +143,11 @@ let failures = 0;
 
 async function audit({ scene, subjects }) {
   await gotoScenario(page, scene, { settle: RD.settleMs ?? 2200 });
+  if (scene.startsWith("boss:")) {
+    // Audit an engaged gameplay composition, not the intentionally distant
+    // post-reveal spawn endpoints. Keep both hero and boss in the follow frame.
+    await page.evaluate(`(()=>{ const c=window.${S}; const b=c.enemies.living().find(e=>e.kind==='boss'); if(b){ c.player.pos.set(b.pos.x+4,0,b.pos.z+6); c.cam.snapTo(c.player.pos.x,c.player.pos.z); } })()`);
+  }
   await page.evaluate(`window.${S}debug.freezeForTest(true); window.${S}debug.frames(30); 0`);
   const r = { scene, subjects: [], findings: [] };
   for (const sub of subjects) {
@@ -204,9 +209,11 @@ if (!SELFTEST) {
       dup.material = mat;
     }
     dup.userData = { solidity: "ground", __qaZFault: true };
-    dup.rotation.y += 0.0007;
-    dup.position.y += 0.00001;
-    floor.parent.add(dup);
+    dup.matrix.copy(floor.matrixWorld);
+    dup.matrixAutoUpdate = false;
+    // Add at scene root so composite-group filtering cannot mistake the injected
+    // independent surface for another child of the arena kit.
+    c.stage.scene.add(dup);
     window.__qaZFault = { dup, mat };
   })()`);
   const zf = await audit(sc);

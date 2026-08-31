@@ -124,7 +124,10 @@ export async function launchBrowser() {
  *  every screenshot. */
 export async function bootGame(page, { query = "" } = {}) {
   await page.goto(GAME_URL + query, { waitUntil: "networkidle" });
-  await page.waitForTimeout(2500);              // boot loader + warm
+  // The portrait/material warm path varies by GPU; wait for the real readiness
+  // signal instead of photographing the loader on slower machines.
+  await page.locator("#rift-loader").waitFor({ state: "hidden", timeout: 12000 }).catch(() => {});
+  await page.waitForTimeout(250);
   await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
   // Stamp which rasterizer produced this run's evidence (SwiftShader vs WARP vs
   // real GPU) — perf numbers and shot baselines only compare within one renderer.
@@ -299,7 +302,9 @@ export function shotFlags(s) {
   if (s.pctBlack > 98) flags.push("BLACK");
   else if (s.pctBlowout > 2.5) flags.push("BLOWOUT");
   else if (s.stdLum < 4) flags.push("FLAT"); // uniform non-black frame (dead composer / stuck fill)
-  if (s.w < 400 || s.h < 300) flags.push("TINY");
+  // Portrait QA is intentionally 390px wide; reject genuinely broken capture
+  // surfaces while accepting supported narrow layouts down to 300x240.
+  if (s.w < 300 || s.h < 240) flags.push("TINY");
   return flags;
 }
 

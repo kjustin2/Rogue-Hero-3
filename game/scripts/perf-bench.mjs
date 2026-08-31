@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   launchBrowser, bootGame, enterRun, gotoScenario, samplePerf, sleep,
-  isServerUp, ensureDir, writeJSON, readJSON, GAME_DIR, guard,
+  ensureServer, ensureDir, writeJSON, readJSON, GAME_DIR, guard,
 } from "./loop/lib.mjs";
 
 guard({ maxMinutes: 25, keepPriority: true }); // full battery; timing feeds baselines — keep normal priority
@@ -45,7 +45,7 @@ const log = (...a) => console.log("[perf-bench]", ...a);
 const TOL = { callsRel: 0.15, callsAbs: 40, trisRel: 0.20, programsAbs: 0, timingRel: 0.40 };
 const STALL_GATE = 2; // frames >250ms allowed before it's a hard fail
 
-if (!(await isServerUp())) { console.error("[perf-bench] dev server not on :5174 — start `npm run dev`"); process.exit(2); }
+const server = await ensureServer({ log });
 
 function gitHead() {
   const r = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: GAME_DIR, encoding: "utf8" });
@@ -69,18 +69,18 @@ async function combatAction(page) {
 // The battery. Each entry: { key, label, go(page), action?, budget? }.
 // `go` lands the game on the frame to sample; `action` (optional) plays during it.
 const BATTERY = [
-  { key: "menu", label: "Main menu", budget: { over250: STALL_GATE },
+  { key: "menu", label: "Main menu", budget: { over250: STALL_GATE, maxCalls: 250 },
     go: async (p) => { await sleep(600); } },
-  { key: "hero-select", label: "Hero select", budget: { over250: STALL_GATE },
+  { key: "hero-select", label: "Hero select", budget: { over250: STALL_GATE, maxCalls: 250 },
     go: async (p) => { await p.locator("button", { hasText: /Begin Run|New Run/ }).first().click(); await sleep(900); } },
-  { key: "combat-act1", label: "Combat — Act I pack", action: combatAction, budget: { over250: STALL_GATE },
+  { key: "combat-act1", label: "Combat — Act I pack", action: combatAction, budget: { over250: STALL_GATE, maxCalls: 450 },
     go: async (p) => { await enterRun(p); } },
-  { key: "combat-act3", label: "Combat — Act III roster", action: combatAction, budget: { over250: STALL_GATE },
+  { key: "combat-act3", label: "Combat — Act III roster", action: combatAction, budget: { over250: STALL_GATE, maxCalls: 450 },
     go: async (p) => { await p.evaluate(() => window.__rh3debug?.room("combat", 3)); await sleep(2600); await p.evaluate(() => window.__rh3debug?.godmode?.()); } },
-  { key: "combat-act5", label: "Combat — Act V stress", action: combatAction, budget: { over250: STALL_GATE },
+  { key: "combat-act5", label: "Combat — Act V stress", action: combatAction, budget: { over250: STALL_GATE, maxCalls: 450 },
     go: async (p) => { await p.evaluate(() => window.__rh3debug?.room("combat", 5)); await sleep(2600); await p.evaluate(() => window.__rh3debug?.godmode?.()); } },
   ...["warden", "spire", "colossus", "tyrant", "unmaker", "echo"].map((k) => ({
-    key: `boss-${k}`, label: `Boss — ${k}`, action: combatAction, budget: { over250: STALL_GATE + 1 },
+    key: `boss-${k}`, label: `Boss — ${k}`, action: combatAction, budget: { over250: STALL_GATE + 1, maxCalls: 450 },
     go: async (p) => { await gotoScenario(p, `boss:${k}`, { settle: 3000 }); },
   })),
 ];
@@ -133,6 +133,10 @@ for (const [key, cur] of Object.entries(run.scenarios)) {
   // Absolute stall gate (always enforced).
   const stallMax = cur.budget?.over250 ?? STALL_GATE;
   if (s.over250 > stallMax) { issues.push(`STALL ${s.over250}>${stallMax}`); gateFails++; }
+  const callsMax = cur.budget?.maxCalls;
+  if (callsMax != null && (s.snap?.calls ?? 0) > callsMax) {
+    issues.push(`draw budget ${s.snap.calls}>${callsMax}`); gateFails++;
+  }
 
   if (base && base.snap && s.snap) {
     // Deterministic GPU-load regressions gate the build.
@@ -181,4 +185,5 @@ console.log(errN ? `\nCONSOLE ERRORS (${errN}): ${errors.slice(0, 5).join(" | ")
 console.log(`shots → ${SHOTS}`);
 const pass = gateFails === 0 && errN === 0;
 console.log(pass ? "PERF-BENCH: PASS" : `PERF-BENCH: ${gateFails} regression(s)${errN ? ` + ${errN} console error(s)` : ""}`);
+server.stop();
 process.exit(pass ? 0 : 1);

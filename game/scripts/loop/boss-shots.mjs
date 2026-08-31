@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { launchBrowser, bootGame, sleep, ensureDir, isServerUp, ARTIFACTS } from "./lib.mjs";
 
 const argOut = process.argv.includes("--out") ? process.argv[process.argv.indexOf("--out") + 1] : null;
+const argBoss = process.argv.includes("--boss") ? process.argv[process.argv.indexOf("--boss") + 1] : null;
 const OUT = argOut || join(ARTIFACTS, "boss", "manual");
 const SHOTS = join(OUT, "shots");
 ensureDir(SHOTS);
@@ -22,7 +23,8 @@ const BOSSES = [
   { kind: "tyrant", act: 4, depth: 5, phases: [0.63, 0.30] },
   { kind: "unmaker", act: 5, depth: 5, phases: [0.63, 0.30] },
   { kind: "echo", act: 4, depth: 3, phases: [0.45] },
-];
+  { kind: "wound", act: 5, depth: 5, phases: [0.62, 0.28] },
+].filter((boss) => !argBoss || boss.kind === argBoss);
 
 const { browser, page, errors } = await launchBrowser();
 const shot = async (name) => { await page.screenshot({ path: join(SHOTS, name + ".png") }); log("▸ " + name); };
@@ -60,9 +62,9 @@ try {
   for (const b of BOSSES) {
     log(`==== ${b.kind} ====`);
     await page.evaluate((x) => window.__rh3.run.debugLoadBoss(x.kind, x.act, 424242, x.depth), b);
-    // entrance: early charge-up, then the name-drop impact (pillar+ring+flash land ~2.5s)
+    // Entrance: early identity pose, then the deterministic name-drop beat.
     await sleep(1700); await shot(`${b.kind}-1-intro`);
-    await sleep(850); await shot(`${b.kind}-2-reveal`);
+    await sleep(1450); await shot(`${b.kind}-2-reveal`);
     // skip the rest of the entrance, get to the fight
     await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" })));
     await waitPlaying();

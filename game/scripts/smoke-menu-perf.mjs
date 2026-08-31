@@ -80,10 +80,10 @@ async function readPerf() {
 }
 
 function budgetFor(name) {
-  if (/quality/i.test(name)) return { max: 900, p95: 190, longMax: 750 };
-  if (/boot/i.test(name)) return { max: 900, p95: 190, longMax: 750 };
-  if (/dwell/i.test(name)) return { max: 900, p95: 190, longMax: 750 };
-  return { max: 750, p95: 180, longMax: 650 };
+  if (/quality/i.test(name)) return { max: 250, p95: 50, longMax: 200 };
+  if (/boot/i.test(name)) return { max: 250, p95: 50, longMax: 200 };
+  if (/dwell/i.test(name)) return { max: 80, p95: 25, longMax: 80 };
+  return { max: 250, p95: 50, longMax: 200 };
 }
 
 async function measure(name, fn, settleMs = 650) {
@@ -132,16 +132,17 @@ await page.evaluate(() => {
 // (a) total wall time to the menu, (b) menu frame pacing AFTER the loader lifts.
 const t0 = performance.now();
 await page.reload({ waitUntil: "networkidle" });
-await page.locator(".screen--main").waitFor({ timeout: 20000 }).catch(() => {});
+await page.waitForFunction(() => window.__rh3boot?.ready === true, null, { timeout: 20000 }).catch(() => {});
 const bootWall = Math.round(performance.now() - t0);
-check("boot reaches main menu", await page.locator(".screen--main").count() === 1);
+const bootState = await page.evaluate(() => window.__rh3boot);
+check("boot reaches an explicit ready main menu", bootState?.ready === true && bootState?.phase === "ready" && await page.locator(".screen--main").count() === 1, JSON.stringify(bootState));
 check("boot completes in reasonable wall time", bootWall < 15000, `${bootWall}ms (3× throttle)`);
 await resetPerf();
 await page.waitForTimeout(1200);
 const boot = await readPerf();
 console.log(`  post-boot menu: frames=${boot.count} max=${boot.max}ms p95=${boot.p95}ms longMax=${boot.longMax}ms longTotal=${boot.longTotal}ms (boot wall ${bootWall}ms)`);
-check("post-boot menu stays under stall budget", boot.max < 900 && boot.longMax < 750, JSON.stringify(boot));
-check("post-boot menu keeps p95 frame pacing reasonable", boot.p95 < 190, JSON.stringify(boot));
+check("post-boot menu stays under stall budget", boot.max < 250 && boot.longMax < 200, JSON.stringify(boot));
+check("post-boot menu keeps p95 frame pacing reasonable", boot.p95 < 50, JSON.stringify(boot));
 
 await measure("main to fresh hero select", async () => {
   await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
@@ -150,9 +151,12 @@ await measure("main to fresh hero select", async () => {
 check("fresh hero select renders heroes", await page.locator(".hero-card").count() >= 1);
 
 await measure("quick sweep over hero cards", async () => {
-  const cards = await page.locator(".hero-card").count();
+  // The focused carousel intentionally keeps non-neighbor cards in the DOM but
+  // hides them. Exercise only the active card and its two visible silhouettes.
+  const visibleCards = page.locator(".hero-card:visible");
+  const cards = await visibleCards.count();
   for (let i = 0; i < cards; i++) {
-    await page.locator(".hero-card").nth(i).hover();
+    await visibleCards.nth(i).hover();
     await page.waitForTimeout(40);
   }
 }, 500);
@@ -172,8 +176,16 @@ await measure("rerender full unlocked hero select", async () => {
   await page.locator(".hero-card").nth(1).waitFor();
 }, 700);
 
+const carousel = await measure("navigate hero carousel", async () => {
+  for (let i = 0; i < 6; i++) {
+    await page.locator('[data-hero-nav="next"]').click();
+    await page.waitForTimeout(55);
+  }
+}, 450);
+check("hero carousel navigation has no 100ms hitch", carousel.over100 === 0, JSON.stringify(carousel));
+
 await measure("dwell preview alternate hero", async () => {
-  await page.locator(".hero-card").nth(1).hover();
+  await page.locator(".hero-card--next").hover();
   await page.waitForTimeout(320);
 }, 500);
 

@@ -59,6 +59,10 @@ app.whenReady().then(async () => {
   // Spawn one of every enemy kind → maximally many distinct rim-material configs on screen.
   await js(`(()=>{const c=window.__rh3;const kinds=["husk","brute","wisp","leaper","tether","mirror","caster","bastion","shade","harrier","splitter","voidling","warper"];let a=0;for(const k of kinds){const ang=a/kinds.length*Math.PI*2;a++;try{c.enemies.spawn(k,Math.cos(ang)*6,0,Math.sin(ang)*6);}catch(e){}}for(const e of c.enemies.living()){e.hp=9e9;e.maxHp=9e9;if(e.freeze)e.freeze(9e5);}})()`);
   await sleep(1200);
+  // Do not confuse ANGLE's still-running parallel shader links with a temporal
+  // material fault. The shipped loader now awaits this same completion-aware path.
+  await js(`window.__rh3.stage.warmUpAsync()`);
+  await sleep(250);
   const nEnemies = await js(`window.__rh3.enemies.living().length`);
 
   // Freeze the world, orbit the camera slowly, capture + diff + save frames.
@@ -83,9 +87,15 @@ app.whenReady().then(async () => {
     ["-env", `window.__rh3.stage.setDebug("env",false)`],
     ["-shadows", `window.__rh3.stage.setDebug("shadows",false)`],
   ];
-  for (const [name, setup] of steps) { if (setup) { await js(setup); await sleep(350); } const d = await temporalDiff(); console.log(`temporal[${name}]: ${d.toFixed(3)} /255`); }
+  let baselineDiff = 0;
+  for (const [name, setup] of steps) {
+    if (setup) { await js(setup); await sleep(350); }
+    const d = await temporalDiff();
+    if (name === "baseline") baselineDiff = d;
+    console.log(`temporal[${name}]: ${d.toFixed(3)} /255`);
+  }
   // restore
-  await js(`["msaa","smaa","bloom","grade","vignette","env","shadows"].forEach(n=>window.__rh3.stage.setDebug(n,true))`);
+  await js(`["bloom","grade","vignette","env","shadows"].forEach(n=>window.__rh3.stage.setDebug(n,true));window.__rh3.stage.setDebug("msaa",false);window.__rh3.stage.setDebug("smaa",false)`);
   await sleep(300);
 
   let prev = null, total = 0, pairs = 0, maxd = 0;
@@ -105,7 +115,9 @@ app.whenReady().then(async () => {
   console.log(`enemies on screen: ${nEnemies}`);
   console.log(`${LABEL}: mean consecutive-frame diff ${(total / pairs).toFixed(2)} /255, max ${maxd.toFixed(2)}`);
   console.log(errors.length ? `ERRORS: ${errors.slice(0, 5).join(" | ")}` : "NO CONSOLE ERRORS");
+  const failed = errors.length > 0 || baselineDiff > 0.5;
+  if (baselineDiff > 0.5) console.error(`FLICKER GATE FAIL: frozen baseline ${baselineDiff.toFixed(3)} > 0.500`);
   server.close();
   app.quit();
-  process.exit(0);
+  process.exit(failed ? 1 : 0);
 });

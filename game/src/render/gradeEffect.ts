@@ -7,7 +7,7 @@ import { Uniform, Color } from "three";
  *  - split-tone: shadows pulled cool, highlights pushed warm (what a LUT bakes)
  *  - mood/tempo tint: a subtle push toward a driven color (Tempo zone, death/victory)
  *  - saturation nudge (victory blooms warmer, death drains)
- *  - blue-ish ordered dither before the 8-bit write to kill sky/fog banding
+ *  - stable split-tone and mood controls without screen-space noise
  * Uniforms are damped from Stage.update(); no texture, so it runs on every tier.
  */
 const FRAG = /* glsl */ `
@@ -28,14 +28,9 @@ void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor)
   c = mix(vec3(l), c, 1.0 + uSat);
   // Mood / tempo tint — a gentle multiplicative push toward the driven color.
   c = mix(c, c * mix(vec3(1.0), uTint, 0.6), uTintAmt);
-  // Ordered dither before the 8-bit write to kill banding on the dark sky/fog/floor
-  // gradients. The removed film grain used to mask this, so dither properly now: two
-  // decorrelated hashes summed → a triangular (flatter) distribution, ~1.3/255 amplitude.
-  // TIME-INDEPENDENT (uv only) so it can NEVER flicker — unlike the animated grain it replaces.
-  vec2 dp = uv * vec2(1031.0, 1279.0);
-  float d = fract(sin(dot(dp, vec2(12.9898, 78.233))) * 43758.5453)
-          + fract(sin(dot(dp, vec2(39.346, 11.135))) * 24634.6345);
-  c += (d - 1.0) * (1.3 / 255.0);
+  // No screen-space grain/dither here. Even a time-independent UV hash can
+  // scintillate through the compositor when geometry or render scale moves by a
+  // subpixel; the authored sky gradients are smooth enough without that noise.
   outputColor = vec4(max(c, 0.0), inputColor.a);
 }
 `;

@@ -142,6 +142,11 @@ export class PerfMonitor {
     calls: 0, triangles: 0, points: 0, lines: 0, programs: 0,
     geometries: 0, textures: 0, heapMB: 0, enemies: 0, state: "?",
   };
+  /** Rendered-frame load samples inside the active benchmark window. The old
+   * final-frame snapshot depended on which boss effect expired as the timer
+   * stopped. We report p95 load, matching the timing gate: sustained overload
+   * fails while one-frame effect construction does not define the whole scene. */
+  private recLoads: PerfSnapshot[] = [];
 
   private hudEl: HTMLDivElement | null = null;
   private hudGraph: HTMLCanvasElement | null = null;
@@ -255,6 +260,9 @@ export class PerfMonitor {
     this.snap.heapMB = mem ? Math.round(mem.usedJSHeapSize / 1048576) : 0;
     this.snap.enemies = this.ctx.enemies.living().length;
     this.snap.state = this.getState();
+    if (this.recording && info.render.calls > 0) {
+      this.recLoads.push({ ...this.snap });
+    }
 
     // Per-frame deltas feed the spike classifier read in the NEXT begin().
     this.lastProgramsDelta = this.snap.programs - this.prevPrograms;
@@ -283,6 +291,7 @@ export class PerfMonitor {
     this.recording = true;
     this.recStart = this.lastNow || performance.now();
     this.rec = [];
+    this.recLoads = [];
     this.marks = label ? [{ label, t: 0 }] : [];
   }
 
@@ -291,7 +300,20 @@ export class PerfMonitor {
     this.recording = false;
     // Drop the first couple of warm-up frames the way the legacy probes did.
     const samples = this.rec.length > 4 ? this.rec.slice(2) : this.rec;
-    return { ...computeStats(samples), snap: { ...this.snap }, marks: this.marks.slice() };
+    const p95 = (key: "calls" | "triangles" | "points" | "lines"): number => {
+      if (!this.recLoads.length) return this.snap[key];
+      const values = this.recLoads.map((load) => load[key]).sort((a, b) => a - b);
+      return values[Math.min(values.length - 1, Math.floor(values.length * 0.95))];
+    };
+    const peak = (key: "programs" | "geometries" | "textures" | "heapMB" | "enemies"): number =>
+      this.recLoads.reduce((max, load) => Math.max(max, load[key]), this.snap[key]);
+    const load = {
+      ...this.snap,
+      calls: p95("calls"), triangles: p95("triangles"), points: p95("points"), lines: p95("lines"),
+      programs: peak("programs"), geometries: peak("geometries"), textures: peak("textures"),
+      heapMB: peak("heapMB"), enemies: peak("enemies"),
+    };
+    return { ...computeStats(samples), snap: load, marks: this.marks.slice() };
   }
 
   /** Tag the current moment with a label (relative to the recording start) so a

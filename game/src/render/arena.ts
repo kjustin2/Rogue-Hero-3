@@ -1,5 +1,10 @@
 import * as THREE from "three";
 import type { Stage } from "./stage";
+import { RiftBasilica } from "./riftBasilica";
+import { WorldSetDirector } from "./worldSets";
+import { actSetFor } from "../presentation/profiles";
+import type { ActComposition, ActSetId } from "../presentation/types";
+import { damp, lerp } from "../core/math";
 
 export const ARENA_RADIUS = 19;
 
@@ -30,17 +35,17 @@ export const THEMES: Record<string, ArenaTheme> = {
   rift: {
     name: "rift",
     dressing: "rift",
-    fog: 0x0a0a18,
-    fogDensity: 0.012,
-    skyTop: 0x0b0820,
-    skyBottom: 0x251440,
-    hemiSky: 0x8899ff,
-    hemiGround: 0x140a18,
-    key: 0xfff2e0,
-    rim: 0x37e0ff,
-    crystal: 0x46c8ff,
-    ember: 0x55ccff,
-    gridEmissive: 0x1c4a66,
+    fog: 0x09090d,
+    fogDensity: 0.017,
+    skyTop: 0x06070b,
+    skyBottom: 0x1d0d0b,
+    hemiSky: 0x53606d,
+    hemiGround: 0x160b08,
+    key: 0xffdfbd,
+    rim: 0x8f4932,
+    crystal: 0x795044,
+    ember: 0xff6a35,
+    gridEmissive: 0x3b211d,
   },
   dusk: {
     name: "dusk",
@@ -175,9 +180,9 @@ export const THEMES: Record<string, ArenaTheme> = {
     skyBottom: 0x1a1838,
     hemiSky: 0xeae6ff,
     hemiGround: 0x0a0a16,
-    key: 0xffffff,
+    key: 0xd9d1e8,
     rim: 0xe8e0ff,
-    crystal: 0xffffff,
+    crystal: 0xb8acc9,
     ember: 0xd8ccff,
     gridEmissive: 0x33305e,
   },
@@ -221,6 +226,7 @@ export const THEMES: Record<string, ArenaTheme> = {
 export class Arena {
   private skyMat: THREE.ShaderMaterial;
   private rimMat: THREE.MeshStandardMaterial;
+  private rimMesh: THREE.Mesh;
   private floorMat: THREE.MeshStandardMaterial;
   private rockMat!: THREE.MeshStandardMaterial;
   private floorTextures = new Map<string, THREE.CanvasTexture>();
@@ -236,6 +242,19 @@ export class Arena {
   private themeChanging = false;
   private fromTheme: ArenaTheme = THEMES.rift;
   private toTheme: ArenaTheme = THEMES.rift;
+  private readonly basilica: RiftBasilica;
+  private readonly worldSets: WorldSetDirector;
+  private activeSetId: ActSetId = "rift";
+  private decorState = 0x7248335;
+
+  /** Presentation-only seeded stream. Decorative silhouettes and cached floor
+   * textures are stable across screenshots and replays without touching sim RNG. */
+  private decorRandom(): number {
+    let x = this.decorState >>> 0;
+    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+    this.decorState = x >>> 0;
+    return this.decorState / 0xffffffff;
+  }
 
   private shareGeo(key: string, make: () => THREE.BufferGeometry): THREE.BufferGeometry {
     let g = this.sharedGeos.get(key);
@@ -280,13 +299,21 @@ export class Arena {
 
   private setDressing(kind: Dressing): void {
     for (const [k, g] of Object.entries(this.dressings)) {
-      if (g) g.visible = k === kind;
+      if (g) g.visible = this.activeSetId === "rift" && k === kind;
     }
   }
 
   /** Per-room blocking pillars — collision circles consulted by movement + projectiles. */
   obstacles: { x: number; z: number; r: number }[] = [];
   private obstacleGroup: THREE.Group | null = null;
+  private obstacleVisuals: {
+    x: number;
+    z: number;
+    r: number;
+    fade: number;
+    materials: THREE.MeshStandardMaterial[];
+    shadowCaster: THREE.Mesh;
+  }[] = [];
 
   setObstacles(defs: { x: number; z: number; r: number }[], accentColor: number): void {
     if (this.obstacleGroup) {
@@ -299,6 +326,7 @@ export class Arena {
       });
       this.obstacleGroup = null;
     }
+    this.obstacleVisuals.length = 0;
     this.obstacles = defs;
     if (!defs.length) return;
 
@@ -311,13 +339,15 @@ export class Arena {
       // theme objects instead of crushed-black lumps (same trick as rockMat).
       const rock = new THREE.MeshStandardMaterial({
         color: 0x191523, emissive: accentColor, emissiveIntensity: 0.08, roughness: 0.85, flatShading: true,
+        transparent: true,
       });
       const band = new THREE.MeshStandardMaterial({
         color: 0x0c0a14, emissive: accentColor, emissiveIntensity: 2.0, roughness: 0.3, flatShading: true,
+        transparent: true,
       });
       const pillar = new THREE.Mesh(new THREE.CylinderGeometry(d.r * 0.82, d.r, h, 7), rock);
       pillar.position.set(d.x, h / 2, d.z);
-      pillar.rotation.y = Math.random() * Math.PI;
+      pillar.rotation.y = this.decorRandom() * Math.PI;
       pillar.castShadow = true;
       const ring = new THREE.Mesh(new THREE.TorusGeometry(d.r * 0.92, 0.09, 8, 24), band);
       ring.rotation.x = Math.PI / 2;
@@ -334,8 +364,54 @@ export class Arena {
         stud.rotation.y = a;
         this.obstacleGroup.add(stud);
       }
+      this.obstacleVisuals.push({ x: d.x, z: d.z, r: d.r, fade: 0, materials: [rock, band], shadowCaster: pillar });
     }
     this.stage.scene.add(this.obstacleGroup);
+  }
+
+  /**
+   * Fade only the blocking architecture that lies on the camera-to-hero sight
+   * line. Collision stays authoritative and the translucent silhouette remains
+   * visible, but a lower isometric camera can never lose the hero behind a
+   * solid foreground pillar.
+   */
+  updateForegroundOcclusion(dt: number, camera: THREE.Camera, target: THREE.Vector3, enabled: boolean): void {
+    const ax = camera.position.x;
+    const az = camera.position.z;
+    const bx = target.x;
+    const bz = target.z;
+    const dx = bx - ax;
+    const dz = bz - az;
+    const lengthSq = dx * dx + dz * dz;
+    for (const visual of this.obstacleVisuals) {
+      let blocked = false;
+      if (enabled && lengthSq > 0.0001) {
+        const t = ((visual.x - ax) * dx + (visual.z - az) * dz) / lengthSq;
+        if (t > 0.08 && t < 0.96) {
+          const nearestX = ax + dx * t;
+          const nearestZ = az + dz * t;
+          const clearance = visual.r + 0.72;
+          blocked = (visual.x - nearestX) ** 2 + (visual.z - nearestZ) ** 2 < clearance * clearance;
+        }
+      }
+      visual.fade = damp(visual.fade, blocked ? 1 : 0, blocked ? 12 : 8, dt);
+      const opacity = lerp(1, 0.14, visual.fade);
+      for (const material of visual.materials) {
+        material.opacity = opacity;
+        material.depthWrite = visual.fade < 0.02;
+      }
+      visual.shadowCaster.castShadow = visual.fade < 0.05;
+    }
+  }
+
+  foregroundOcclusion(): { active: number; maxFade: number; obstacles: number } {
+    let active = 0;
+    let maxFade = 0;
+    for (const visual of this.obstacleVisuals) {
+      if (visual.fade >= 0.5) active++;
+      maxFade = Math.max(maxFade, visual.fade);
+    }
+    return { active, maxFade: Number(maxFade.toFixed(3)), obstacles: this.obstacleVisuals.length };
   }
 
   /** Push a circle (entity) out of any obstacle it overlaps. */
@@ -360,6 +436,8 @@ export class Arena {
 
   constructor(private stage: Stage) {
     const scene = stage.scene;
+    this.basilica = new RiftBasilica(scene);
+    this.worldSets = new WorldSetDirector(scene);
 
     // --- Sky dome: vertical gradient + procedural stars
     this.skyMat = new THREE.ShaderMaterial({
@@ -403,12 +481,14 @@ export class Arena {
           for (int i = 0; i < 4; i++) { v += amp * vnoise(p); p = p * 2.03 + 7.1; amp *= 0.5; }
           return v;
         }
-        // One twinkling star layer at a given density + grid scale.
+        // One stable star layer at a given density + grid scale. Per-star time
+        // modulation looked like random background pixels changing colour while
+        // the player was moving, especially after bloom.
         float starLayer(vec2 dirxz, float gscale, float thresh) {
           vec2 cell = floor(dirxz * gscale);
           float s = step(thresh, hash(cell));
-          float tw = 0.55 + 0.45 * sin(uTime * (1.0 + hash(cell + 7.0) * 3.0) + hash(cell) * 50.0);
-          return s * tw;
+          float brightness = 0.62 + hash(cell + 7.0) * 0.38;
+          return s * brightness;
         }
         void main() {
           vec3 dir = normalize(vPos);
@@ -436,9 +516,9 @@ export class Arena {
           // Two star layers (bright sparse + faint dense) for parallax depth. The
           // Sundered Abyss (style 4) is near-starless — only its rift-cracks light it.
           float hmask = smoothstep(0.0, 0.32, h) * horizonFade;
-          float starAmt = uStyle > 3.5 ? 0.12 : 1.0;
-          col += vec3(0.92, 0.96, 1.0) * starLayer(proj, 28.0, 0.974) * hmask * 0.75 * starAmt;
-          col += vec3(0.8, 0.86, 1.0) * starLayer(proj + 3.3, 52.0, 0.95) * hmask * 0.3 * starAmt;
+          float starAmt = uStyle > 3.5 ? 0.08 : uStyle > 0.5 ? 0.52 : 0.72;
+          col += vec3(0.92, 0.96, 1.0) * starLayer(proj, 28.0, 0.987) * hmask * 0.52 * starAmt;
+          col += vec3(0.8, 0.86, 1.0) * starLayer(proj + 3.3, 52.0, 0.978) * hmask * 0.18 * starAmt;
 
           // --- The depths below the disc ---
           // The arena floats over a rift. Mirror the upper sky's planar projection
@@ -471,26 +551,22 @@ export class Arena {
           // --- Per-act signature atmosphere (uStyle is a uniform, so this branch is
           // coherent across the whole draw — each act pays only for its own effect) ---
           if (uStyle < 0.5) {
-            // Ember Rift: the torn sky over the fallen kingdom. Bright cyan rift-tears
-            // drift and pulse high overhead — threads of the wound that opened here.
-            float riftN = fbm(np * vec2(0.5, 1.8) + vec2(uTime * 0.025, uTime * 0.01));
-            col += auroraColor * smoothstep(0.05, 0.0, abs(riftN - 0.5)) * nebMask
-                   * (1.1 + 0.5 * sin(uTime * 2.0 + dir.x * 4.0));
-            float riftN2 = fbm(np * vec2(0.8, 2.6) + vec2(-uTime * 0.02, 5.0));
-            col += auroraColor * smoothstep(0.035, 0.0, abs(riftN2 - 0.5)) * nebMask * 0.5;
+            // Ember Rift: one restrained, stable wound high in the sky. Noise-
+            // threshold "tears" previously produced dozens of orange/black bands
+            // that looked exactly like corrupted scanlines as the camera moved.
+            float woundAxis = abs(dir.x + 0.18 + sin(dir.y * 8.0) * 0.025);
+            float wound = smoothstep(0.018, 0.0, woundAxis)
+                        * smoothstep(0.52, 0.7, h) * smoothstep(0.98, 0.82, h);
+            col += auroraColor * wound * 0.52;
           } else if (uStyle < 1.5) {
-            // Shattered Spire: a charged storm — clouds roil and stochastic lightning
-            // forks down a noise ridge to light them from within.
+            // Shattered Spire: charged clouds and a persistent distant lightning
+            // vein. The old stochastic whole-sky flashes were indistinguishable
+            // from a renderer/color glitch and could fire during dense combat.
             float roil = fbm(np * 1.6 + vec2(uTime * 0.06, -uTime * 0.04));
             col += vec3(0.18, 0.32, 0.6) * smoothstep(0.5, 1.0, roil) * nebMask * 0.55;
-            float seed = hash(vec2(floor(uTime * 1.3), 11.0));
-            float flash = step(0.82, seed) * exp(-fract(uTime * 1.3) * 6.0);
-            float seed2 = hash(vec2(floor(uTime * 0.9) + 5.0, 4.0));
-            flash += step(0.88, seed2) * exp(-fract(uTime * 0.9) * 9.0) * 0.7;
             float bolt = smoothstep(0.028, 0.0, abs(fbm(np * vec2(0.9, 0.32) + 7.0) - 0.5))
                        * smoothstep(0.45, 0.96, h);
-            col += vec3(0.7, 0.82, 1.0) * bolt * flash * 3.2;
-            col += vec3(0.55, 0.7, 1.0) * flash * (0.6 + roil * 1.8) * (nebMask + 0.25);
+            col += vec3(0.7, 0.82, 1.0) * bolt * 0.34;
           } else if (uStyle < 2.5) {
             // Molten Core: a furnace sky — a hot glowing horizon, slow lava-lit cloud
             // rolling with the heat, and embers streaming upward.
@@ -508,7 +584,7 @@ export class Arena {
             // Hollow Star (the end of all light): a dense violet cosmos, a faint galactic
             // band, and the dying Hollow Star low on the horizon — collapsing accretion
             // rings spiral inward to a blinding white core.
-            col += vec3(0.85, 0.85, 1.0) * starLayer(proj + 11.0, 80.0, 0.96) * hmask * 0.28;
+            col += vec3(0.85, 0.85, 1.0) * starLayer(proj + 11.0, 80.0, 0.982) * hmask * 0.16;
             float galaxy = fbm(proj * 0.85 + 7.0);
             float gcenter = dir.y - dir.x * 0.3 + 0.06 + (galaxy - 0.5) * 0.5;
             float gband = smoothstep(0.5, 1.0, galaxy) * smoothstep(0.62, 0.0, abs(gcenter));
@@ -528,16 +604,11 @@ export class Arena {
             // no stars, only the wound's light leaking through.
             float crackN = fbm(np * 1.1 + vec2(uTime * 0.015, -uTime * 0.01));
             float crack = smoothstep(0.045, 0.0, abs(crackN - 0.5));
-            float unstable = 0.6 + 0.4 * sin(uTime * 1.6 + crackN * 12.0);
+            float unstable = 0.82 + 0.08 * sin(uTime * 0.7 + crackN * 8.0);
             col += vec3(0.55, 0.3, 1.0) * crack * nebMask * 1.4 * unstable;
             col += vec3(0.72, 0.46, 1.0) * smoothstep(0.03, 0.0, abs(fbm(np * 2.1 + 13.0) - 0.5)) * nebMask * 0.7 * unstable;
             col += vec3(0.16, 0.08, 0.28) * smoothstep(0.45, 1.0, crackN) * nebMask * 0.5;
-            float burst = step(0.9, hash(vec2(floor(uTime * 0.7), 3.0))) * exp(-fract(uTime * 0.7) * 4.0);
-            col += vec3(0.5, 0.3, 1.0) * burst * (crack + 0.15) * 1.3;
           }
-
-          // A touch of dither kills gradient banding on the smooth sky bands.
-          col += (hash(gl_FragCoord.xy * 0.5) - 0.5) * 0.012;
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -579,23 +650,23 @@ export class Arena {
       emissiveIntensity: 2.2,
       roughness: 0.4,
     });
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(ARENA_RADIUS + 0.9, 0.16, 12, 96), this.rimMat);
-    rim.rotation.x = Math.PI / 2;
-    rim.position.y = 0.1;
-    rim.userData.solidity = "nonsolid";
-    scene.add(rim);
+    this.rimMesh = new THREE.Mesh(new THREE.TorusGeometry(ARENA_RADIUS + 0.9, 0.16, 12, 96), this.rimMat);
+    this.rimMesh.rotation.x = Math.PI / 2;
+    this.rimMesh.position.y = 0.1;
+    this.rimMesh.userData.solidity = "nonsolid";
+    scene.add(this.rimMesh);
 
     // --- Edge dressing: one group per act silhouette, toggled by theme
     this.dressings.rift = this.buildDressing(scene, (group, mat) => {
       // Act I: clustered crystal shards
       const crystalGeo = this.shareGeo("cone", () => new THREE.ConeGeometry(0.55, 3.2, 5));
-      const n = 2 + Math.floor(Math.random() * 3);
+      const n = 2 + Math.floor(this.decorRandom() * 3);
       for (let c = 0; c < n; c++) {
         const m = new THREE.Mesh(crystalGeo, mat);
-        const s = 0.5 + Math.random() * 0.9;
-        m.scale.set(s, s * (0.8 + Math.random() * 1.6), s);
-        m.position.set((Math.random() - 0.5) * 1.6, m.scale.y * 1.4, (Math.random() - 0.5) * 1.6);
-        m.rotation.set((Math.random() - 0.5) * 0.35, Math.random() * Math.PI, (Math.random() - 0.5) * 0.35);
+        const s = 0.5 + this.decorRandom() * 0.9;
+        m.scale.set(s, s * (0.8 + this.decorRandom() * 1.6), s);
+        m.position.set((this.decorRandom() - 0.5) * 1.6, m.scale.y * 1.4, (this.decorRandom() - 0.5) * 1.6);
+        m.rotation.set((this.decorRandom() - 0.5) * 0.35, this.decorRandom() * Math.PI, (this.decorRandom() - 0.5) * 0.35);
         m.castShadow = true;
         group.add(m);
       }
@@ -604,17 +675,17 @@ export class Arena {
       // Act II: tall glass pillars with glowing caps
       const pillarGeo = this.shareGeo("hex", () => new THREE.CylinderGeometry(0.42, 0.55, 1, 6));
       const capGeo = this.shareGeo("oct", () => new THREE.OctahedronGeometry(0.5));
-      const n = 1 + Math.floor(Math.random() * 2);
+      const n = 1 + Math.floor(this.decorRandom() * 2);
       for (let c = 0; c < n; c++) {
-        const h = 4.5 + Math.random() * 3.5;
+        const h = 4.5 + this.decorRandom() * 3.5;
         const pillar = new THREE.Mesh(pillarGeo, dark);
         pillar.scale.set(1, h, 1);
-        pillar.position.set((Math.random() - 0.5) * 1.8, h / 2 - 0.4, (Math.random() - 0.5) * 1.8);
-        pillar.rotation.y = Math.random() * Math.PI;
+        pillar.position.set((this.decorRandom() - 0.5) * 1.8, h / 2 - 0.4, (this.decorRandom() - 0.5) * 1.8);
+        pillar.rotation.y = this.decorRandom() * Math.PI;
         pillar.castShadow = true;
         const cap = new THREE.Mesh(capGeo, mat);
         cap.position.set(pillar.position.x, h - 0.2, pillar.position.z);
-        cap.rotation.y = Math.random() * Math.PI;
+        cap.rotation.y = this.decorRandom() * Math.PI;
         group.add(pillar, cap);
       }
     });
@@ -622,16 +693,16 @@ export class Arena {
       // Act III: low jagged slag anvils with molten tips
       const slabGeo = this.shareGeo("slab", () => new THREE.BoxGeometry(1, 1, 1));
       const tipGeo = this.shareGeo("tip", () => new THREE.ConeGeometry(0.22, 1.0, 4));
-      const n = 2 + Math.floor(Math.random() * 3);
+      const n = 2 + Math.floor(this.decorRandom() * 3);
       for (let c = 0; c < n; c++) {
         const slab = new THREE.Mesh(slabGeo, dark);
-        slab.scale.set(0.9 + Math.random() * 1.3, 0.8 + Math.random() * 1.8, 0.9 + Math.random() * 1.3);
-        slab.position.set((Math.random() - 0.5) * 2.2, slab.scale.y / 2 - 0.3, (Math.random() - 0.5) * 2.2);
-        slab.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI, (Math.random() - 0.5) * 0.3);
+        slab.scale.set(0.9 + this.decorRandom() * 1.3, 0.8 + this.decorRandom() * 1.8, 0.9 + this.decorRandom() * 1.3);
+        slab.position.set((this.decorRandom() - 0.5) * 2.2, slab.scale.y / 2 - 0.3, (this.decorRandom() - 0.5) * 2.2);
+        slab.rotation.set((this.decorRandom() - 0.5) * 0.3, this.decorRandom() * Math.PI, (this.decorRandom() - 0.5) * 0.3);
         slab.castShadow = true;
         const tip = new THREE.Mesh(tipGeo, mat);
         tip.position.set(slab.position.x, slab.scale.y + 0.2, slab.position.z);
-        tip.rotation.z = (Math.random() - 0.5) * 0.6;
+        tip.rotation.z = (this.decorRandom() - 0.5) * 0.6;
         group.add(slab, tip);
       }
     });
@@ -639,19 +710,19 @@ export class Arena {
       // Act IV: broken obelisks haloed by floating rift shards
       const obGeo = this.shareGeo("obelisk", () => new THREE.BoxGeometry(0.9, 1, 0.9));
       const shardGeo = this.shareGeo("voidshard", () => new THREE.OctahedronGeometry(0.4));
-      const h = 4 + Math.random() * 3.5;
+      const h = 4 + this.decorRandom() * 3.5;
       const ob = new THREE.Mesh(obGeo, dark);
       ob.scale.set(1, h, 1);
-      ob.position.set((Math.random() - 0.5) * 1.4, h / 2 - 0.4, (Math.random() - 0.5) * 1.4);
-      ob.rotation.set((Math.random() - 0.5) * 0.18, Math.random() * Math.PI, (Math.random() - 0.5) * 0.18);
+      ob.position.set((this.decorRandom() - 0.5) * 1.4, h / 2 - 0.4, (this.decorRandom() - 0.5) * 1.4);
+      ob.rotation.set((this.decorRandom() - 0.5) * 0.18, this.decorRandom() * Math.PI, (this.decorRandom() - 0.5) * 0.18);
       ob.castShadow = true;
       group.add(ob);
-      const n = 2 + Math.floor(Math.random() * 3);
+      const n = 2 + Math.floor(this.decorRandom() * 3);
       for (let c = 0; c < n; c++) {
         const sh = new THREE.Mesh(shardGeo, mat);
-        sh.scale.setScalar(0.5 + Math.random() * 0.8);
-        sh.position.set(ob.position.x + (Math.random() - 0.5) * 2.6, h * 0.5 + Math.random() * h * 0.7, ob.position.z + (Math.random() - 0.5) * 2.6);
-        sh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+        sh.scale.setScalar(0.5 + this.decorRandom() * 0.8);
+        sh.position.set(ob.position.x + (this.decorRandom() - 0.5) * 2.6, h * 0.5 + this.decorRandom() * h * 0.7, ob.position.z + (this.decorRandom() - 0.5) * 2.6);
+        sh.rotation.set(this.decorRandom() * 3, this.decorRandom() * 3, this.decorRandom() * 3);
         group.add(sh);
       }
     });
@@ -673,20 +744,20 @@ export class Arena {
     const rockMat = this.rockMat;
     for (let i = 0; i < 22; i++) {
       const m = new THREE.Mesh(rockGeo, rockMat);
-      const a = Math.random() * Math.PI * 2;
-      const r = ARENA_RADIUS + 8 + Math.random() * 26;
-      const y = -6 + Math.random() * 14;
+      const a = this.decorRandom() * Math.PI * 2;
+      const r = ARENA_RADIUS + 8 + this.decorRandom() * 26;
+      const y = -6 + this.decorRandom() * 14;
       m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
-      m.scale.setScalar(0.8 + Math.random() * 2.8);
-      m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+      m.scale.setScalar(0.8 + this.decorRandom() * 2.8);
+      m.rotation.set(this.decorRandom() * 3, this.decorRandom() * 3, this.decorRandom() * 3);
       m.userData.solidity = "nonsolid"; // drifting void rocks, far outside reach
       scene.add(m);
       this.rocks.push({
         mesh: m,
         baseY: y,
-        spin: (Math.random() - 0.5) * 0.25,
-        bob: 0.4 + Math.random() * 0.8,
-        phase: Math.random() * Math.PI * 2,
+        spin: (this.decorRandom() - 0.5) * 0.25,
+        bob: 0.4 + this.decorRandom() * 0.8,
+        phase: this.decorRandom() * Math.PI * 2,
       });
     }
 
@@ -742,9 +813,9 @@ export class Arena {
       g.lineWidth = width;
       g.beginPath();
       g.moveTo(x, y);
-      const steps = 4 + Math.floor(Math.random() * 5);
+      const steps = 4 + Math.floor(this.decorRandom() * 5);
       for (let i = 0; i < steps; i++) {
-        angle += (Math.random() - 0.5) * 0.65;
+        angle += (this.decorRandom() - 0.5) * 0.65;
         x += Math.cos(angle) * length / steps;
         y += Math.sin(angle) * length / steps;
         g.lineTo(x, y);
@@ -769,10 +840,10 @@ export class Arena {
 
     // Subtle noise speckle
     for (let i = 0; i < 2600; i++) {
-      const a = Math.random() * (family === "hollow" ? 0.065 : 0.05);
+      const a = this.decorRandom() * (family === "hollow" ? 0.065 : 0.05);
       g.fillStyle = i % 9 === 0 ? rgba(accent, a * 1.4) : `rgba(255,255,255,${a})`;
-      const s = 1 + Math.random() * 1.4;
-      g.fillRect(Math.random() * size, Math.random() * size, s, s);
+      const s = 1 + this.decorRandom() * 1.4;
+      g.fillRect(this.decorRandom() * size, this.decorRandom() * size, s, s);
     }
 
     if (family === "spire") {
@@ -804,21 +875,21 @@ export class Arena {
         g.closePath();
         g.fill();
       }
-      for (let i = 0; i < 42; i++) crack(Math.random() * size, Math.random() * size, 50 + Math.random() * 170, Math.random() * Math.PI * 2, accent, 0.12, 0.9);
+      for (let i = 0; i < 42; i++) crack(this.decorRandom() * size, this.decorRandom() * size, 50 + this.decorRandom() * 170, this.decorRandom() * Math.PI * 2, accent, 0.12, 0.9);
     } else if (family === "forge") {
       for (let i = 0; i < 34; i++) {
-        const x = Math.random() * size;
-        const y = Math.random() * size;
-        const sides = 5 + Math.floor(Math.random() * 3);
-        const r = 42 + Math.random() * 100;
+        const x = this.decorRandom() * size;
+        const y = this.decorRandom() * size;
+        const sides = 5 + Math.floor(this.decorRandom() * 3);
+        const r = 42 + this.decorRandom() * 100;
         g.fillStyle = i % 2 ? "rgba(0,0,0,0.12)" : rgba(ember, 0.02);
         g.strokeStyle = rgba(ember, 0.09);
         g.lineWidth = 1.5;
         g.beginPath();
         for (let p = 0; p < sides; p++) {
-          const a = (p / sides) * Math.PI * 2 + Math.random() * 0.35;
-          const px = x + Math.cos(a) * r * (0.7 + Math.random() * 0.45);
-          const py = y + Math.sin(a) * r * (0.7 + Math.random() * 0.45);
+          const a = (p / sides) * Math.PI * 2 + this.decorRandom() * 0.35;
+          const px = x + Math.cos(a) * r * (0.7 + this.decorRandom() * 0.45);
+          const py = y + Math.sin(a) * r * (0.7 + this.decorRandom() * 0.45);
           if (p === 0) g.moveTo(px, py);
           else g.lineTo(px, py);
         }
@@ -826,32 +897,32 @@ export class Arena {
         g.fill();
         g.stroke();
       }
-      for (let i = 0; i < 22; i++) crack(Math.random() * size, Math.random() * size, 80 + Math.random() * 205, Math.random() * Math.PI * 2, ember, 0.13, 1.4 + Math.random() * 1.8);
-      for (let i = 0; i < 14; i++) glow(Math.random() * size, Math.random() * size, 18 + Math.random() * 32, ember, 0.22);
+      for (let i = 0; i < 22; i++) crack(this.decorRandom() * size, this.decorRandom() * size, 80 + this.decorRandom() * 205, this.decorRandom() * Math.PI * 2, ember, 0.13, 1.4 + this.decorRandom() * 1.8);
+      for (let i = 0; i < 14; i++) glow(this.decorRandom() * size, this.decorRandom() * size, 18 + this.decorRandom() * 32, ember, 0.22);
     } else if (family === "void") {
       for (let i = 0; i < 18; i++) {
-        const x = Math.random() * size;
-        const y = Math.random() * size;
-        const r = 45 + Math.random() * 120;
+        const x = this.decorRandom() * size;
+        const y = this.decorRandom() * size;
+        const r = 45 + this.decorRandom() * 120;
         g.fillStyle = "rgba(0,0,0,0.42)";
         g.beginPath();
         for (let p = 0; p < 5; p++) {
-          const a = (p / 5) * Math.PI * 2 + Math.random();
-          const px = x + Math.cos(a) * r * (0.45 + Math.random());
-          const py = y + Math.sin(a) * r * (0.45 + Math.random());
+          const a = (p / 5) * Math.PI * 2 + this.decorRandom();
+          const px = x + Math.cos(a) * r * (0.45 + this.decorRandom());
+          const py = y + Math.sin(a) * r * (0.45 + this.decorRandom());
           if (p === 0) g.moveTo(px, py);
           else g.lineTo(px, py);
         }
         g.closePath();
         g.fill();
       }
-      for (let i = 0; i < 95; i++) glow(Math.random() * size, Math.random() * size, 3 + Math.random() * 7, accent, 0.18);
+      for (let i = 0; i < 95; i++) glow(this.decorRandom() * size, this.decorRandom() * size, 3 + this.decorRandom() * 7, accent, 0.18);
       for (let i = 0; i < 11; i++) {
-        const a = Math.random() * Math.PI * 2;
+        const a = this.decorRandom() * Math.PI * 2;
         g.strokeStyle = rgba(accent, 0.1);
         g.lineWidth = 2;
         g.beginPath();
-        g.arc(c, c, 120 + i * 31 + Math.random() * 12, a, a + 0.45 + Math.random() * 0.9);
+        g.arc(c, c, 120 + i * 31 + this.decorRandom() * 12, a, a + 0.45 + this.decorRandom() * 0.9);
         g.stroke();
       }
     } else if (family === "hollow") {
@@ -876,12 +947,12 @@ export class Arena {
         else g.lineTo(x, y);
       }
       g.stroke();
-      for (let i = 0; i < 36; i++) glow(Math.random() * size, Math.random() * size, 5 + Math.random() * 12, new THREE.Color(0xffffff), 0.18);
+      for (let i = 0; i < 36; i++) glow(this.decorRandom() * size, this.decorRandom() * size, 5 + this.decorRandom() * 12, new THREE.Color(0xffffff), 0.18);
     } else {
       for (let i = 0; i < 34; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 70 + Math.random() * 380;
-        crack(c + Math.cos(a) * r, c + Math.sin(a) * r, 55 + Math.random() * 145, a + Math.PI * 0.5, accent, 0.12, 1.2);
+        const a = this.decorRandom() * Math.PI * 2;
+        const r = 70 + this.decorRandom() * 380;
+        crack(c + Math.cos(a) * r, c + Math.sin(a) * r, 55 + this.decorRandom() * 145, a + Math.PI * 0.5, accent, 0.12, 1.2);
       }
       for (let i = 0; i < 8; i++) {
         const a0 = (i / 8) * Math.PI * 2 + 0.18;
@@ -949,7 +1020,15 @@ export class Arena {
     // Env IBL is baked ONCE at boot (stage.ts) and never rebaked per act: swapping
     // scene.environment mid-crossfade popped reflections (read as an act-load flicker).
     // Silhouettes swap instantly — theme changes happen behind the spawn flash
+    this.activeSetId = theme.name === "spire" || theme.name === "tempest" ? "spire"
+      : theme.name === "forge" || theme.name === "core" ? "forge"
+      : theme.name === "hollow" || theme.name === "starfall" ? "hollow"
+      : theme.name === "abyss" || theme.name === "voidcrown" ? "abyss"
+      : theme.name === "wound" ? "wound" : "rift";
     this.setDressing(theme.dressing);
+    this.basilica.setVisible(this.activeSetId === "rift");
+    this.worldSets.set(this.activeSetId, "combat");
+    this.rimMesh.visible = this.activeSetId === "rift";
     // Sky style is per-act, not per-dressing: abyss + hollow share the "void" dressing
     // (silhouettes) but get distinct skies (4 vs 3) so no two acts look the same.
     const n = theme.name;
@@ -958,6 +1037,30 @@ export class Arena {
       n === "forge" || n === "core" ? 2 :
       n === "hollow" || n === "starfall" ? 3 :
       n === "abyss" || n === "voidcrown" ? 4 : 0;
+  }
+
+  /** Act I authored dressing only. Collision and obstacle topology are unchanged. */
+  setBasilicaComposition(kind: "nave" | "reliquary" | "courtyard"): void {
+    this.basilica.setComposition(kind);
+  }
+
+  /** Select the authored presentation set for the loaded node. This changes no
+   * collision, obstacle or movement data; it only toggles seeded decoration. */
+  setActComposition(act: number, composition: ActComposition, bossKind?: string): void {
+    this.activeSetId = actSetFor(act, bossKind);
+    this.basilica.setVisible(this.activeSetId === "rift");
+    if (this.activeSetId === "rift") {
+      this.basilica.setComposition(composition === "boss" ? "courtyard" : composition === "elite" ? "reliquary" : "nave");
+      this.worldSets.set("rift", composition);
+    } else {
+      this.worldSets.set(this.activeSetId, composition);
+    }
+    this.rimMesh.visible = this.activeSetId === "rift";
+    this.setDressing(this.toTheme.dressing);
+  }
+
+  setPresentationQuality(quality: "low" | "medium" | "high", reduceMotion: boolean): void {
+    this.worldSets.setPresentationQuality(quality, reduceMotion);
   }
 
   private currentBlend(): ArenaTheme {
@@ -1031,7 +1134,6 @@ export class Arena {
 
   /** Target 0/1 — set by the tempo system while the player holds Critical. */
   criticalHeat = 0;
-  private heat = 0;
   /** Target 0/1 — boss cutscenes dim the arena ("the room holds its breath"),
    *  snapping back fast at the reveal. */
   cutsceneDim = 0;
@@ -1040,9 +1142,10 @@ export class Arena {
   update(dt: number): void {
     this.t += dt;
     this.skyMat.uniforms.uTime.value = this.t;
-    this.heat += (this.criticalHeat - this.heat) * Math.min(1, dt * 2.5);
     // Dim eases in slowly, releases fast — darkness → impact at the name-drop.
     this.dim += (this.cutsceneDim - this.dim) * Math.min(1, dt * (this.cutsceneDim > this.dim ? 1.8 : 7));
+    this.basilica.update(dt, this.dim);
+    this.worldSets.update(dt, this.dim);
 
     if (this.themeLerp < 1) {
       this.themeLerp = Math.min(1, this.themeLerp + dt * 0.7);
@@ -1053,9 +1156,9 @@ export class Arena {
       this.blendSettled = true;
     }
 
-    // Breathing rim + crystals + a slow grid pulse so the floor never reads as static.
-    // At Critical tempo the whole arena breathes faster and hotter with the player.
-    const h = this.heat;
+    // Keep the room itself chromatically stable. Tempo already reads on the
+    // player, HUD, and attacks; driving every world light and the fog from it
+    // created distracting background colour/brightness pumping in combat.
     // A theme cross-lerp desaturates the bright emissives (rim goes cyan→periwinkle→
     // magenta) and at full breathe intensity that midpoint blooms to pure WHITE — the
     // "act-loading flicker". Hold the emissives down through the crossfade (deepest at
@@ -1063,21 +1166,21 @@ export class Arena {
     // out. Hidden behind the spawn flash, so no visible step when the crossfade begins.
     const xf = (this.blendSettled || !this.themeChanging) ? 1 : 0.5 + 0.5 * this.themeLerp;
     const lit = (1 - this.dim * 0.62) * xf;
-    // Tempo drives the real lights + fog, not just emissive skin (IDEAS-GRAPHICS #9/#28):
-    // Critical brightens the room and thins the air for a clarity payoff; a boss dim
-    // darkens the key + thickens the fog for dread.
-    this.stage.keyLight.intensity = 1.6 * (1 + h * 0.16) * (1 - this.dim * 0.35);
-    this.stage.hemiLight.intensity = 0.95 * (1 + h * 0.08);
-    this.stage.rimLight.intensity = 0.55 * (1 + h * 0.2);
+    this.stage.keyLight.intensity = 1.6 * (1 - this.dim * 0.35);
+    this.stage.hemiLight.intensity = 0.95;
+    this.stage.rimLight.intensity = 0.55;
     if (this.blendSettled) {
       const baseFog = this.toTheme.fogDensity ?? FOG_DEFAULT;
-      this.stage.fog.density = baseFog * (1 - h * 0.2) * (1 + this.dim * 0.35);
+      this.stage.fog.density = baseFog * (1 + this.dim * 0.35);
     }
-    const breathe = (1.9 + Math.sin(this.t * (1.4 + h * 2.4)) * (0.5 + h * 0.5)) * (1 + h * 0.3);
-    this.rimMat.emissiveIntensity = breathe * lit;
-    this.floorMat.emissiveIntensity = (2.3 + Math.sin(this.t * (0.8 + h * 1.2)) * 0.3 + h * 0.5) * lit;
+    // Keep large world surfaces photometrically stable. Ambient motion belongs
+    // in geometry/particles; pulsing the floor, rim and every crystal together
+    // reads as a synchronized render fault beside emissive enemies.
+    this.rimMat.emissiveIntensity = 1.9 * lit;
+    this.floorMat.emissiveIntensity = 2.3 * lit;
+    this.rockMat.emissiveIntensity = (this.activeSetId === "hollow" ? 0.12 : 0.32) * lit;
     for (let i = 0; i < this.crystalMats.length; i++) {
-      this.crystalMats[i].emissiveIntensity = (1.1 + h * 0.35 + Math.sin(this.t * (1.1 + h * 1.4) + i * 1.7) * 0.45) * lit;
+      this.crystalMats[i].emissiveIntensity = 1.1 * lit;
     }
 
     for (const r of this.rocks) {

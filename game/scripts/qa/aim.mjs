@@ -36,13 +36,20 @@ if (!SELFTEST) {
   await enterRun(page);
   await gotoScenario(page, "room:combat", { settle: 900 });
   const rows = await page.evaluate(`(() => {
-    const c = window.${S}, d = window.${S}debug; d.godmode();
+  const c = window.${S}, d = window.${S}debug; d.godmode();
+    // Aim fidelity must isolate the weapon arc. A generated room pillar can
+    // resolve a pinned decoy inward on one angle and falsely report a backward
+    // hit even though the attack heading is correct.
+    c.arena.setObstacles([], 0);
     const out = [];
     const TR = ${AM.targetR}, DR = ${AM.decoyR};
     for (let a = 0; a < ${AM.angles}; a++) {
       const ang = a * Math.PI * 2 / ${AM.angles};
       const ax = Math.sin(ang), az = Math.cos(ang);   // aim direction (game's sin/cos forward convention)
       c.enemies.clearNonBosses();
+      // Reset the previous combo before staging the next angle so its final
+      // frames cannot buffer into the following angle's swing.
+      c.combat.clearTransient();
       c.player.pos.set(0, 0, 0);
       try { c.enemies.spawn("husk", ax * TR, az * TR, 0); } catch {}    // TARGET in reach, under the aim
       try { c.enemies.spawn("husk", -ax * DR, -az * DR, 0); } catch {}  // DECOY far + opposite (unreachable)

@@ -69,11 +69,18 @@ async function run(screen, { pseudoloc = false, faults = null } = {}) {
     // MutationObserver — the HUD rewrites innerHTML each frame).
     await page.evaluate(`(()=>{
       const grow = (s) => "[" + s + "~".repeat(Math.ceil(s.replace(/\\s/g,"").length*0.4)) + "]";
+      window.__qaPseudolocNodes = [];
       for (const root of ["#hud","#overlay"]) {
         const r = document.querySelector(root); if (!r) continue;
         const w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
         const nodes = []; while (w.nextNode()) nodes.push(w.currentNode);
-        for (const n of nodes) { const t=n.textContent.trim(); if (t.length>1 && !/^[0-9%×\\/]+$/.test(t)) n.textContent = grow(t); }
+        for (const n of nodes) {
+          const t=n.textContent.trim();
+          if (t.length>1 && !/^[0-9%×\\/]+$/.test(t)) {
+            window.__qaPseudolocNodes.push([n, n.textContent]);
+            n.textContent = grow(t);
+          }
+        }
       }
     })(); 0`);
   }
@@ -99,6 +106,7 @@ if (!SELFTEST) {
       // clipped label. The base pass is the hard gate.
       const plocRaw = await run(screen, { pseudoloc: true });
       const ploc = plocRaw.filter((f) => f.rule === "truncated" || f.rule === "overlap").map((f) => ({ ...f, pseudoloc: true }));
+      await page.evaluate(`(()=>{for(const [n,t] of (window.__qaPseudolocNodes||[])){if(n?.isConnected)n.textContent=t;}window.__qaPseudolocNodes=[];})()`);
       await stage(screen); // drop the pseudoloc mutation before the next size
       for (const f of base) log(`  ${screen} @${w}×${h}: ${f.rule} — ${f.sel} — ${f.detail}`);
       for (const f of ploc) log(`  ${screen} @${w}×${h} [ploc WARN]: ${f.rule} — ${f.sel} — ${f.detail}`);

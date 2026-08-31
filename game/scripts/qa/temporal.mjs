@@ -206,10 +206,18 @@ async function auditScene(scene, { faults = null, restage = true } = {}) {
     // Age the freeze 3 ticks before measuring: one-final-frame settle logic
     // (hit-flash resets, damp latches) legitimately changes the first frame
     // after a freeze — measured [7.6, 0, 0, 0]; real shimmer changes EVERY pair.
-    for (let k = 0; k < 3; k++) d.tick();
+    // SMAA uses a separate ping-pong pass after a high-quality rebuild; give the
+    // frozen chain enough completed presents to settle before reading pixels.
+    // A quality rebuild swaps the SMAA/ping-pong render targets and the first
+    // few completed presents can still expose initialization noise on a fast
+    // GPU. Age the frozen chain well past that one-time window before judging
+    // temporal stability; injected per-frame faults still fire on every tick.
+    for (let k = 0; k < 48; k++) d.tick();
+    gl.finish();
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, prev);
     for (let f = 0; f < 4; f++) {
       d.tick();
+      gl.finish();
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, cur);
       let sum = 0, nDiff = 0;
       diff.fill(0);

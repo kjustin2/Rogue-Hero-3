@@ -3,6 +3,8 @@ import { angleDelta } from "../core/math";
 import { ParticleShape } from "../render/particles";
 import type { Ctx } from "./ctx";
 import type { Enemy, DamageOpts } from "./enemies";
+import type { AttackFamily } from "../presentation/types";
+import { ATTACK_ELEMENT, BOSS_ATTACK_FAMILY, ENEMY_ATTACK_FAMILY, heroAttackFamily } from "../presentation/profiles";
 
 interface SwingStage {
   dur: number;
@@ -12,16 +14,16 @@ interface SwingStage {
   range: number;
   kb: number;
   heavy: boolean;
+  family: AttackFamily;
+  strikePoint: number;
 }
 
 /** Light, light, 360° finisher. Clicking mid-swing buffers the next stage. */
 const CHAIN: SwingStage[] = [
-  { dur: 0.26, dmg: 8, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.24, dmg: 8, arc: (130 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false },
-  { dur: 0.36, dmg: 17, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true },
+  { dur: 0.29, dmg: 8, arc: (125 * Math.PI) / 180, range: 2.9, kb: 3, heavy: false, family: "blade-opener", strikePoint: 0.28 },
+  { dur: 0.31, dmg: 8, arc: (135 * Math.PI) / 180, range: 2.95, kb: 3, heavy: false, family: "blade-return", strikePoint: 0.32 },
+  { dur: 0.48, dmg: 17, arc: Math.PI * 2, range: 3.2, kb: 8, heavy: true, family: "blade-finisher", strikePoint: 0.42 },
 ];
-
-const STRIKE_POINT = 0.3; // fraction of swing where the hit lands
 const COMBO_TEMPO = [4, 8, 15, 20]; // by enemies caught: 1 / 2 / 3-4 / 5+
 
 interface SlashArc {
@@ -36,6 +38,10 @@ export type PlayerDamageResult = "hit" | "dodged" | "shielded" | "invulnerable";
 interface PlayerDamageOpts {
   /** Only hostile projectile bodies can be parried; melee/contact hits cannot. */
   parryable?: boolean;
+  /** Presentation-only origin metadata; never participates in resolution. */
+  sourceId?: string;
+  sourceKind?: string;
+  attackFamily?: AttackFamily;
 }
 
 // Scratch vectors for charge-glow blade points (avoid per-frame allocation).
@@ -74,6 +80,7 @@ export class Combat {
   /** Charged-heavy state: how long attack has been held, and whether a charge is winding up. */
   private chargeT = 0;
   private charging = false;
+  private currentFamily: AttackFamily = "blade-opener";
 
   /** Parry window: the opening beat of any swing — meeting a hit here deflects it. */
   get parryActive(): boolean {
@@ -113,13 +120,69 @@ export class Combat {
     this.counterWindow = 0;
     this.stageIdx = -1;
     this.swingT = 0;
+    this.struck = false;
     this.buffered = false;
+    this.chainReset = 0;
+    this.lastFinished = -1;
+    this.swingHits = 0;
+    this.currentFamily = "blade-opener";
     this.coldCrashLatch = false; // a new room must be able to cold-crash again
     this.crashIframes = 0;
     this.ctx.player.animSwing = null;
   }
 
   // ----------------------------------------------------------- player damage
+  private incomingPresentationSource(srcX: number, srcZ: number, opts: PlayerDamageOpts): Required<Pick<PlayerDamageOpts, "sourceId" | "sourceKind" | "attackFamily">> {
+    if (opts.sourceId && opts.sourceKind && opts.attackFamily) return {
+      sourceId: opts.sourceId, sourceKind: opts.sourceKind, attackFamily: opts.attackFamily,
+    };
+    let nearest: Enemy | null = null;
+    let nearestD = 7;
+    for (const enemy of this.ctx.enemies.living()) {
+      const d = Math.hypot(enemy.pos.x - srcX, enemy.pos.z - srcZ);
+      if (d < nearestD) { nearest = enemy; nearestD = d; }
+    }
+    if (nearest) {
+      const bossKind = nearest.kind === "boss" ? this.ctx.run.currentNode?.bossKind : undefined;
+      return {
+        sourceId: opts.sourceId ?? `${nearest.kind === "boss" ? "boss" : "enemy"}:${nearest.id}`,
+        sourceKind: opts.sourceKind ?? (bossKind ?? nearest.kind),
+        attackFamily: opts.attackFamily ?? (bossKind ? BOSS_ATTACK_FAMILY[bossKind] : ENEMY_ATTACK_FAMILY[nearest.kind]) ?? "enemy-contact",
+      };
+    }
+    const feature = this.ctx.run.currentNode?.feature;
+    const family: AttackFamily = feature === "sweeper" ? "hazard-sweeper"
+      : feature === "flamevent" ? "hazard-flame" : feature === "spikes" ? "hazard-spikes"
+      : feature === "drifters" ? "hazard-drifter" : "hazard-rift";
+    return { sourceId: opts.sourceId ?? `environment:${feature ?? "arena"}`, sourceKind: opts.sourceKind ?? "environment", attackFamily: opts.attackFamily ?? family };
+  }
+
+  private playerHitFx(dmg: number, srcX: number, srcZ: number, opts: PlayerDamageOpts, shielded = false): void {
+    const p = this.ctx.player;
+    const source = this.incomingPresentationSource(srcX, srcZ, opts);
+    const dx = p.pos.x - srcX;
+    const dz = p.pos.z - srcZ;
+    const len = Math.hypot(dx, dz) || 1;
+    this.ctx.events.emit("IMPACT_CUE", {
+      sourceId: source.sourceId,
+      sourceKind: source.sourceKind,
+      targetId: `hero:${p.hero.id}`,
+      targetKind: "hero",
+      attackFamily: source.attackFamily,
+      x: p.pos.x - (dx / len) * p.radius * 0.35,
+      y: 1,
+      z: p.pos.z - (dz / len) * p.radius * 0.35,
+      dirX: dx / len,
+      dirZ: dz / len,
+      damage: dmg,
+      color: shielded ? 0x8bdcff : 0xff8b7d,
+      strength: shielded ? "critical" : dmg >= 16 ? "heavy" : "light",
+      element: shielded ? "frost" : ATTACK_ELEMENT[source.attackFamily] ?? "rift",
+      shielded,
+      killed: !shielded && p.hp <= 0,
+    });
+  }
+
   /**
    * Single entry point for damage to the player. Returns how it resolved so
    * sources can react (projectiles pass through perfect dodges, etc.).
@@ -200,6 +263,7 @@ export class Combat {
         player.shield = 0;
         events.emit("SHIELD_BROKEN", {});
       }
+      this.playerHitFx(dmg, srcX, srcZ, opts, true);
       return "shielded";
     }
 
@@ -218,6 +282,7 @@ export class Combat {
       this.ctx.stage.punch(0.6);
       this.ctx.sfx.coldCrash();
       events.emit("PLAYER_HIT", { dmg, srcX, srcZ });
+      this.playerHitFx(dmg, srcX, srcZ, opts);
       return "hit";
     }
 
@@ -235,6 +300,7 @@ export class Combat {
       this.ctx.stage.punch(0.6);
       this.ctx.sfx.coldCrash();
       events.emit("PLAYER_HIT", { dmg, srcX, srcZ });
+      this.playerHitFx(dmg, srcX, srcZ, opts);
       return "hit";
     }
 
@@ -243,6 +309,7 @@ export class Combat {
     player.flashHit();
     tempo.drain(10);
     events.emit("PLAYER_HIT", { dmg, srcX, srcZ });
+    this.playerHitFx(dmg, srcX, srcZ, opts);
     this.ctx.relics.onDamageTaken(srcX, srcZ);
 
     const dx = player.pos.x - srcX;
@@ -254,7 +321,9 @@ export class Combat {
     this.ctx.stage.punch(0.55);
     this.ctx.player.hitReaction(dx / len, dz / len); // directional body flinch (IDEAS-GRAPHICS #38)
     this.ctx.controller.push((dx / len) * 4, (dz / len) * 4);
-    this.ctx.floaters.spawn(player.pos.x, 1.9, player.pos.z, `-${Math.round(dmg)}`, "playerdmg");
+    // A lethal hit owns the whole death composition; a giant damage number only
+    // obscures it and can force the first player-damage text layout on that frame.
+    if (player.hp > 0) this.ctx.floaters.spawn(player.pos.x, 1.9, player.pos.z, `-${Math.round(dmg)}`, "playerdmg");
 
     if (player.hp <= 0) {
       player.alive = false;
@@ -264,58 +333,37 @@ export class Combat {
         count: 50, color: [0xffffff, 0x66ddff],
         speed: [3, 12], up: 0.8, size: [0.5, 1.1], life: [0.5, 1.2], gravity: -6, drag: 2,
       });
-      player.root.visible = false;
+      player.root.visible = true;
     }
     return "hit";
   }
 
   // ----------------------------------------------------------- deal damage
-  private enemyHitFx(e: Enemy, opts: DamageOpts, color: number, critical: boolean, killed: boolean): void {
-    const armored = e.kind === "bastion" || e.kind === "sentinel" || e.kind === "brute" || e.kind === "mirror";
-    const voidTouched = e.kind === "shade" || e.kind === "voidling" || e.kind === "warper" || e.kind === "boss";
+  private enemyHitFx(e: Enemy, opts: DamageOpts, color: number, critical: boolean, killed: boolean, shielded: boolean): void {
     const p = this.ctx.player;
     const dx = e.pos.x - p.pos.x;
     const dz = e.pos.z - p.pos.z;
     const dl = Math.hypot(dx, dz) || 1;
     const ix = e.pos.x - (dx / dl) * e.radius * 0.45;
     const iz = e.pos.z - (dz / dl) * e.radius * 0.45;
-    const palette = armored
-      ? [0xffe0a0, 0xffffff, color]
-      : voidTouched
-        ? [0x9a5cff, 0xe8e0ff, color]
-        : [0xffeeaa, color, critical ? 0xffffff : color];
-    this.ctx.fx.burst({
-      x: ix, y: armored ? 1.1 : 0.9, z: iz,
-      count: opts.heavy ? 12 : critical ? 10 : 6,
-      color: [0xffffff, opts.heavy ? 0xffcc66 : color],
-      speed: [1.5, opts.heavy || critical ? 9 : 6],
-      up: 0.25,
-      size: [0.16, opts.heavy ? 0.52 : 0.36],
-      life: [0.08, 0.22],
-      gravity: -5,
-      drag: 5,
-      jitter: 0.08,
-      shape: ParticleShape.streak, // hit sparks read as thin streaks, not dots (IDEAS-GRAPHICS #32)
+    this.ctx.events.emit("IMPACT_CUE", {
+      sourceId: `hero:${p.hero.id}`,
+      sourceKind: "hero",
+      targetId: `enemy:${e.id}`,
+      targetKind: e.kind,
+      attackFamily: opts.attackFamily ?? (this.stageIdx >= 0 ? this.currentFamily : "card"),
+      x: ix, y: e.kind === "boss" ? 1.25 : 0.95, z: iz,
+      dirX: dx / dl, dirZ: dz / dl,
+      damage: e.lastBodyDamage,
+      color: shielded ? 0xffd27a : color,
+      strength: killed ? "execute" : critical || shielded ? "critical" : opts.heavy ? "heavy" : "light",
+      element: "steel",
+      shielded,
+      killed,
     });
-    const count = killed ? 22 : opts.heavy ? 18 : critical ? 14 : 8;
-    this.ctx.fx.burst({
-      x: e.pos.x, y: armored ? 1.15 : voidTouched ? 1.08 : 1.0, z: e.pos.z,
-      count,
-      color: palette,
-      speed: [armored ? 3 : 2, opts.heavy ? 11 : critical ? 9 : 7],
-      up: armored ? 0.3 : voidTouched ? 0.85 : 0.5,
-      size: [0.28, opts.heavy || critical ? 0.9 : 0.68],
-      life: [0.15, voidTouched ? 0.52 : 0.38],
-      gravity: voidTouched ? -1.2 : -5,
-      drag: armored ? 4.4 : 3.4,
-      jitter: voidTouched ? 0.55 : 0.2,
-    });
-    if (opts.heavy) this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.8, color: 0xffffff, duration: 0.24 });
-    if (critical) this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: e.radius * 2.1, color, duration: 0.28 });
     // The floor keeps a record of the fight (IDEAS-GRAPHICS #29): kills crack it, heavy blows scorch it.
-    if (killed) this.ctx.decals.crack(e.pos.x, e.pos.z, e.radius * 1.3);
-    else if (opts.heavy) this.ctx.decals.scorch(e.pos.x, e.pos.z, e.radius);
-    if (armored) this.ctx.fx.burst({ x: e.pos.x, y: 0.75, z: e.pos.z, count: 6, color: [0xffffff, 0xffcc66], speed: [4, 9], up: 0.1, size: [0.18, 0.42], life: [0.12, 0.28], gravity: -8, drag: 5 });
+    if (!shielded && killed) this.ctx.decals.crack(e.pos.x, e.pos.z, e.radius * 1.3);
+    else if (!shielded && opts.heavy) this.ctx.decals.scorch(e.pos.x, e.pos.z, e.radius);
   }
 
   /** Every player-sourced hit on an enemy flows through here. */
@@ -339,6 +387,7 @@ export class Combat {
       const p = this.ctx.player;
       if (p.alive && p.hp < p.maxHp) { p.hp = Math.min(p.maxHp, p.hp + 2); events.emit("HEAL", { amount: 2 }); }
       this.ctx.floaters.spawn(e.pos.x, 2.3, e.pos.z, "EXECUTE", "tempo");
+      this.ctx.player.playExecution();
       this.ctx.fx.ring(e.pos.x, e.pos.z, { radius: 2.4, color: 0xffffff, duration: 0.3 });
       this.ctx.cam.addTrauma(0.16);
     }
@@ -354,8 +403,8 @@ export class Combat {
         String(dmg),
         opts.heavy || critical ? "crit" : "dmg"
       );
-      this.enemyHitFx(e, opts, zone.color, critical, killed);
     }
+    this.enemyHitFx(e, opts, zone.color, zone.zone === "critical", killed, e.lastHitShielded);
     events.emit("ENEMY_HIT", { x: e.pos.x, y: 1, z: e.pos.z, dmg: bodyDmg, heavy: !!opts.heavy, killed });
     if (opts.countCombo) this.swingHits++;
   }
@@ -405,7 +454,7 @@ export class Combat {
   }
 
   /** Sweep all living enemies inside an arc. Returns number hit. */
-  meleeSweep(arcCenter: number, arcWidth: number, range: number, dmg: number, kb: number, heavy: boolean): number {
+  meleeSweep(arcCenter: number, arcWidth: number, range: number, dmg: number, kb: number, heavy: boolean, attackFamily: AttackFamily = "card"): number {
     const p = this.ctx.player;
     let hits = 0;
     for (const e of this.ctx.enemies.living()) {
@@ -415,7 +464,7 @@ export class Combat {
       if (d > range + e.radius) continue;
       const ang = Math.atan2(dx, dz);
       if (Math.abs(angleDelta(arcCenter, ang)) > arcWidth / 2 + Math.atan2(e.radius, Math.max(0.5, d))) continue;
-      this.dealDamage(e, dmg, { kbX: dx, kbZ: dz, kb, heavy });
+      this.dealDamage(e, dmg, { kbX: dx, kbZ: dz, kb, heavy, attackFamily });
       hits++;
     }
     return hits;
@@ -423,7 +472,7 @@ export class Combat {
 
   /** Public slash-arc FX for cards that swing outside the basic chain. */
   slashVisual(arc: number, range: number, heavy: boolean): void {
-    this.spawnSlashArc({ dur: 0, dmg: 0, arc, range, kb: 0, heavy });
+    this.spawnSlashArc({ dur: 0, dmg: 0, arc, range, kb: 0, heavy, family: "card", strikePoint: 0 });
   }
 
   /** Instantly hide all slash arcs. The fade only ticks while playing, so the boot
@@ -460,7 +509,7 @@ export class Combat {
       const dx = e.pos.x - player.pos.x;
       const dz = e.pos.z - player.pos.z;
       if (Math.hypot(dx, dz) < R + e.radius) {
-        this.dealDamage(e, 8 * mult, { kbX: dx, kbZ: dz, kb: 8, heavy: true });
+        this.dealDamage(e, 8 * mult, { kbX: dx, kbZ: dz, kb: 8, heavy: true, attackFamily: "crash" });
       }
     }
     if (perfect) {
@@ -489,7 +538,7 @@ export class Combat {
     const p = this.ctx.player;
     const hero = p.hero;
     const range = 4.2;
-    const hits = this.meleeSweep(p.facing, Math.PI * 2, range, 40 * hero.meleeDmgMult, 14 * hero.kbMult, true);
+    const hits = this.meleeSweep(p.facing, Math.PI * 2, range, 40 * hero.meleeDmgMult, 14 * hero.kbMult, true, "charged-heavy");
     for (const e of this.ctx.enemies.living()) {
       if (Math.hypot(e.pos.x - p.pos.x, e.pos.z - p.pos.z) < range + e.radius) e.applyVulnerable(3, 1.25);
     }
@@ -586,16 +635,16 @@ export class Combat {
       const stage = CHAIN[this.stageIdx];
       this.swingT += dt;
       const phase = Math.min(1, this.swingT / stage.dur);
-      player.animSwing = { phase, heavy: stage.heavy };
+      player.animSwing = { phase, heavy: stage.heavy, stage: this.stageIdx };
 
-      if (!this.struck && phase >= STRIKE_POINT) {
+      if (!this.struck && phase >= stage.strikePoint) {
         this.struck = true;
         this.swingHits = 0;
         const hero = player.hero;
         const counter = this.counterWindow > 0;
         const hits = this.meleeSweep(
           player.facing, stage.arc, stage.range,
-          stage.dmg * hero.meleeDmgMult * (counter ? 1.75 : 1), stage.kb * hero.kbMult, stage.heavy
+          stage.dmg * hero.meleeDmgMult * (counter ? 1.75 : 1), stage.kb * hero.kbMult, stage.heavy, this.currentFamily
         );
         // Counter payoff: the armed strike lands hard — extra tempo + a clear read.
         if (counter && hits > 0) {
@@ -610,10 +659,6 @@ export class Combat {
         this.spawnSlashArc(stage);
         this.ctx.sfx.swing(this.stageIdx, hits > 0);
         if (hits > 0) {
-          const fx = Math.sin(player.facing);
-          const fz = Math.cos(player.facing);
-          this.ctx.cam.kick(fx, fz, stage.heavy ? 4.5 : 2);
-          this.ctx.cam.addTrauma(stage.heavy ? 0.3 : 0.14);
           if (stage.heavy) this.ctx.tempo.gain(8);
         }
       }
@@ -652,9 +697,10 @@ export class Combat {
     this.stageIdx = idx;
     this.swingT = 0;
     this.struck = false;
+    this.currentFamily = this.ctx.player.hero.id === "blade" ? CHAIN[idx].family : heroAttackFamily(this.ctx.player.hero.id);
     // Small forward step into the swing — keeps melee aggressive
     const p = this.ctx.player;
-    const step = CHAIN[idx].heavy ? 1.4 : 2.2;
+    const step = idx === 0 ? 2.35 : idx === 1 ? 1.7 : 1.15;
     this.ctx.controller.push(Math.sin(p.facing) * step, Math.cos(p.facing) * step);
   }
 

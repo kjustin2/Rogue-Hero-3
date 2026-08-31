@@ -9,6 +9,33 @@ const _lead = new THREE.Vector3();
 const FOV_SETTINGS_MAX = 62;
 
 /**
+ * Authored gameplay lens. The old follow camera was almost overhead
+ * (15.5 high / 9.6 back), which flattened the procedural rigs and hid the
+ * basilica's vertical composition. This three-quarter lens keeps roughly the
+ * same arena coverage while making bodies, weapons, walls, and distant scenery
+ * read as a 3D space.
+ */
+export const GAMEPLAY_CAMERA_PROFILE = Object.freeze({
+  offsetX: 0,
+  offsetY: 11.5,
+  offsetZ: 14.2,
+  lookY: 0.75,
+  lookAhead: 0.22,
+});
+
+export interface GameplayCameraFraming {
+  mode: "follow" | "menu" | "cinematic";
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+  lookY: number;
+  lookAhead: number;
+  pitchDeg: number;
+  eyeDistance: number;
+  currentFov: number;
+}
+
+/**
  * Trauma-based follow camera. Shake intensity is trauma², so small hits whisper
  * and big hits roar. Directional kicks shove the camera opposite to impacts.
  */
@@ -16,7 +43,7 @@ export class CameraRig {
   /** What the camera chases (player during runs, arena center in menus). */
   readonly target = new THREE.Vector3();
   /** Fraction of the way toward the aim point the camera leads (0 = none). */
-  lookAhead = 0.22;
+  lookAhead = GAMEPLAY_CAMERA_PROFILE.lookAhead;
   aimPoint = new THREE.Vector3();
 
   private trauma = 0;
@@ -32,6 +59,8 @@ export class CameraRig {
   shakeScale = 1;
   private cineTarget = new THREE.Vector3();
   private cineZoom = 0.62;
+  private cineRate = 2.6;
+  private cineLookY = 1.6;
   private zoom = 1;
   // Cinematic language (#45): flat, near-eye-level framing blended in during a cinematic
   // hold (instead of just shrinking the steep gameplay offset), plus a slow angular drift
@@ -46,7 +75,12 @@ export class CameraRig {
   private orbitHeight = 13;
   private orbitLookY = 1.5;
 
-  private offset = new THREE.Vector3(0, 15.5, 9.6);
+  private offset = new THREE.Vector3(
+    GAMEPLAY_CAMERA_PROFILE.offsetX,
+    GAMEPLAY_CAMERA_PROFILE.offsetY,
+    GAMEPLAY_CAMERA_PROFILE.offsetZ,
+  );
+  private followLookY = GAMEPLAY_CAMERA_PROFILE.lookY;
   // Speed pull-back (#49) / tempo framing (#46): damped FOV + dolly deltas driven by
   // setSpeed()/setTempo(), released back to zero at rest / low tempo.
   private speedFrac = 0;
@@ -95,6 +129,23 @@ export class CameraRig {
     this.tempoFrac = clamp01(frac);
   }
 
+  /** Serializable presentation metric used by the screenshot/manifest gate. */
+  gameplayFraming(): GameplayCameraFraming {
+    const vertical = this.offset.y - this.followLookY;
+    const horizontal = Math.hypot(this.offset.x, this.offset.z);
+    return {
+      mode: this.mode,
+      offsetX: this.offset.x,
+      offsetY: this.offset.y,
+      offsetZ: this.offset.z,
+      lookY: this.followLookY,
+      lookAhead: this.lookAhead,
+      pitchDeg: Number((Math.atan2(vertical, horizontal) * 180 / Math.PI).toFixed(2)),
+      eyeDistance: Number(Math.hypot(vertical, horizontal).toFixed(2)),
+      currentFov: Number(this.camera.fov.toFixed(2)),
+    };
+  }
+
   /** Dutch-roll kick (#50) — small camera.up tilt (radians) that springs back in ~150-200ms. */
   kickRoll(amount: number): void {
     this.rollVel += amount;
@@ -107,9 +158,49 @@ export class CameraRig {
 
   /** Dolly toward a world point, pulled in close — boss entrances. */
   cinematic(x: number, z: number, zoom = 0.62): void {
+    // Every authored shot starts from a known composition. Repeated scenario cuts
+    // and boss beats must never inherit the accumulated orbit of the previous shot.
+    this.cineDrift = 0;
     this.mode = "cinematic";
     this.cineTarget.set(x, 0, z);
     this.cineZoom = zoom;
+    this.cineRate = 2.6;
+    this.cineLookY = 1.6;
+    // Reset every part of the lens preset. Previously a generic framing call
+    // made after `low-reveal` inherited that shot's close, low offset even
+    // though it supplied a wide zoom. That could leave a boss filling and
+    // clipping the entire gameplay frame. Scale the neutral offset with zoom
+    // so the public contract remains true: smaller zoom is closer.
+    const neutralScale = Math.max(0.58, Math.min(3, zoom / 0.62));
+    this.cineFlatOffset.set(0, 3.4 * neutralScale, 5.6 * neutralScale);
+  }
+
+  /** Deterministic presentation cut used by screenshot/debug scenarios. The
+   * shipped cinematic path still dollies; this places the same neutral lens
+   * immediately so a capture cannot inherit an earlier camera transition. */
+  cinematicSnap(x: number, z: number, zoom = 0.62): void {
+    this.cinematic(x, z, zoom);
+    this.smoothed.set(x, 0, z);
+    this.cineBlend = 1;
+    this.zoom = zoom;
+    this.update(0);
+  }
+
+  cinematicShot(
+    x: number, z: number, zoom: number,
+    preset: "wide" | "hero" | "threat" | "low-reveal" | "handoff" = "threat",
+    duration = 0.65,
+    easing: "linear" | "smooth" | "dramatic" = "smooth",
+  ): void {
+    this.cinematic(x, z, zoom);
+    this.cineRate = Math.max(1.4, (easing === "dramatic" ? 5.5 : easing === "linear" ? 3.4 : 4.5) / Math.max(0.2, duration));
+    if (preset === "wide") { this.cineFlatOffset.set(0, 6.2, 10.5); this.cineLookY = 1.45; }
+    else if (preset === "hero") { this.cineFlatOffset.set(-1.2, 2.8, 4.8); this.cineLookY = 1.2; }
+    // The Warden is more than three metres tall before its phase growth. A true
+    // low angle still needs enough distance to keep horns, fists and planted feet
+    // in frame instead of reading as an accidental extreme close-up.
+    else if (preset === "low-reveal") { this.cineFlatOffset.set(1.35, 2.75, 7.15); this.cineLookY = 1.45; }
+    else if (preset === "handoff") { this.cineFlatOffset.set(0, 5.6, 8.4); this.cineLookY = 1.0; }
   }
 
   /** Default wide arena orbit for menus. */
@@ -128,6 +219,16 @@ export class CameraRig {
     this.orbitRadius = 8;
     this.orbitHeight = 3.6;
     this.orbitLookY = 1.2;
+  }
+
+  /** Three-quarter title composition: readable hero with enough basilica context to feel placed. */
+  showcaseOrbit(x: number, z: number): void {
+    this.mode = "menu";
+    this.orbitAngle = 0.72;
+    this.orbitCenter.set(x, 0, z);
+    this.orbitRadius = 8.6;
+    this.orbitHeight = 4.1;
+    this.orbitLookY = 1.3;
   }
 
   update(dt: number): void {
@@ -163,7 +264,7 @@ export class CameraRig {
       dx = this.target.x + lead.x;
       dz = this.target.z + lead.z;
     }
-    const rate = cine ? 2.6 : 7;
+    const rate = cine ? this.cineRate : 7;
     this.smoothed.x = damp(this.smoothed.x, dx, rate, dt);
     this.smoothed.z = damp(this.smoothed.z, dz, rate, dt);
 
@@ -238,7 +339,7 @@ export class CameraRig {
     } else {
       this.camera.up.set(0, 1, 0); // settled — snap back exactly, no float creep
     }
-    this.camera.lookAt(this.smoothed.x + shakeX * 0.5, cine ? 1.6 : 0.5, this.smoothed.z + shakeZ * 0.5);
+    this.camera.lookAt(this.smoothed.x + shakeX * 0.5, cine ? this.cineLookY : this.followLookY, this.smoothed.z + shakeZ * 0.5);
 
     // FOV pulse decay, layered under the speed/tempo framing and gated by shakeScale (#51)
     this.fovPulse = Math.max(0, this.fovPulse - dt * 3.2);

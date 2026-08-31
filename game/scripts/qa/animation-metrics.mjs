@@ -39,7 +39,7 @@ const log = (...a) => console.log("[animation]", ...a);
 function analyze(fields, samples, dt) {
   const F = Object.fromEntries(fields.map((f, i) => [f, i]));
   let travel = 0, skateR = 0, skateL = 0, plantedR = 0, plantedL = 0;
-  let jitterSum = 0, jitterN = 0;
+  let jitterSum = 0, jitterN = 0, jitterMax = 0, jitterFrame = -1;
   const camSpeed = [];
   // Contact = the foot at its own height MINIMUM (the lift signal alone is zero
   // through the whole back-swing half-cycle and over-counts fast swing motion
@@ -67,7 +67,9 @@ function analyze(fields, samples, dt) {
       const q = samples[i - 2];
       const ax = (s[F.px] - 2 * p[F.px] + q[F.px]) / (dt * dt);
       const az = (s[F.pz] - 2 * p[F.pz] + q[F.pz]) / (dt * dt);
-      jitterSum += Math.hypot(ax, az);
+      const jitter = Math.hypot(ax, az);
+      jitterSum += jitter;
+      if (jitter > jitterMax) { jitterMax = jitter; jitterFrame = i; }
       jitterN++;
     }
   }
@@ -103,6 +105,8 @@ function analyze(fields, samples, dt) {
     skatePerMeter: travel > 0.5 ? +((skateR + skateL) / travel).toFixed(3) : 0,
     plantedFrames: plantedR + plantedL,
     jitterMs2: jitterN ? +(jitterSum / jitterN).toFixed(2) : 0,
+    jitterMaxMs2: +jitterMax.toFixed(2),
+    jitterFrame,
     sparc: sparc == null ? null : +sparc.toFixed(2),
   };
 }
@@ -122,7 +126,6 @@ async function record({ fault = null, frames = 150 } = {}) {
   // pillar — blocked-walking cycles the feet with no travel and poisons the ratio.
   await page.evaluate(`(()=>{ const p = window.${S}.player.pos; p.x = 0; p.z = 0; })()`);
   await page.evaluate(`window.${S}debug.frames(5, ${DT}); 0`);
-  await page.evaluate(`window.${S}debug.recordMotion(true); 0`);
   if (fault === "skate") {
     // Drag the world position WITHOUT the walk cycle: idle pose (feet planted)
     // while the body slides — the literal definition of foot-skate.
@@ -132,7 +135,7 @@ async function record({ fault = null, frames = 150 } = {}) {
       window.__qaSkateTick = d.frames.bind(d);
       d.frames = (n, dt) => { for (let i = 0; i < n; i++) { c.player.pos.x += 0.06; window.__qaSkateTick(1, dt); } return n; };
     })()`);
-    await page.evaluate(`window.${S}debug.frames(${frames}, ${DT}); 0`);
+    await page.evaluate(`window.${S}debug.recordMotion(true); window.${S}debug.frames(${frames}, ${DT}); window.${S}debug.recordMotion(false); 0`);
     await page.evaluate(`(()=>{ if (window.__qaSkateTick) { window.${S}debug.frames = window.__qaSkateTick; window.__qaSkateTick = null; } })()`);
   } else if (fault === "jitter") {
     await page.evaluate(`(()=>{
@@ -142,16 +145,17 @@ async function record({ fault = null, frames = 150 } = {}) {
       d.frames = (n, dt) => { for (let i = 0; i < n; i++) { c.player.pos.x += (Math.random() - 0.5) * 0.3; window.__qaJitTick(1, dt); } return n; };
     })()`);
     await page.keyboard.down("KeyW");
-    await page.evaluate(`window.${S}debug.frames(${frames}, ${DT}); 0`);
+    await page.evaluate(`window.${S}debug.recordMotion(true); window.${S}debug.frames(${frames}, ${DT}); window.${S}debug.recordMotion(false); 0`);
     await page.keyboard.up("KeyW");
     await page.evaluate(`(()=>{ if (window.__qaJitTick) { window.${S}debug.frames = window.__qaJitTick; window.__qaJitTick = null; } })()`);
   } else {
     await page.keyboard.down("KeyW");
-    await page.evaluate(`window.${S}debug.frames(${frames}, ${DT}); 0`);
+    // Arm, step and disarm in one JS task. Otherwise normal rAF frames can slip
+    // between Playwright commands and poison the fixed-dt acceleration metric.
+    await page.evaluate(`window.${S}debug.recordMotion(true); window.${S}debug.frames(${frames}, ${DT}); window.${S}debug.recordMotion(false); 0`);
     await page.keyboard.up("KeyW");
   }
   const m = await page.evaluate(`window.${S}debug.motion()`);
-  await page.evaluate(`window.${S}debug.recordMotion(false); 0`);
   return analyze(m.fields, m.samples, DT);
 }
 

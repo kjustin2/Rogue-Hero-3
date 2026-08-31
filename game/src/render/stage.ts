@@ -1,12 +1,11 @@
 import * as THREE from "three";
 import {
-  BloomEffect,
   BrightnessContrastEffect,
   EffectComposer,
   EffectPass,
+  FXAAEffect,
   HueSaturationEffect,
   RenderPass,
-  SMAAEffect,
   VignetteEffect,
   type Effect,
 } from "postprocessing";
@@ -20,8 +19,8 @@ export type Quality = "low" | "medium" | "high";
  * Owns renderer, scene, post-processing chain and screen-level feedback
  * (hurt vignette pulse). The post chain is rebuilt per
  * quality preset:
- *  - high:   full res (≤2× dpr), 2048 PCF shadows, bloom + grade + SMAA
- *  - medium: ≤1.5× dpr, 1024 shadows, bloom + grade + SMAA
+ *  - high:   full res (≤2× dpr), 2048 PCF shadows, grade + FXAA
+ *  - medium: ≤1.5× dpr, 1024 shadows, grade + FXAA
  *  - low:    1× dpr, no shadows, vignette + grade only
  */
 export class Stage {
@@ -39,10 +38,13 @@ export class Stage {
   /** MSAA is OFF by default: a real-GPU glitch-hunt (npm run glitch-hunt, NVIDIA/ANGLE/D3D11)
    *  proved hardware MSAA through the EffectComposer's multisampled target flickers the frame
    *  ~3/255 EVERY frame even on a frozen scene — a per-frame shimmer that headless SwiftShader
-   *  can't reproduce. That regressed the look on real GPUs; SMAA handles edge AA without it.
+   *  can't reproduce. FXAA also moved thousands of pixels in the temporal harness,
+   *  so the shipped path relies on quality-scaled DPR for stable edge quality.
    *  The bisection panel can still toggle it on for experimentation. */
   private msaaEnabled = false;
-  private smaaEnabled = true;
+  // Legacy debug key is still named `smaa`, but this now toggles optional FXAA.
+  // Off in production: both multisample and post-AA paths failed frozen-frame stability.
+  private smaaEnabled = false;
   quality: Quality = "high";
   /**
    * Resolution scale (render-target multiplier on the quality-capped device pixel
@@ -52,14 +54,13 @@ export class Stage {
    */
   private renderScale = 1;
 
-  /** Full chain used in combat/cutscenes (bloom, CA, grade, grain, SMAA per preset). */
+  /** Full chain used in combat/cutscenes (stable grade; optional debug FXAA). */
   private composer!: EffectComposer;
   /** Lean chain used behind menus/overlays: render + vignette + grade only. Built
    *  fresh (not the full chain with passes disabled) — a disabled trailing pass in
    *  `postprocessing` leaves the output unrouted and the screen crushes to black. */
   private menuComposer!: EffectComposer;
   private vignette!: VignetteEffect;
-  private bloom: BloomEffect | null = null;
   /** Combined split-tone / tempo-tint / mood / dither grade (full chain only). */
   private grade!: GradeEffect;
   private tintColor = new THREE.Color(1, 1, 1);
@@ -162,30 +163,25 @@ export class Stage {
     const h = window.innerHeight;
 
     // MSAA on the RenderPass target: true sub-pixel geometry AA. The high-contrast cyan
-    // edges on near-black were only 1px-jagged and CRAWLED/sizzled as the camera followed
-    // the player — the animated film grain used to mask that temporal edge crawl, so once
-    // the grain left it read as "glitching". SMAA (spatial post-AA) is not sub-pixel-stable
-    // enough to hold those edges under motion; hardware MSAA is. Scaled by preset.
+    // edges on near-black were only 1px-jagged and crawled as the camera followed
+    // the player. Hardware MSAA remains available only for diagnosis; the shipped
+    // path uses stable single-pass FXAA below. Scaled by preset.
     const msaa = this.msaaEnabled ? (this.quality === "high" ? 4 : this.quality === "medium" ? 2 : 0) : 0;
 
     // --- Full combat chain ---
     this.composer?.dispose();
-    this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
+    // With framebuffer bloom removed there is no HDR range to preserve. The
+    // half-float compositor showed broad color changes between frozen frames on
+    // the shipping ANGLE/D3D11 path; an 8-bit target is deterministic, cheaper,
+    // and matches the final display precision.
+    this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.UnsignedByteType, multisampling: msaa });
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
     const effects: Effect[] = [];
-    this.bloom = null;
-
-    if (this.quality !== "low") {
-      this.bloom = new BloomEffect({
-        intensity: 1.05,
-        luminanceThreshold: 0.32,
-        luminanceSmoothing: 0.25,
-        mipmapBlur: true,
-        radius: 0.7,
-      });
-      effects.push(this.bloom);
-    }
+    // No framebuffer bloom in the shipping chain. Repeated frozen-frame
+    // bisections on the real NVIDIA/ANGLE path named BloomEffect as the owner of
+    // broad pixel shimmer. Authored emissive materials and local impact sprites
+    // carry the glow language without a temporally unstable screen-space blur.
     // NO ChromaticAberrationEffect: its red/cyan edge fringing crawled on every silhouette
     // as the camera moved and read as a "glitch" (worst toward the screen edges via radial
     // modulation). Removed entirely — the neon look holds without RGB-splitting the edges.
@@ -208,18 +204,21 @@ export class Stage {
     // wanted, it must be a STATIC (uv-only, no time) grain — never the animated NoiseEffect.
     this.composer.addPass(new EffectPass(this.camera, ...effects));
     if (this.smaaEnabled && this.quality !== "low") {
-      this.composer.addPass(new EffectPass(this.camera, new SMAAEffect()));
+      // SMAA's multi-pass lookup path showed a measurable frozen-frame shimmer
+      // on the shipping NVIDIA/ANGLE path. FXAA is a single deterministic pass;
+      // DPR scaling retains the fine procedural detail without temporal crawling.
+      this.composer.addPass(new EffectPass(this.camera, new FXAAEffect()));
     }
     this.composer.setSize(w, h);
 
     // --- Lean menu chain ---
     // Just render + vignette + grade. No bloom (its mipmap blur crushes the menu's
     // subtle starfield/aurora to near-black — dropping it makes the rift backdrop
-    // read *richer*), no grain, no SMAA. Combined with shadows-off in menu mode this
+    // read *richer*), no grain, no FXAA. Combined with shadows-off in menu mode this
     // is both the look we want behind the menus and a big perf win. Built as its own
     // chain so the final pass actually routes to screen (see menuComposer doc).
     this.menuComposer?.dispose();
-    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
+    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.UnsignedByteType, multisampling: msaa });
     this.menuComposer.addPass(new RenderPass(this.scene, this.camera));
     this.menuComposer.addPass(new EffectPass(
       this.camera,
@@ -322,14 +321,14 @@ export class Stage {
    *  strip render features one-by-one on real hardware to pinpoint a GPU-specific glitch. */
   setDebug(name: "bloom" | "msaa" | "smaa" | "shadows" | "env" | "fog" | "grade" | "vignette", on: boolean): void {
     switch (name) {
-      case "bloom": if (this.bloom) this.bloom.intensity = on ? 1.05 : 0; break;
+      case "bloom": break; // intentionally unavailable in the stable shipping chain
       case "grade": this.grade.blendMode.opacity.value = on ? 1 : 0; break;
       case "vignette": this.vignette.blendMode.opacity.value = on ? 1 : 0; break;
       case "shadows": this.keyLight.castShadow = on && !this.lowCost && this.quality !== "low"; break;
       case "env": this.scene.environment = on ? this.envTex : null; break;
       case "fog": this.scene.fog = on ? this.fog : null; break;
-      case "msaa": this.msaaEnabled = on; this.buildPost(); break;
-      case "smaa": this.smaaEnabled = on; this.buildPost(); break;
+      case "msaa": if (this.msaaEnabled !== on) { this.msaaEnabled = on; this.buildPost(); } break;
+      case "smaa": if (this.smaaEnabled !== on) { this.smaaEnabled = on; this.buildPost(); } break;
     }
   }
 
@@ -381,6 +380,36 @@ export class Stage {
     }
   }
 
+  /** Boot-grade warm-up. `renderer.compile()` may return while ANGLE's parallel
+   * shader linker is still working; drawing newly linked enemy programs during
+   * that window can produce missing/incorrect frames on real GPUs. Await the
+   * renderer's completion-aware path before the loader is allowed to reveal. */
+  async warmUpAsync(): Promise<void> {
+    const prevCast = this.keyLight.castShadow;
+    try {
+      this.keyLight.castShadow = this.quality !== "low";
+      await this.renderer.compileAsync(this.scene, this.camera);
+      // Postprocessing shaders are not covered by WebGLRenderer.compileAsync.
+      // Give ANGLE a few presented frames to finish those links too; otherwise
+      // the first combat frames can phase while the FXAA/grade programs settle.
+      for (let i = 0; i < 3; i++) {
+        this.composer.render(0.016);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      this.keyLight.castShadow = false;
+      await this.renderer.compileAsync(this.scene, this.camera);
+      for (let i = 0; i < 2; i++) {
+        this.menuComposer.render(0.016);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } catch {
+      // Older/limited WebGL implementations still get the synchronous fallback.
+      this.warmUp();
+    } finally {
+      this.keyLight.castShadow = prevCast;
+    }
+  }
+
   /**
    * Warm only the menu render path: in-scene materials (shadows off) plus the lean
    * menuComposer's fused EffectPass, which is a *distinct* GL program from the full
@@ -395,6 +424,22 @@ export class Stage {
       this.renderer.compile(this.scene, this.camera);
       this.menuComposer.render(0.016);
     } catch { /* headless / lost ctx */ } finally {
+      this.keyLight.castShadow = prevCast;
+    }
+  }
+
+  async warmMenuAsync(): Promise<void> {
+    const prevCast = this.keyLight.castShadow;
+    try {
+      this.keyLight.castShadow = false;
+      await this.renderer.compileAsync(this.scene, this.camera);
+      for (let i = 0; i < 2; i++) {
+        this.menuComposer.render(0.016);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+    } catch {
+      this.warmMenu();
+    } finally {
       this.keyLight.castShadow = prevCast;
     }
   }

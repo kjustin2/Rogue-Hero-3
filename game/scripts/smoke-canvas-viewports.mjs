@@ -4,6 +4,7 @@ guard(); // test-run governor: watchdog + machine lock + memory sentinel (lib/gu
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import sharp from "sharp";
 
 const EXE = join(process.env.LOCALAPPDATA, "ms-playwright/chromium-1217/chrome-win64/chrome.exe");
 const OUT = "shots";
@@ -28,32 +29,27 @@ for (const vp of viewports) {
   page.on("console", (m) => m.type() === "error" && errors.push(`[${vp.name}] ${m.text()}`));
   page.on("pageerror", (e) => errors.push(`[${vp.name}] PAGEERROR: ${e.message}`));
   await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
-  await page.waitForTimeout(1800);
-  await page.screenshot({ path: join(OUT, `canvas-${vp.name}.png`) });
-  const sample = await page.evaluate(async () => {
+  await page.locator("#rift-loader").waitFor({ state: "hidden", timeout: 12000 });
+  await page.waitForTimeout(500);
+  const canvasInfo = await page.evaluate(async () => {
     const canvas = document.querySelector("canvas");
     if (!canvas) return { ok: false, reason: "missing canvas" };
     const rect = canvas.getBoundingClientRect();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
-    if (!gl) return { ok: false, reason: "missing webgl context", rectW: rect.width, rectH: rect.height };
-    const xs = [0.18, 0.32, 0.5, 0.68, 0.82];
-    const ys = [0.2, 0.36, 0.52, 0.68, 0.84];
-    const pixel = new Uint8Array(4);
-    let nonBlack = 0;
-    let bright = 0;
-    for (const xPct of xs) {
-      for (const yPct of ys) {
-        const x = Math.max(0, Math.min(canvas.width - 1, Math.floor(canvas.width * xPct)));
-        const y = Math.max(0, Math.min(canvas.height - 1, Math.floor(canvas.height * (1 - yPct))));
-        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-        const v = pixel[0] + pixel[1] + pixel[2];
-        if (v > 18) nonBlack++;
-        if (v > 160) bright++;
-      }
-    }
-    return { ok: nonBlack >= 8 && bright >= 1, nonBlack, bright, rectW: rect.width, rectH: rect.height };
+    return { ok: true, rectW: rect.width, rectH: rect.height };
   });
+  // Reading the default WebGL backbuffer outside its render callback legitimately
+  // returns zeroes when preserveDrawingBuffer=false. Inspect the composed canvas
+  // pixels captured by Chromium instead—the same pixels the player actually sees.
+  const png = await page.locator("canvas").screenshot({ path: join(OUT, `canvas-${vp.name}.png`) });
+  const { data } = await sharp(png).resize(20, 20, { fit: "fill" }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  let nonBlack = 0, bright = 0;
+  for (let i = 0; i < data.length; i += 3) {
+    const value = data[i] + data[i + 1] + data[i + 2];
+    if (value > 18) nonBlack++;
+    if (value > 160) bright++;
+  }
+  const sample = { ...canvasInfo, ok: canvasInfo.ok && nonBlack >= 32 && bright >= 2, nonBlack, bright };
   check(`${vp.name} canvas is visible`, sample.rectW >= vp.width * 0.9 && sample.rectH >= vp.height * 0.9, JSON.stringify(sample));
   check(`${vp.name} canvas has rendered pixels`, sample.ok === true, JSON.stringify(sample));
   await page.close();

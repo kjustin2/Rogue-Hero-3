@@ -20,10 +20,10 @@ const check = (name, ok, extra = "") => {
 
 await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
 await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
-await page.waitForTimeout(1200);
+await page.locator("#rift-loader").waitFor({ state: "hidden", timeout: 12000 });
 await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
 await page.waitForTimeout(600);
-await page.locator(".hero-card").first().click();
+await page.locator(".hero-card--active").click();
 await page.waitForTimeout(700);
 if (await page.locator(".story-skip").count()) await page.locator(".story-skip").click();
 await page.waitForTimeout(2200);
@@ -62,20 +62,16 @@ check(
 check("run is not silently stuck in playing state", resumedTarget.playing === false, `playing=${resumedTarget.playing}`);
 
 // Boss clear path: killing the first boss should advance to its delayed reward.
-await page.goto("http://localhost:5174", { waitUntil: "networkidle" });
-await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
-await page.waitForTimeout(1000);
-await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
-await page.waitForTimeout(600);
-await page.locator(".hero-card").first().click();
-await page.waitForTimeout(700);
-if (await page.locator(".story-skip").count()) await page.locator(".story-skip").click();
-await page.waitForTimeout(2200);
+// Reuse the initialized run context from the first half. Reloading here can restore
+// the just-written checkpoint before the test removes it, making UI navigation the
+// subject of what is meant to be a clear-transition regression probe.
 await page.evaluate(() => {
   window.__rh3menus.clear();
   window.__rh3.run.debugLoadBoss("warden", 1, 2024, 0);
 });
-await page.waitForTimeout(2900);
+await page.waitForTimeout(800);
+await page.keyboard.press("Space");
+await page.waitForFunction(() => window.__rh3.playing && !!window.__rh3.enemies.living().find((e) => e.kind === "boss"), null, { timeout: 10000 });
 const killedBoss = await page.evaluate(() => {
   const boss = window.__rh3.enemies.living().find((e) => e.kind === "boss");
   if (!boss) return false;
@@ -83,7 +79,10 @@ const killedBoss = await page.evaluate(() => {
   return true;
 });
 check("first boss can be killed through debug path", killedBoss === true);
-await page.waitForTimeout(5600);
+await page.waitForFunction(() => {
+  const text = (document.querySelector(".draft-title")?.textContent ?? "") + " " + (document.querySelector(".panel")?.textContent ?? "");
+  return /CHOOSE A CARD|CHOOSE A RELIC|CHOOSE YOUR PATH/i.test(text);
+}, null, { timeout: 12000 });
 const bossReward = await page.evaluate(() => {
   const title = document.querySelector(".draft-title")?.textContent ?? "";
   const panel = document.querySelector(".panel")?.textContent ?? "";

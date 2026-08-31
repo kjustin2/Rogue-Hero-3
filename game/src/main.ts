@@ -28,9 +28,9 @@ import { Controller } from "./game/controller";
 import { Tempo, ZONE_PALETTE } from "./game/tempo";
 import { Combat } from "./game/combat";
 import { Projectiles, HostileProjectiles } from "./game/projectiles";
-import { EnemyManager } from "./game/enemies";
+import { EnemyManager, type EnemyKind } from "./game/enemies";
 import "./game/enemies2"; // registers the Act II/III roster
-import { ROMAN } from "./game/run";
+import { ROMAN, type BossKind } from "./game/run";
 import { Relics } from "./game/relics";
 import { Profile, loadRunSave, writeRunSave, clearRunSave, type RunSave, type UnlockedItem } from "./game/profile";
 import { heroById, HEROES, type HeroDef } from "./game/heroes";
@@ -47,33 +47,41 @@ import { generatePlan } from "./game/mapgen";
 import { difficultyFor, MAX_DEPTH } from "./game/difficulty";
 import { freshStats, type Ctx } from "./game/ctx";
 import { PerfMonitor } from "./debug/perfMonitor";
+import { AssetRegistry } from "./presentation/assetRegistry";
+import { VfxDirector } from "./presentation/vfxDirector";
+import { CinematicDirector } from "./presentation/cinematicDirector";
+import type { CinematicBeat, CinematicSequence, ActorVisualState } from "./presentation/types";
+import { ACT_SET_PROFILES, ATTACK_ELEMENT, ATTACK_PRESENTATION, BOSS_ATTACK_FAMILY, BOSS_PRESENTATION, ENEMY_PRESENTATION, HERO_PRESENTATION } from "./presentation/profiles";
 
 type GameState = "menu" | "playing" | "paused" | "draft" | "cutscene" | "dead" | "victory";
 
 const STORY_LINES = [
-  "A hundred years ago the Rift tore open beneath the kingdom, and a terrible light came pouring out of the dark.",
-  "That light burned the world. It also became our every gift — our power, our wonder. It made the Rift-sworn. It made you.",
-  "Three wardens were sworn to keep its heart. The kingdom calls them monsters now, and sends you to break them.",
-  "Descend, Rift-sworn. Reach the core. End what began here — whatever it costs.",
+  "The Rift opened beneath the kingdom. Its terrible light remade the world.",
+  "Three wardens bound that light below. A century later, we call them monsters.",
+  "You are Rift-sworn. Descend into the Basilica — and learn what they still guard.",
 ];
 
 /** Story beats shown as a short cutscene when you cross into a new act (2–5). */
 const ACT_STORY: Record<number, string[]> = {
   2: [
-    "The Pit Warden is broken — yet it does not curse you. It weeps. “You don't know what you're ending,” it breathes, and goes still.",
-    "Far above, a shattered spire sings with caged lightning. The second warden has guarded this way for a hundred years.",
+    "The Pit Warden does not curse you. It only weeps.",
+    "Above, the Shattered Spire cages a century of lightning.",
+    "You cross the broken ascent. Something in the glass is watching.",
   ],
   3: [
-    "The Spire Caster comes apart into falling sparks. “We were never your enemy,” its echoes sigh. “We were only the last to love the light.”",
-    "The floor melts to molten glass. In the burning heart of the world, the Colossus has kept its watch since the day it fell.",
+    "The Spire Caster falls as sparks. Its last echo calls the wardens innocent.",
+    "Below, the old foundry wakes and the chains begin to move.",
+    "You descend toward the Core, where a mountain still keeps watch.",
   ],
   4: [
-    "The Colossus stills at last. Across its chest, words worn nearly smooth: HERE WE KEEP THE LAST WARMTH OF THE WORLD.",
-    "The final seals fail. Beyond the broken world the Abyss yawns — and the Rift Tyrant lays down its crown rather than raise it against you.",
+    "The Colossus stills. Its armor names the warmth it died protecting.",
+    "The final seals fail, and the Sundered Abyss opens between worlds.",
+    "You cross the broken causeway toward a crown already set aside.",
   ],
   5: [
-    "“Go, then,” the Tyrant breathes, kneeling. “Put out the star. Be the hero they need. We were too weak to do it. Or too kind.”",
-    "At the end of all light waits the Hollow Star: the dying heart of the world, alone in the dark a hundred years, holding the cold back by itself.",
+    "The Tyrant kneels. It asks you to finish what the wardens could not.",
+    "One by one, the distant stars go dark around the Hollow Star.",
+    "You approach the final altar. The last light waits alone.",
   ],
 };
 /** Highest act whose transition story has already played this run (1 = opening covers act 1). */
@@ -104,6 +112,7 @@ const HERO_ENDING: Record<string, string> = {
   sparkmage: "The Sparkmage feels the borrowed lightning fade from their hands — and does not grieve it.",
   reaver: "The Reaver's fury, with nothing left to burn, goes quiet for the first time in years.",
   tempest: "The Tempest stops moving — just once — long enough to remember why it ran.",
+  revenant: "The Revenant feels the borrowed dead fall silent, and chooses to keep walking.",
 };
 
 /** Set true while the Unmaker is in its fading phase and can still be spared. */
@@ -137,6 +146,8 @@ ctx.events = new EventBus();
 ctx.rng = new Rng();
 ctx.input = new Input(canvas);
 ctx.fx = new Particles(ctx.stage.scene);
+ctx.assets = new AssetRegistry();
+ctx.vfx = new VfxDirector(ctx.stage.scene, ctx.fx);
 ctx.trail = new SwordTrail(ctx.stage.scene);
 ctx.tele = new Telegraphs(ctx.stage.scene);
 ctx.floaters = new Floaters(ctx.stage.camera);
@@ -184,9 +195,42 @@ ctx.features = new MapFeatures(ctx);
 ctx.tempo.decayScale = (v) => ctx.relics.tempoDecayMult(v);
 
 const hud = new Hud(ctx);
+ctx.presentation = new CinematicDirector({
+  run: (beat) => runSliceCinematicBeat(beat),
+  finish: () => finishCutscene(),
+});
+ctx.events.on("IMPACT_CUE", (cue) => {
+  ctx.vfx.impact(cue);
+  const family = ATTACK_PRESENTATION[cue.attackFamily];
+  const weight = (cue.strength === "light" ? 0.75 : cue.strength === "heavy" ? 1.25 : cue.strength === "critical" ? 1.65 : 2.15) * family.cameraWeight;
+  const motion = menus.settings.reduceMotion ? 0.22 : 1;
+  ctx.cam.kick(cue.dirX, cue.dirZ, weight * motion);
+  ctx.cam.addTrauma((0.035 + weight * 0.035) * motion);
+  if (cue.strength !== "light") ctx.stage.punch(0.08 * weight * motion);
+  if (cue.shielded) hud.flash("#ffd27a", 0.1);
+  else if (cue.strength === "critical" || cue.strength === "execute") hud.flash("#fff0c2", 0.08 + weight * 0.035);
+});
 const tutorial = new Tutorial(ctx, hud);
 let state: GameState = "menu";
 let inTutorial = false;
+type CoachTopic = "tempo" | "perfect-dodge" | "shield" | "draft" | "relic" | "shop" | "hone";
+const coached = new Set<CoachTopic>();
+const coach = (topic: CoachTopic, title: string, body: string): void => {
+  if (coached.has(topic) || inTutorial || state === "cutscene" || state === "dead" || state === "victory") return;
+  coached.add(topic);
+  hud.showCoach(title, body);
+};
+ctx.events.on("TEMPO_ZONE", ({ zone }) => {
+  if (zone !== "cold") coach("tempo", "TEMPO", "Keep landing hits to climb the dial. Spend 85+ Tempo with F for Crescendo.");
+});
+ctx.events.on("PERFECT_DODGE", () => coach("perfect-dodge", "PERFECT DODGE", "Evade at the last instant: your next strike becomes a gold counter."));
+ctx.events.on("SHIELD_GAINED", () => coach("shield", "SHIELD", "Gold shield absorbs incoming damage before your health."));
+ctx.events.on("DRAFT_OPEN", () => coach("draft", "DRAFT", "Choose one card for this run. Its slot becomes a new combat action."));
+ctx.events.on("RELIC_ADDED", () => coach("relic", "RELIC", "Relics reshape this run and remain active until it ends."));
+ctx.events.on("COACH_TRIGGER", ({ topic }) => {
+  if (topic === "shop") coach("shop", "RIFT MERCHANT", "Spend shards on immediate strength, or leave with them banked for later.");
+  else coach("hone", "HONING", "Hone a held card once to strengthen its effect for the rest of this run.");
+});
 // Latched the instant a run ends (death / victory). Blocks pause AND the
 // pause→Exit→checkpoint path so a win/death can't be undone by quitting during
 // the resolution delay. Reset at each startRun.
@@ -247,20 +291,41 @@ const unlock = () => {
 window.addEventListener("pointerdown", unlock);
 window.addEventListener("keydown", unlock);
 
-let combatWarmupDone = false;
+type FieldEnemyKind = Exclude<EnemyKind, "boss">;
+const ACT_ENEMY_WARM: Record<number, readonly FieldEnemyKind[]> = {
+  1: ["husk", "spitter", "swarmer", "bomber", "splitter", "sentinel"],
+  2: ["wisp", "tether", "bastion", "shade", "leaper", "harrier", "mirror"],
+  3: ["leaper", "bomber", "caster", "swarmer", "bastion", "shade", "brute"],
+  4: ["harrier", "brute", "splitter", "caster", "bastion", "leaper", "mirror"],
+  5: ["voidling", "warper", "caster", "harrier", "brute", "mirror", "shade"],
+};
+const ACT_BOSS_WARM: Record<number, readonly BossKind[]> = {
+  1: ["warden"], 2: ["spire"], 3: ["colossus"], 4: ["tyrant", "echo"], 5: ["unmaker", "wound"],
+};
+const warmedActs = new Set<number>();
+const warmingActs = new Set<number>();
 let combatWarmupScheduled = false;
-function warmCombatShaders(): void {
-  if (combatWarmupDone) return;
-  combatWarmupDone = true;
-  combatWarmupScheduled = false;
+async function warmActShaders(act: number): Promise<void> {
+  if (warmedActs.has(act) || warmingActs.has(act)) return;
+  warmingActs.add(act);
   ctx.caster.precompile();
-  ctx.enemies.precompile();
+  try {
+    await ctx.enemies.precompile(ACT_ENEMY_WARM[act] ?? ACT_ENEMY_WARM[1]);
+    await ctx.run.warmBosses(ACT_BOSS_WARM[act] ?? []);
+    warmedActs.add(act);
+  } finally {
+    warmingActs.delete(act);
+  }
+}
+function warmCombatShaders(): void {
+  combatWarmupScheduled = false;
+  void warmActShaders(ctx.run.currentNode?.act ?? 1);
 }
 
 function scheduleCombatWarmup(): void {
-  if (combatWarmupDone || combatWarmupScheduled) return;
+  if (warmedActs.has(1) || warmingActs.has(1) || combatWarmupScheduled) return;
   combatWarmupScheduled = true;
-  window.setTimeout(() => warmCombatShaders(), 140);
+  window.setTimeout(() => { combatWarmupScheduled = false; void warmActShaders(1); }, 140);
 }
 
 // ---------------------------------------------------------------- state flow
@@ -269,6 +334,7 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   ctx.sfx.stopAmbient();
   ctx.stats = resume ? resume.stats : freshStats();
   ctx.player.applyHero(hero, ctx.profile.data.equipped.cape, ctx.profile.data.equipped.blade);
+  ctx.player.setVictoryPose(false);
   ctx.profile.setLastHero(hero.id);
   ctx.player.alive = true;
   ctx.player.shield = 0;
@@ -347,9 +413,11 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
   ctx.projectiles.clear();
   ctx.hostiles.clear();
   ctx.caster.clear();
+  ctx.fx.clear();
+  ctx.vfx.clear();
   ctx.arena.setObstacles([], 0);
   ctx.player.pos.set(0, 0, 6);
-  ctx.player.facing = Math.PI;
+  ctx.player.facing = 0.45;
   ctx.cam.snapTo(0, 6);
   state = "cutscene";
   ctx.input.enabled = false;
@@ -369,6 +437,11 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
       count: 4, color: [0xff7733, 0x55ccff], speed: [0.4, 2], up: 2.4, size: [0.25, 0.6], life: [0.9, 1.7], gravity: 0.3, drag: 1.1, jitter: 0.6,
     });
   }, 200);
+  const introShots = [
+    { x: 0, z: -12, zoom: 0.9, preset: "wide" as const, composition: "courtyard" as const },
+    { x: 0, z: -7, zoom: 0.67, preset: "threat" as const, composition: "reliquary" as const },
+    { x: ctx.player.pos.x, z: ctx.player.pos.z, zoom: 0.7, preset: "hero" as const, composition: "nave" as const },
+  ];
   menus.storyIntro(STORY_LINES, () => {
     window.clearInterval(introFx);
     menus.clear();
@@ -376,6 +449,10 @@ function startRun(hero: HeroDef, resume?: RunSave): void {
     ctx.fx.ambientRate = 7;
     hud.setVisible(true);
     presentFork();
+  }, 0, 0, (idx) => {
+    const shot = introShots[Math.min(idx, introShots.length - 1)];
+    ctx.arena.setBasilicaComposition(shot.composition);
+    ctx.cam.cinematicShot(shot.x, shot.z, shot.zoom, shot.preset, 0.75, "smooth");
   });
   scheduleCombatWarmup();
 }
@@ -418,6 +495,8 @@ function releaseInterludeWords(): void {
   interlude.locked = false;
   interlude.hint.remove();
   ctx.sfx.cardReady();
+  ctx.cam.mode = "follow";
+  ctx.cam.snapTo(ctx.player.pos.x, ctx.player.pos.z);
   hud.banner("STEP INTO A LIGHT", "", "banner--clear");
   for (const pad of interlude.pads) ctx.fx.ring(pad.x, pad.z, { radius: 2.0, color: pad.color, duration: 0.6 });
 }
@@ -523,6 +602,10 @@ function takeInterludePad(pad: { x: number; z: number; kind: "mend" | "shards"; 
 }
 
 function playActTransition(node: { act: number; actName: string; theme: keyof typeof THEMES }, onDone: () => void): void {
+  // Warm only the roster the player is about to meet, behind this authored
+  // transition. First boot remains bounded to Act I instead of compiling the
+  // entire five-act game before the main menu appears.
+  void warmActShaders(node.act);
   state = "playing"; // a real playable beat — the hero walks the causeway
   ctx.input.enabled = false; // held frozen until the act's words come and go (see release timer)
   hud.setVisible(true);
@@ -536,6 +619,7 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   ctx.features.clear();
   const theme = THEMES[node.theme];
   ctx.arena.applyTheme(theme);
+  ctx.arena.setActComposition(node.act, "noncombat");
   ctx.fx.ambientColor = theme.ember;
   ctx.fx.ambientRate = 14;
 
@@ -611,10 +695,21 @@ function playActTransition(node: { act: number; actName: string; theme: keyof ty
   const timers: number[] = [];
   const wordTimers: number[] = [];
   const lines = [...(ACT_STORY[node.act] ?? [])];
-  const LINE_START = 4200, LINE_GAP = 6200, LAMENT_MS = 8200; // last line uses banner--lament (8.2s dwell)
-  wordTimers.push(window.setTimeout(() => hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long"), 500));
+  const LINE_START = 3400, LINE_GAP = 4200, LAMENT_MS = 4200;
+  wordTimers.push(window.setTimeout(() => {
+    ctx.arena.setActComposition(node.act, "combat");
+    ctx.cam.cinematicShot(0, -6.5, menus.settings.reduceMotion ? 0.78 : 0.88, "wide", 0.75, "smooth");
+    hud.banner(`ACT ${ROMAN[node.act - 1] ?? node.act}`, node.actName, "banner--long");
+  }, 500));
   lines.forEach((line, i) => {
-    wordTimers.push(window.setTimeout(() => hud.banner(line, "", "banner--long banner--lament"), LINE_START + i * LINE_GAP));
+    wordTimers.push(window.setTimeout(() => {
+      ctx.arena.setActComposition(node.act, i === 0 ? "combat" : i === 1 ? "elite" : "boss");
+      const x = i === 1 ? -4.8 : 0;
+      const z = i === 0 ? -5.5 : i === 1 ? -7.5 : -9;
+      const zoom = menus.settings.reduceMotion ? 0.78 : i === 2 ? 0.62 : 0.72;
+      ctx.cam.cinematicShot(x, z, zoom, i === 2 ? "low-reveal" : "threat", 0.68, "dramatic");
+      hud.banner(line, "", "banner--long banner--lament");
+    }, LINE_START + i * LINE_GAP));
   });
   // Release the hero once the last word has come and gone (or a click gets there first).
   const wordsEndMs = lines.length ? LINE_START + (lines.length - 1) * LINE_GAP + LAMENT_MS : 3200;
@@ -765,6 +860,8 @@ function startTutorial(): void {
   ctx.projectiles.clear();
   ctx.hostiles.clear();
   ctx.caster.clear();
+  ctx.fx.clear();
+  ctx.vfx.clear();
   ctx.arena.applyTheme(THEMES.rift);
   ctx.arena.setObstacles([], 0);
   ctx.fx.ambientColor = THEMES.rift.ember;
@@ -808,6 +905,8 @@ function toMenu(): void {
   ctx.projectiles.clear();
   ctx.hostiles.clear();
   ctx.caster.clear();
+  ctx.fx.clear();
+  ctx.vfx.clear();
   ctx.features.clear();
   ctx.arena.setObstacles([], 0); // don't leave the last fight's pillars on the menu backdrop
   // Quitting mid-swing must not freeze the menu hero mid-attack: drop any
@@ -816,14 +915,14 @@ function toMenu(): void {
   ctx.combat.clearSlashVisuals();
   ctx.trail.clear();
   ctx.player.root.visible = true;
-  ctx.player.pos.set(0, 0, 5.2);
+  ctx.player.pos.set(0, 0, 3.8);
   ctx.player.facing = Math.PI;
   ctx.player.root.position.set(ctx.player.pos.x, ctx.player.pos.y, ctx.player.pos.z);
   ctx.player.root.rotation.y = ctx.player.facing;
-  ctx.cam.menuOrbit();
+  ctx.cam.showcaseOrbit(ctx.player.pos.x, ctx.player.pos.z);
   ctx.arena.applyTheme(THEMES.rift);
   ctx.arena.criticalHeat = 0; // don't carry a mid-run Critical surge into the menu
-  ctx.cam.snapTo(0, 5.2);
+  ctx.cam.snapTo(ctx.player.pos.x, ctx.player.pos.z);
   ctx.fx.ambientColor = THEMES.rift.ember;
   // The drifting embers are a big part of the menu's "deep rift" backdrop — keep
   // them rich (the pool is a single draw call); only trim slightly on the low preset.
@@ -1176,6 +1275,11 @@ ctx.events.on("ACT_START", ({ act, name }) => {
 ctx.events.on("ROOM_START", ({ isBoss, act, elite }) => {
   // Transient combat state never carries across a room boundary.
   ctx.combat.clearTransient();
+  ctx.arena.setActComposition(
+    act,
+    isBoss ? "boss" : elite ? "elite" : "combat",
+    isBoss ? ctx.run.currentNode?.bossKind : undefined,
+  );
   if (isBoss) {
     ctx.sfx.bossIntroSting();
     ctx.music.boss(act);
@@ -1252,6 +1356,12 @@ function trackCutsceneTemp<T extends THREE.Object3D>(obj: T): T {
 }
 
 function skipCutscene(): void {
+  const cine = ctx.presentation.state();
+  if (cine.active) {
+    if (cine.time < 0.45) return;
+    ctx.presentation.skip();
+    return;
+  }
   if (performance.now() < cutsceneSkipReadyTs) return;
   finishCutscene();
 }
@@ -1264,6 +1374,9 @@ function finishCutscene(): void {
   window.removeEventListener("pointerdown", skipCutscene);
   window.removeEventListener("keydown", skipCutscene);
   hud.setLetterbox(false);
+  hud.setCinematic(false);
+  hud.clearBanner();
+  ctx.presentation.cancel();
   ctx.arena.cutsceneDim = 0; // skip path: never leave the arena held dark
   ctx.cam.mode = "follow";
   ctx.input.enabled = true;
@@ -1271,6 +1384,10 @@ function finishCutscene(): void {
   cutsceneFreezeWorld = false;
   if (bossStormInterval !== null) { window.clearInterval(bossStormInterval); bossStormInterval = null; }
   clearCutsceneTemps();
+  // The authored reveal is the grace window. Once control returns the boss must
+  // visibly engage instead of standing inert for the unused remainder of its
+  // materialization timer (especially noticeable when pausing at the handoff).
+  ctx.enemies.living().find((e) => e.kind === "boss")?.releaseSpawnGrace();
   if (state === "cutscene") state = "playing";
 }
 
@@ -1285,7 +1402,7 @@ const BOSS_FX: Record<string, BossFxConfig> = {
     bannerClass: "banner--boss-spire", omen: "mirrors", phaseColor: 0x3effd2, phaseHex: "#aaffee",
   },
   colossus: {
-    zoom: 0.5, c1: 0xff3300, c2: 0xffaa44, hex: "#ffaa44",
+    zoom: 1.0, c1: 0xff3300, c2: 0xffaa44, hex: "#ffaa44",
     bannerClass: "banner--boss-colossus", omen: "fists", phaseColor: 0xff5500, phaseHex: "#ffaa44", seismic: true,
   },
   tyrant: {
@@ -1293,7 +1410,7 @@ const BOSS_FX: Record<string, BossFxConfig> = {
     bannerClass: "banner--boss-tyrant", omen: "reactor", phaseColor: 0x9a5cff, phaseHex: "#cbb6ff", tear: true,
   },
   unmaker: {
-    zoom: 0.66, c1: 0xb98cff, c2: 0xffffff, hex: "#e8e0ff",
+    zoom: 0.82, c1: 0x9874c8, c2: 0xd8cef0, hex: "#d8cef0",
     bannerClass: "banner--boss-unmaker", omen: "star", phaseColor: 0xb98cff, phaseHex: "#e8e0ff", tear: true, quiet: true,
   },
   echo: {
@@ -1302,7 +1419,7 @@ const BOSS_FX: Record<string, BossFxConfig> = {
   },
   wound: {
     zoom: 0.58, c1: 0xff2a4a, c2: 0xff9aa8, hex: "#ff5a6e",
-    bannerClass: "banner--boss-tyrant", omen: "claws", phaseColor: 0xff2a4a, phaseHex: "#ff5a6e", tear: true, seismic: true,
+    bannerClass: "banner--boss-wound", omen: "claws", phaseColor: 0xff2a4a, phaseHex: "#ff5a6e", tear: true, seismic: true,
   },
 };
 
@@ -1377,6 +1494,10 @@ function addBossOmen(kind: BossOmen, cfg: BossFxConfig, bx: number, bz: number, 
       root.add(ring);
     }
   } else if (kind === "gate") {
+    // This is an establishing seal, not an area attack. Keep it as a quiet coral
+    // read until the actual landing concentrates the brightness at contact.
+    primary.opacity = 0.36;
+    secondary.opacity = 0.22;
     for (let i = 0; i < 2; i++) {
       const ring = new THREE.Mesh(new THREE.TorusGeometry(2.1 + i * 0.7, 0.035, 8, 80), i ? secondary : primary);
       ring.position.y = 0.08 + i * 0.02;
@@ -1476,6 +1597,232 @@ function runBossBeat(beat: BossCutsceneBeat, cfg: BossFxConfig, bx: number, bz: 
     if (beat.fov) ctx.cam.pulseFov(beat.fov);
   } else if (beat.type === "reveal") revealBoss(cfg, beat.name, beat.title, bx, bz);
   else faceHeroToward(bx, bz);
+}
+
+function runSliceCinematicBeat(beat: CinematicBeat): void {
+  if (!bossCutscene) return;
+  if (beat.type === "camera") {
+    const zoom = menus.settings.reduceMotion ? Math.max(0.72, beat.zoom) : beat.zoom;
+    ctx.cam.cinematicShot(beat.x, beat.z, zoom, beat.preset, beat.duration, beat.easing);
+  } else if (beat.type === "hero-reaction") {
+    faceHeroToward(beat.x, beat.z);
+    if (!menus.settings.reduceMotion) ctx.player.hitReaction(-0.2, 1);
+  } else if (beat.type === "boss-action") {
+    const boss = ctx.enemies.living().find((e) => e.kind === "boss");
+    const kind = ctx.run.currentNode?.bossKind ?? "warden";
+    const cfg = BOSS_FX[kind] ?? BOSS_FX.warden;
+    if (beat.action === "gate") addBossOmen("gate", BOSS_FX.warden, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+    else if (beat.action === "drop") boss?.performCinematic("drop");
+    else if (beat.action === "land" && boss) {
+      boss.performCinematic("land");
+      ctx.decals.crack(boss.pos.x, boss.pos.z, 2.3);
+      ctx.fx.directionalBurst({
+        x: boss.pos.x, y: 0.18, z: boss.pos.z, count: 18,
+        color: [0xff7a3a, 0xffd27a], dirX: 0, dirY: 0.22, dirZ: 1,
+        spread: 1.1, speed: [3, 9], size: [0.25, 0.62], life: [0.2, 0.5],
+        gravity: -5, drag: 4, shape: 2,
+      });
+      if (!menus.settings.reduceMotion) { ctx.cam.addTrauma(0.38); ctx.stage.punch(0.28); }
+    } else if (beat.action === "drag" && boss) {
+      boss.performCinematic("drag");
+      ctx.decals.scorch(boss.pos.x, boss.pos.z + 1.15, 1.15);
+      ctx.fx.directionalBurst({
+        x: boss.pos.x, y: 0.12, z: boss.pos.z + 1.1, count: 9,
+        color: [0xff7a3a, 0x6b281d], dirX: 0.1, dirY: 0.12, dirZ: 1,
+        spread: 0.55, speed: [2, 6], size: [0.18, 0.42], life: [0.2, 0.42], gravity: -4, drag: 4,
+      });
+    } else if (beat.action === "phase" || beat.action === "last-stand") {
+      boss?.performCinematic(beat.action);
+    } else if (beat.action === "manifest" || beat.action === "rise") {
+      boss?.performCinematic(beat.action === "rise" ? "roar" : "phase");
+      // The Unmaker already carries a readable broken-ring silhouette. A second
+      // persistent orbit obscured the body, so its reveal uses only local motes.
+      if (cfg !== BOSS_FX.unmaker) addBossOmen(cfg.omen, cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+    } else if (beat.action === "channel") {
+      boss?.performCinematic("phase");
+      if (cfg !== BOSS_FX.unmaker) addBossOmen("beam", cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+    } else if (beat.action === "shatter") {
+      boss?.performCinematic("roar");
+      addBossOmen("mirrors", cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+      if (boss) bossBurst("shards", cfg, boss.pos.x, boss.pos.z);
+    } else if (beat.action === "ignite") {
+      boss?.performCinematic("land");
+      addBossOmen("fists", cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+      if (boss) bossBurst("seismic", cfg, boss.pos.x, boss.pos.z);
+    } else if (beat.action === "tear") {
+      boss?.performCinematic("phase");
+      addBossOmen("reactor", cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+      if (boss) bossBurst("tear", cfg, boss.pos.x, boss.pos.z);
+    } else if (beat.action === "mirror") {
+      boss?.performCinematic("phase");
+      addBossOmen("echoes", cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+      if (boss) bossBurst("shards", cfg, boss.pos.x, boss.pos.z);
+    } else if (beat.action === "strip") {
+      boss?.performCinematic("last-stand");
+      addBossOmen("claws", cfg, boss?.pos.x ?? 0, boss?.pos.z ?? -8);
+    } else if (beat.action === "roar") {
+      boss?.performCinematic("roar");
+      ctx.sfx.bossRoar();
+    }
+  } else if (beat.type === "impact") {
+    ctx.vfx.impact(beat.cue);
+    if (!menus.settings.reduceMotion) { ctx.cam.kick(beat.cue.dirX, beat.cue.dirZ, 3.2); ctx.cam.pulseFov(0.28); }
+  } else if (beat.type === "title") {
+    ctx.arena.cutsceneDim = 0;
+    hud.banner(beat.title, beat.subtitle, `banner--boss banner--long banner--cutscene ${beat.className}`);
+    ctx.sfx.bossIntroSting();
+    if (ctx.presentation.state().id?.startsWith("boss-intro:")) ctx.music.duckTo(1);
+  } else if (beat.type === "control-handoff") {
+    const boss = ctx.enemies.living().find((enemy) => enemy.kind === "boss");
+    boss?.holdPhaseRecovery(beat.recovery);
+    state = "playing";
+    ctx.input.enabled = true;
+    cutsceneFreezeWorld = false;
+    window.removeEventListener("pointerdown", skipCutscene);
+    window.removeEventListener("keydown", skipCutscene);
+  } else if (beat.type === "letterbox") hud.setLetterbox(beat.on);
+  else if (beat.type === "hud") hud.setCinematic(beat.hidden);
+  else if (beat.type === "environment") ctx.arena.cutsceneDim = beat.dim;
+  else if (beat.type === "sound") {
+    if (beat.cue === "roar") ctx.sfx.bossRoar();
+    else ctx.sfx.bossIntroSting();
+  }
+}
+
+function wardenIntroSequence(name: string, title: string, bx: number, bz: number): CinematicSequence {
+  const impact = {
+    sourceId: "arena:gate", sourceKind: "environment", targetId: "boss:warden", targetKind: "boss", attackFamily: "boss" as const,
+    x: bx, y: 0.75, z: bz, dirX: 0, dirZ: 1, damage: 0,
+    color: 0xff8a42, strength: "execute" as const, element: "fire" as const,
+    shielded: false, killed: false,
+  };
+  return {
+    id: "boss-intro:warden",
+    duration: 4.8,
+    skipTo: 2.76,
+    skipDuration: 0.6,
+    beats: [
+      { at: 0, type: "letterbox", on: true },
+      { at: 0, type: "hud", hidden: true },
+      { at: 0.02, type: "environment", dim: 0.72 },
+      { at: 0.08, type: "camera", x: 0, z: -8.8, zoom: 0.86, preset: "wide", duration: 0.72, easing: "smooth" },
+      { at: 0.28, type: "boss-action", action: "gate" },
+      { at: 0.7, type: "sound", cue: "riser" },
+      { at: 1.02, type: "camera", x: ctx.player.pos.x, z: ctx.player.pos.z, zoom: 0.7, preset: "hero", duration: 0.46, easing: "dramatic" },
+      { at: 1.15, type: "hero-reaction", x: bx, z: bz },
+      { at: 1.62, type: "boss-action", action: "drop" },
+      { at: 1.68, type: "camera", x: bx, z: bz + 0.8, zoom: 0.52, preset: "low-reveal", duration: 0.5, easing: "dramatic" },
+      { at: 1.94, type: "environment", dim: 0.35 },
+      { at: 2.05, type: "boss-action", action: "land" },
+      { at: 2.08, type: "impact", cue: impact },
+      { at: 2.28, type: "boss-action", action: "drag" },
+      { at: 2.56, type: "boss-action", action: "roar" },
+      { at: 2.76, type: "title", title: name, subtitle: title, className: `${BOSS_FX.warden.bannerClass} banner--slice` },
+      { at: 2.76, type: "environment", dim: 0 },
+      { at: 4.02, type: "camera", x: (bx + ctx.player.pos.x) * 0.5, z: (bz + ctx.player.pos.z) * 0.5, zoom: 0.76, preset: "handoff", duration: 0.62 },
+      { at: 4.48, type: "letterbox", on: false },
+    ],
+  };
+}
+
+function fullGameBossIntroSequence(kind: string, name: string, title: string, bx: number, bz: number): CinematicSequence {
+  if (kind === "warden") return wardenIntroSequence(name, title, bx, bz);
+  const cfg = BOSS_FX[kind] ?? BOSS_FX.warden;
+  const duration = kind === "spire" ? 4.6 : kind === "colossus" || kind === "wound" ? 5 : kind === "unmaker" ? 5.2 : kind === "echo" ? 4.2 : 4.8;
+  const action = kind === "spire" ? "shatter" as const : kind === "colossus" ? "ignite" as const
+    : kind === "tyrant" ? "tear" as const : kind === "unmaker" ? "channel" as const
+    : kind === "echo" ? "mirror" as const : kind === "wound" ? "strip" as const : "manifest" as const;
+  const revealAt = Math.min(duration - 1.7, kind === "echo" ? 2.34 : kind === "unmaker" ? 2.92 : 2.7);
+  const family = BOSS_ATTACK_FAMILY[kind] ?? "boss";
+  const bodyRevealZoom = kind === "spire" ? 0.9 : kind === "colossus" ? 1.35
+    : kind === "tyrant" ? 1.45 : kind === "unmaker" ? 1.85
+      : kind === "wound" ? 1.05 : kind === "echo" ? 1.0 : cfg.zoom;
+  const bodyRevealPreset = kind === "echo" ? "wide" as const : "threat" as const;
+  const impact = {
+    sourceId: `boss:${kind}`, sourceKind: kind, targetId: "arena:arrival", targetKind: "environment", attackFamily: family,
+    x: bx, y: kind === "spire" || kind === "unmaker" ? 1.35 : 0.42, z: bz, dirX: 0, dirZ: 1, damage: 0,
+    color: cfg.phaseColor, strength: kind === "colossus" || kind === "wound" ? "execute" as const : "critical" as const,
+    element: ATTACK_ELEMENT[family] ?? (kind === "colossus" ? "fire" as const : "rift" as const),
+    shielded: false, killed: false,
+  };
+  return {
+    id: `boss-intro:${kind}`,
+    duration,
+    skipTo: revealAt,
+    skipDuration: 0.6,
+    beats: [
+      { at: 0, type: "letterbox", on: true },
+      { at: 0, type: "hud", hidden: true },
+      { at: 0.02, type: "environment", dim: kind === "unmaker" ? 0.88 : 0.76 },
+      { at: 0.08, type: "camera", x: 0, z: -8.5, zoom: 0.86, preset: "wide", duration: 0.68, easing: "smooth" },
+      { at: 0.28, type: "boss-action", action: kind === "wound" ? "rise" : "manifest" },
+      { at: 0.72, type: "sound", cue: "riser" },
+      { at: 0.94, type: "camera", x: ctx.player.pos.x, z: ctx.player.pos.z, zoom: 0.72, preset: "hero", duration: 0.42, easing: "dramatic" },
+      { at: 1.08, type: "hero-reaction", x: bx, z: bz },
+      { at: 1.48, type: "camera", x: bx, z: bz + 0.65, zoom: bodyRevealZoom, preset: bodyRevealPreset, duration: 0.54, easing: "dramatic" },
+      { at: 1.72, type: "boss-action", action },
+      { at: revealAt - 0.24, type: "impact", cue: impact },
+      { at: revealAt, type: "title", title: name, subtitle: title, className: `${cfg.bannerClass} banner--slice` },
+      { at: revealAt, type: "environment", dim: kind === "spire" ? 0.25 : 0 },
+      { at: revealAt + 0.22, type: "boss-action", action: "roar" },
+      { at: duration - 0.72, type: "camera", x: (bx + ctx.player.pos.x) * 0.5, z: (bz + ctx.player.pos.z) * 0.5, zoom: 0.78, preset: "handoff", duration: 0.5, easing: "smooth" },
+      { at: duration - 0.58, type: "environment", dim: 0 },
+      { at: duration - 0.28, type: "letterbox", on: false },
+    ],
+  };
+}
+
+function bossPhaseSequence(
+  kind: string,
+  phase: number,
+  line: string,
+  bx: number,
+  bz: number,
+  cfg: BossFxConfig,
+): CinematicSequence {
+  const fading = phase >= 4;
+  const lastStand = kind === "warden" && phase >= 3;
+  const duration = 3.5;
+  const element = kind === "unmaker" ? "void" as const : kind === "spire" ? "rift" as const : "fire" as const;
+  const wardenPhase = kind === "warden";
+  const phaseZoom = wardenPhase ? (lastStand ? 0.9 : 0.82) : fading ? 0.72 : 0.68;
+  const phasePreset = wardenPhase ? "threat" as const : lastStand ? "low-reveal" as const : "threat" as const;
+  const beats: CinematicBeat[] = [
+    { at: 0, type: "letterbox", on: true },
+    { at: 0, type: "hud", hidden: true },
+    { at: 0.02, type: "environment", dim: fading || lastStand ? 0.58 : 0.38 },
+    { at: 0.04, type: "camera", x: bx, z: bz, zoom: phaseZoom, preset: phasePreset, duration: 0.45, easing: "dramatic" },
+  ];
+  if (!fading) beats.push({ at: 0.12, type: "boss-action", action: lastStand ? "last-stand" : "phase" }, { at: 0.16, type: "boss-action", action: "roar" });
+  beats.push(
+    { at: 0.25, type: "impact", cue: {
+      sourceId: `boss:${kind}`, sourceKind: "boss", targetId: "arena:phase", targetKind: "environment", attackFamily: "boss",
+      x: bx, y: fading ? 1.4 : 0.4, z: bz, dirX: 0, dirZ: 1, damage: 0,
+      color: fading ? cfg.c2 : cfg.phaseColor,
+      strength: fading ? "heavy" : "critical",
+      element,
+      shielded: false,
+      killed: false,
+    } },
+    {
+      at: 0.33,
+      type: "title",
+      title: line,
+      subtitle: fading ? "" : `PHASE ${phase}`,
+      className: `${cfg.bannerClass} ${fading ? "banner--lament" : "banner--phase-slice"}`,
+    },
+    { at: 0.58, type: "control-handoff", recovery: duration - 0.58 },
+    { at: duration - 0.52, type: "camera", x: (bx + ctx.player.pos.x) * 0.5, z: (bz + ctx.player.pos.z) * 0.5, zoom: 0.78, preset: "handoff", duration: 0.4 },
+    { at: duration - 0.34, type: "environment", dim: 0 },
+    { at: duration - 0.26, type: "letterbox", on: false },
+  );
+  return {
+    id: `boss-phase:${kind}:${phase}`,
+    duration,
+    skipTo: 0.5,
+    skipDuration: 0.6,
+    beats,
+  };
 }
 
 function buildBossIntroBeats(kind: string, cfg: BossFxConfig, name: string, title: string): BossCutsceneBeat[] {
@@ -1586,6 +1933,13 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
   ctx.arena.cutsceneDim = 1; // the room holds its breath until the reveal
   ctx.music.duckTo(0.35);
   faceHeroToward(bx, bz);
+  if (Object.prototype.hasOwnProperty.call(BOSS_FX, kind)) {
+    cutsceneSkipReadyTs = 0;
+    ctx.presentation.play(fullGameBossIntroSequence(kind, name, title, bx, bz));
+    window.addEventListener("pointerdown", skipCutscene);
+    window.addEventListener("keydown", skipCutscene);
+    return;
+  }
   const queueBeat = (t: number, fn: () => void) => cutsceneTimers.push(window.setTimeout(fn, t));
 
   bossStormInterval = window.setInterval(() => {
@@ -1622,7 +1976,6 @@ function playBossCutscene(kind: string, name: string, title: string, bx: number,
 ctx.events.on("BOSS_INTRO", ({ name, title, x, z }) =>
   playBossCutscene(ctx.run.currentNode?.bossKind ?? "warden", name, title, x, z));
 
-const PHASE_FLASH = ["#ff7a4a", "#ff7a4a", "#ffd24a", "#ff5a4a"];
 /** A short, punchy cinematic beat each time a boss escalates a phase. */
 function playBossPhaseCutscene(phase: number, line: string): void {
   if (state !== "playing") return; // never interrupt the entrance or other states
@@ -1632,59 +1985,23 @@ function playBossPhaseCutscene(phase: number, line: string): void {
   const cfg = BOSS_FX[kind] ?? BOSS_FX.warden;
   bossCutscene = true;
   cutsceneFreezeWorld = true; // hold the fight — the player can't act, so neither can the boss
-  cutsceneSkipReadyTs = performance.now() + (phase >= 4 ? 1500 : 900);
+  cutsceneSkipReadyTs = 0;
   state = "cutscene";
   ctx.input.enabled = false;
   hud.setLetterbox(true);
-  ctx.arena.cutsceneDim = 1; // dim under the escalation beat (fading phase stays dim throughout)
+  ctx.arena.cutsceneDim = phase >= 4 ? 0.55 : 0.42;
 
   if (phase >= 4) {
-    // The fading phase. No roar, no shake — the fight simply quiets, and the star sags.
+    // The fading phase keeps its lament and mercy state, but no longer locks
+    // input behind a long wall-clock dwell.
     musicLament = true;
     if (ctx.run.currentNode?.bossKind === "unmaker") unmakerFading = true; // mercy becomes possible
-    // Swap the driving boss-5 theme for the sad lament as the star dies.
     if (ctx.run.currentNode?.bossKind === "unmaker") ctx.music.bossFinale();
     ctx.music.duckTo(0.22);
-    ctx.cam.cinematic(boss.pos.x, boss.pos.z, 0.62);
-    ctx.cam.pulseFov(0.35);
-    hud.flash(cfg.quiet ? "#ffffff" : "#9fb4ff", cfg.quiet ? 0.22 : 0.28);
-    hud.banner(line, "", `banner--lament banner--long ${cfg.bannerClass}`);
-    addBossOmen(cfg.quiet ? "star" : cfg.omen, cfg, boss.pos.x, boss.pos.z, phase);
-    ctx.fx.ring(boss.pos.x, boss.pos.z, { radius: 6, color: cfg.quiet ? cfg.c2 : 0x8a9ad0, duration: 1.4 });
-    bossBurst(cfg.quiet ? "starfall" : "tear", cfg, boss.pos.x, boss.pos.z);
-    // The star's last words linger — hold the quiet long enough to read them in full.
-    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 7600));
   } else {
-    ctx.music.duckTo(0.5);
-    const bx = boss.pos.x, bz = boss.pos.z;
-    ctx.cam.cinematic(bx, bz, cfg.seismic ? 0.55 : 0.66);
-    ctx.sfx.bossRoar();
-    ctx.cam.addTrauma(cfg.seismic ? 0.8 : 0.62);
-    ctx.stage.punch(cfg.seismic ? 0.55 : 0.46);
-    ctx.cam.pulseFov(1.15);
-    hud.flash(cfg.phaseHex || (PHASE_FLASH[Math.min(phase, PHASE_FLASH.length - 1)] ?? "#ff7a4a"), 0.5);
-    hud.banner(line, `PHASE ${phase}`, `banner--boss banner--long banner--cutscene ${cfg.bannerClass}`);
-    addBossOmen(cfg.omen, cfg, bx, bz, phase);
-    // Staged eruption: white core-flash → themed shockwave → (520ms) column of light +
-    // a wider ring + a second jolt → (1050ms) a far outer shock + flash. Reads as the
-    // boss tearing itself up a tier, not a single ping.
-    ctx.fx.ring(bx, bz, { radius: 3.1, color: 0xffffff, duration: 0.4, startRadius: 0.5 });
-    ctx.fx.ring(bx, bz, { radius: 6, color: cfg.phaseColor, duration: 0.7 });
-    bossBurst(cfg.seismic ? "seismic" : cfg.tear ? "tear" : kind === "spire" ? "shards" : "summon", cfg, bx, bz);
-    cutsceneTimers.push(window.setTimeout(() => {
-      bossBurst("pillar", cfg, bx, bz);
-      ctx.fx.ring(bx, bz, { radius: 11, color: cfg.c1, duration: 0.55, startRadius: 4 });
-      ctx.cam.addTrauma(0.4); ctx.stage.punch(0.3);
-    }, 520));
-    cutsceneTimers.push(window.setTimeout(() => {
-      ctx.fx.ring(bx, bz, { radius: 16, color: cfg.c2, duration: 0.6, startRadius: 8 });
-      hud.flash(cfg.phaseHex || "#ffffff", 0.3);
-      ctx.cam.pulseFov(0.5);
-      ctx.arena.cutsceneDim = 0; // lights back up as the new phase asserts itself
-    }, 1050));
-    // Hold the phase banner up a beat or two longer so the line reads cleanly.
-    cutsceneTimers.push(window.setTimeout(() => finishCutscene(), 5800));
+    ctx.music.duckTo(0.58);
   }
+  ctx.presentation.play(bossPhaseSequence(kind, phase, line, boss.pos.x, boss.pos.z, cfg));
   window.addEventListener("pointerdown", skipCutscene);
   window.addEventListener("keydown", skipCutscene);
 }
@@ -1698,7 +2015,9 @@ ctx.events.on("HEAL", ({ amount }) => {
 
 ctx.events.on("RUN_VICTORY", () => {
   runResolved = true; // lock out pause/checkpoint through the resolution delay
+  hud.setCinematic(true);
   ctx.stage.setMood("victory"); // warm the frame + bloom the light (IDEAS-GRAPHICS #18)
+  ctx.player.setVictoryPose(true);
   // Not a fanfare — a quiet. The last light is out; let the music fall to nothing.
   ctx.music.silence();
   // Ascension reward: deeper clears bank far more shards (a reason to climb).
@@ -1764,6 +2083,7 @@ ctx.events.on("PLAYER_DIED", () => {
   // its skip listeners / letterbox / world-freeze don't stay armed over the death
   // screen (guarded no-op otherwise; mirrors BOSS_DEFEATED).
   finishCutscene();
+  hud.setCinematic(true);
   // Tear down anything a run-transition would: an in-flight interlude (its skip
   // button + 45s auto-cross), the Wound's ember ally, and the mercy prompt —
   // any of which would otherwise survive onto the death screen.
@@ -1772,6 +2092,12 @@ ctx.events.on("PLAYER_DIED", () => {
   hud.setSparePrompt(false, 0);
   unmakerFading = false;
   spareHold = 0;
+  // The run is resolved: hold enemy brains and clear live ordnance so the death
+  // composition is a readable aftermath, not another attack (and so an unseen
+  // first-use boss VFX cannot compile on the lethal-hit frame).
+  for (const enemy of ctx.enemies.living()) enemy.setSpawnGrace(2);
+  ctx.projectiles.clear();
+  ctx.hostiles.clear();
   ctx.music.silence();
   ctx.cam.addTrauma(0.7);
   ctx.stage.punch(1);
@@ -1864,6 +2190,9 @@ const runFrame = (now: number, forcedDt: number | null = null): void => {
   try {
   perf.begin(now);
   // Gamepad: poll every frame; Start toggles pause (works while paused, unlike the action layer)
+  // Phase-title timelines keep running after their early control handoff; the
+  // remaining beats are presentation-only while the boss stays warded.
+  if (ctx.presentation.state().active) ctx.presentation.update(dt);
   ctx.input.pollGamepad();
   if (ctx.input.pauseEdgeRaw()) {
     if (state === "playing") pause();
@@ -1876,42 +2205,43 @@ const runFrame = (now: number, forcedDt: number | null = null): void => {
   if (!ctx.playing) menuNav.update(dt);
 
   if (ctx.playing) {
-    ctx.stats.time += dt;
+    const gameDt = dt;
+    ctx.stats.time += gameDt;
     ctx.input.updateAim(ctx.stage.camera);
-    ctx.controller.update(dt);
-    ctx.combat.update(dt);
-    ctx.tempo.update(dt);
+    ctx.controller.update(gameDt);
+    ctx.combat.update(gameDt);
+    ctx.tempo.update(gameDt);
     ctx.cam.setTempo(ctx.tempo.value / 100); // tempo tightens the framing (IDEAS-GRAPHICS #46)
-    ctx.deck.update(dt);
-    ctx.caster.update(dt);
-    ctx.enemies.update(dt);
-    ctx.projectiles.update(dt);
-    ctx.hostiles.update(dt);
-    ctx.features.update(dt);
+    ctx.deck.update(gameDt);
+    ctx.caster.update(gameDt);
+    ctx.enemies.update(gameDt);
+    ctx.projectiles.update(gameDt);
+    ctx.hostiles.update(gameDt);
+    ctx.features.update(gameDt);
     // The causeway interlude is a non-combat beat with no loaded node; don't let
     // wave/clear logic tick under it. (In the real flow run-state is already
     // "cleared" here so update() no-ops — this just keeps the beat self-contained.)
     if (!interlude) ctx.run.update();
-    ctx.player.update(dt);
+    ctx.player.update(gameDt);
     updateContactShadows();
-    // Tempo colours the whole frame, not just the HUD (IDEAS-GRAPHICS #17). Stops
-    // once a run resolves so the death/victory mood grade owns the frame.
-    if (!runResolved) ctx.stage.setTempoTint(ctx.tempo.zone.color, 0.13);
+    // Tempo stays local to the hero, HUD, trails, and attacks. Whole-frame tinting
+    // made the arena background visibly phase between colours during ordinary play.
     // Sword ribbon while the blade is actually moving (chain or card swings)
     ctx.player.getBladePoints(trailTip, trailBase);
     ctx.trail.setColor(ctx.player.bladeColor);
-    ctx.trail.update(dt, trailTip, trailBase, ctx.combat.swinging || ctx.caster.swinging);
-    if (interlude) updateInterlude(dt);
-    if (emberAlly) updateEmberAlly(dt);
-    if (inTutorial) tutorial.update(dt);
+    ctx.trail.setStyle((HERO_PRESENTATION[ctx.player.hero.id] ?? HERO_PRESENTATION.blade).trail, ctx.tempo.value / 100);
+    ctx.trail.update(gameDt, trailTip, trailBase, ctx.combat.swinging || ctx.caster.swinging);
+    if (interlude) updateInterlude(gameDt);
+    if (emberAlly) updateEmberAlly(gameDt);
+    if (inTutorial) tutorial.update(gameDt);
     // Mercy: while the Hollow Star fades, holding the mercy input spares it instead of killing it.
     if (unmakerFading && !chosenMercy) {
       if (ctx.input.actionDown("mercy")) {
-        spareHold += dt;
+        spareHold += gameDt;
         hud.setSparePrompt(true, spareHold / SPARE_TIME);
         if (spareHold >= SPARE_TIME) doMercy();
       } else {
-        spareHold = Math.max(0, spareHold - dt * 1.5);
+        spareHold = Math.max(0, spareHold - gameDt * 1.5);
         hud.setSparePrompt(true, spareHold / SPARE_TIME);
       }
     }
@@ -1952,14 +2282,22 @@ const runFrame = (now: number, forcedDt: number | null = null): void => {
   }
 
   ctx.arena.update(dt);
+  ctx.vfx.update(dt);
   ctx.fx.update(dt);
   ctx.decals.update(dt); // scorch/crack marks fade on their own clock, even through death
   ctx.tele.update(dt);
   ctx.cam.update(dt);
+  ctx.arena.updateForegroundOcclusion(
+    dt,
+    ctx.stage.camera,
+    ctx.player.pos,
+    ctx.cam.mode === "follow" && (state === "playing" || state === "paused" || state === "draft"),
+  );
   ctx.stage.update(dt);
 
-  // Combat + cinematics get the full post chain at full rate; menus/overlays get
-  // the lean chain (no bloom/SMAA/grain/shadows) rendered at a capped frame rate.
+  // Combat + cinematics get the full post chain at full rate. Main-menu screens
+  // use the lean chain at a capped rate. In-run draft/pause overlays preserve the
+  // last combat frame instead of redrawing a world they cover/freeze.
   // While the loading screen is up, skip the visible render entirely (the loader
   // is opaque) so the menu's first real frame is already warm and never compiles.
   //
@@ -1968,12 +2306,18 @@ const runFrame = (now: number, forcedDt: number | null = null): void => {
   // there (drop shadows + switch composer) would relink every lit material on that
   // one live frame — the "killed by a boss → ~3-second freeze". Holding the full path
   // means no flip happens until `toMenu()`/retry has cleared the scene back to the
-  // (already-warm) menu, where the toggle is cheap.
+  // (already-warm) menu, where the toggle is cheap. Draft/pause likewise keep the
+  // combat shadow/program state, but submit no WebGL work until play resumes. This
+  // removes the first-draft shadow relink and makes the opaque map essentially free.
   if (!booting) {
-    const fullPath = ctx.playing || state === "cutscene" || state === "dead" || state === "victory";
+    const frozenOverlay = state === "draft" || state === "paused";
+    const fullPath = state !== "menu";
     ctx.stage.setLowCost(!fullPath);
-    if (fullPath) {
+    if (fullPath && !frozenOverlay) {
       ctx.stage.render(renderDt);
+      menuRenderAccum = 0;
+    } else if (frozenOverlay) {
+      // The canvas retains its last composited combat frame under the DOM overlay.
       menuRenderAccum = 0;
     } else {
       menuRenderAccum += dt;
@@ -2025,6 +2369,23 @@ window.setInterval(() => {
 // and pre-compile the menu + combat render paths — so the moment the loader lifts,
 // the menu is smooth and the first fight won't hitch on a first-use shader compile.
 const RIFT_LOADER_MIN_MS = 900;
+type BootPhase = "starting" | "menu" | "fonts" | "assets" | "combat" | "reveal" | "ready" | "error";
+interface BootReadiness {
+  ready: boolean;
+  phase: BootPhase;
+  error: string | null;
+  startedAt: number;
+  completedAt: number | null;
+}
+const bootReadiness: BootReadiness = {
+  ready: false,
+  phase: "starting",
+  error: null,
+  startedAt: performance.now(),
+  completedAt: null,
+};
+(window as unknown as { __rh3boot: BootReadiness }).__rh3boot = bootReadiness;
+
 async function boot(): Promise<void> {
   const loader = document.getElementById("rift-loader");
   const bar = loader?.querySelector<HTMLElement>(".rl-bar-fill") ?? null;
@@ -2041,12 +2402,14 @@ async function boot(): Promise<void> {
 
   try {
     // 1. Build the menu scene (rift theme, hero mesh, ambient embers, main-menu DOM).
+    bootReadiness.phase = "menu";
     toMenu();
     step(0.18, "Kindling the rift…");
     await paint();
 
     // 2. Webfonts — gate the reveal on these so the menu doesn't render in a
     //    fallback face and then reflow (FOUT). Bounded so a slow fetch can't hang.
+    bootReadiness.phase = "fonts";
     try {
       await Promise.race([
         Promise.all([
@@ -2063,8 +2426,10 @@ async function boot(): Promise<void> {
 
     // 3. Compile the menu render path (in-scene materials + lean menuComposer), and
     //    pre-paint the heavy hero-select DOM so its first open doesn't stall.
-    ctx.stage.warmMenu();
-    menus.warmHeroSelect();
+    bootReadiness.phase = "assets";
+    await ctx.assets.preloadSlice();
+    await ctx.stage.warmMenuAsync();
+    await menus.warmHeroSelect();
     step(0.62, "Lighting the embers…");
     await paint();
 
@@ -2072,9 +2437,10 @@ async function boot(): Promise<void> {
     //    menu↔combat and death transitions never compile on a live frame). Done in
     //    two yielded chunks so no single compile dominates a frame and the loader
     //    keeps animating. Latch first so any in-run warm call (node load) no-ops.
-    if (!combatWarmupDone) {
-      combatWarmupDone = true;
+    if (!warmedActs.has(1)) {
+      bootReadiness.phase = "combat";
       combatWarmupScheduled = false;
+      warmingActs.add(1);
       ctx.caster.precompile();
       step(0.74, "Sharpening the blades…");
       await paint();
@@ -2088,11 +2454,13 @@ async function boot(): Promise<void> {
       ctx.decals.crack(wp.x + 0.6, wp.z, 0.25);
       ctx.tele.ring(wp.x, wp.z, 0.15, 0.3, 0.05);
       ctx.tele.line(wp.x, wp.z, 0, 1, 0.15, 0.05);
-      ctx.enemies.precompile();
+      await ctx.enemies.precompile(ACT_ENEMY_WARM[1]);
       ctx.decals.clear();
       step(0.86, "Summoning the wardens…");
       await paint();
-      ctx.run.warmBosses();
+      await ctx.run.warmBosses(ACT_BOSS_WARM[1]);
+      warmingActs.delete(1);
+      warmedActs.add(1);
       step(0.92, "Binding the wardens…");
       await paint();
     }
@@ -2100,8 +2468,14 @@ async function boot(): Promise<void> {
     // 5. Let the (cool) loader read as intentional rather than a flash, then reveal.
     const elapsed = performance.now() - startedAt;
     if (elapsed < RIFT_LOADER_MIN_MS) await new Promise((r) => window.setTimeout(r, RIFT_LOADER_MIN_MS - elapsed));
+    bootReadiness.phase = "reveal";
     step(1, "Descend.");
-  } catch { /* never trap the player behind the loader */ }
+  } catch (error) {
+    // Do not trap the player, but make the failure explicit to the smoke gate.
+    bootReadiness.phase = "error";
+    bootReadiness.error = error instanceof Error ? error.message : String(error);
+    console.error("[rh3] boot warm-up failed; revealing fallback menu:", error);
+  }
 
   booting = false;
   // Apply the saved display mode + window resolution now that the window is live
@@ -2109,7 +2483,16 @@ async function boot(): Promise<void> {
   menus.applyInitialDisplay();
   if (loader) {
     loader.classList.add("rl-done");
-    window.setTimeout(() => loader.remove(), 700);
+    window.setTimeout(() => {
+      loader.remove();
+      bootReadiness.ready = bootReadiness.error === null;
+      bootReadiness.phase = bootReadiness.error === null ? "ready" : "error";
+      bootReadiness.completedAt = performance.now();
+    }, 700);
+  } else {
+    bootReadiness.ready = bootReadiness.error === null;
+    bootReadiness.phase = bootReadiness.error === null ? "ready" : "error";
+    bootReadiness.completedAt = performance.now();
   }
 }
 void boot();
@@ -2139,7 +2522,7 @@ void boot();
   const fxPanel = new EffectsPanel([
     { id: "msaa", label: "MSAA (4× hardware anti-alias)", hint: "OFF: caused real-GPU flicker", on: false, apply: (on) => ctx.stage.setDebug("msaa", on) },
     { id: "smaa", label: "SMAA (post anti-alias)", apply: (on) => ctx.stage.setDebug("smaa", on) },
-    { id: "bloom", label: "Bloom (glow)", apply: (on) => ctx.stage.setDebug("bloom", on) },
+    { id: "bloom", label: "Bloom (disabled)", hint: "OFF: caused frozen-frame shimmer", on: false, apply: (on) => ctx.stage.setDebug("bloom", on) },
     { id: "shadows", label: "Shadows", hint: "shadow-map flicker", apply: (on) => ctx.stage.setDebug("shadows", on) },
     { id: "env", label: "Env reflections (IBL)", hint: "view-dependent", apply: (on) => ctx.stage.setDebug("env", on) },
     { id: "rim", label: "Rim edge-light (fresnel)", hint: "view-dependent, on edges", apply: (on) => setRimEnabled(on) },
@@ -2166,7 +2549,7 @@ void boot();
   type DebugNode = Parameters<typeof ctx.run.debugLoadNode>[0];
   type DebugKind = Parameters<typeof ctx.enemies.spawn>[0];
   interface ScenarioOpts { act?: number; seed?: number; depth?: number; skipIntro?: boolean; frame?: boolean; zoom?: number; }
-  const BOSS_ACT: Record<string, number> = { warden: 1, spire: 2, colossus: 3, tyrant: 4, unmaker: 5, echo: 4 };
+  const BOSS_ACT: Record<string, number> = { warden: 1, spire: 2, colossus: 3, tyrant: 4, unmaker: 5, echo: 4, wound: 5 };
   const PHASE_FRAC: Record<string, number> = { p2: 0.66, p3: 0.32, p4: 0.1 };
   // Time-based (NOT frame-based) deferral: headless renderers can run the rAF loop
   // uncapped, so a frame-count budget burns through in a fraction of a second and
@@ -2179,11 +2562,169 @@ void boot();
     const tick = () => { if (livingBoss()) fn(); else if (performance.now() - t0 < ms) soon(tick, 60); };
     tick();
   };
+  const debugActorVisual: ActorVisualState = {
+    actorId: "hero:blade", actorKind: "hero", segment: "loop", segmentPhase: 0, attackFamily: null,
+    action: "idle", phase: 0, speed: 0, moveX: 0, moveZ: 0,
+    facing: 0, reaction: 0, frozen: false, alive: true,
+  };
 
   const debug = {
+    /** Presentation-only state. These probes intentionally exclude gameplay authority. */
+    presentation(): { vfx: ReturnType<typeof ctx.vfx.stats>; impact: ReturnType<typeof ctx.vfx.lastImpact>; cinematic: ReturnType<typeof ctx.presentation.state> } {
+      return { vfx: ctx.vfx.stats(), impact: ctx.vfx.lastImpact(), cinematic: ctx.presentation.state() };
+    },
+    presentationCatalog(): { heroes: string[]; enemies: string[]; bosses: string[]; acts: string[]; attacks: string[] } {
+      return {
+        heroes: Object.keys(HERO_PRESENTATION), enemies: Object.keys(ENEMY_PRESENTATION),
+        bosses: Object.keys(BOSS_PRESENTATION), acts: Object.keys(ACT_SET_PROFILES),
+        attacks: Object.keys(ATTACK_PRESENTATION),
+      };
+    },
+    assets(): ReturnType<typeof ctx.assets.status> { return ctx.assets.status(); },
+    actorVisual(): ActorVisualState { return { ...ctx.player.visualState(debugActorVisual) }; },
+    /** Presentation-only pose cut used by deterministic contact sheets. */
+    playerPose(action: "combo1" | "combo2" | "combo3" | "dodge" | "execution" | "victory" | "idle", phase = 0.5): ActorVisualState {
+      ctx.player.setVictoryPose(action === "victory");
+      ctx.player.animSwing = null;
+      ctx.player.animDodge = null;
+      if (action.startsWith("combo")) {
+        const stage = Number(action.slice(-1)) - 1;
+        ctx.player.animSwing = { phase: Math.max(0, Math.min(1, phase)), heavy: stage === 2, stage };
+      } else if (action === "dodge") {
+        ctx.player.animDodge = { phase: Math.max(0, Math.min(1, phase)), dirX: 0.7, dirZ: 0.7 };
+      } else if (action === "execution") ctx.player.playExecution();
+      ctx.player.animMoveAmount = 0;
+      for (let i = 0; i < 10; i++) ctx.player.update(1 / 60);
+      return { ...ctx.player.visualState(debugActorVisual) };
+    },
+    heroPose(heroId: string, action: "combo1" | "combo2" | "combo3" | "dodge" | "execution" | "victory" | "idle", phase = 0.5): ActorVisualState {
+      const equipped = ctx.profile.data.equipped;
+      ctx.player.applyHero(heroById(heroId), equipped.cape, equipped.blade);
+      ctx.player.setVictoryPose(action === "victory");
+      ctx.player.animSwing = null;
+      ctx.player.animDodge = null;
+      if (action.startsWith("combo")) {
+        const stage = Number(action.slice(-1)) - 1;
+        ctx.player.animSwing = { phase: Math.max(0, Math.min(1, phase)), heavy: stage === 2, stage };
+      } else if (action === "dodge") {
+        ctx.player.animDodge = { phase: Math.max(0, Math.min(1, phase)), dirX: 0.7, dirZ: 0.7 };
+      } else if (action === "execution") ctx.player.playExecution();
+      ctx.player.animMoveAmount = 0;
+      for (let i = 0; i < 10; i++) ctx.player.update(1 / 60);
+      return { ...ctx.player.visualState(debugActorVisual) };
+    },
+    enemyVisuals(): ActorVisualState[] {
+      return ctx.enemies.presenting().map((e) => ({ ...e.visualState(debugActorVisual) }));
+    },
+    currentBossMove(): string | null { return livingBoss()?.debugMove() ?? null; },
+    cameraFraming(): ReturnType<typeof ctx.cam.gameplayFraming> { return ctx.cam.gameplayFraming(); },
+    foregroundOcclusion(): ReturnType<typeof ctx.arena.foregroundOcclusion> { return ctx.arena.foregroundOcclusion(); },
+    actorFraming(): { id: string; inFrame: boolean; x: number; y: number; depth: number; width: number; height: number; minX: number; maxX: number; minY: number; maxY: number }[] {
+      const project = (id: string, root: THREE.Object3D, pos: THREE.Vector3, height: number) => {
+        const p = new THREE.Vector3(pos.x, pos.y + height, pos.z).project(ctx.stage.camera);
+        const world = new THREE.Box3();
+        const local = new THREE.Box3();
+        root.updateWorldMatrix(true, true);
+        root.traverseVisible((object) => {
+          const mesh = object as THREE.Mesh;
+          if (!mesh.isMesh || mesh.userData.floorLayer || mesh.userData.solidity === "fx") return;
+          const geometry = mesh.geometry;
+          if (!geometry.boundingBox) geometry.computeBoundingBox();
+          if (!geometry.boundingBox) return;
+          local.copy(geometry.boundingBox).applyMatrix4(mesh.matrixWorld);
+          world.union(local);
+        });
+        let minX = p.x, maxX = p.x, minY = p.y, maxY = p.y;
+        if (!world.isEmpty()) {
+          for (const x of [world.min.x, world.max.x]) for (const y of [world.min.y, world.max.y]) for (const z of [world.min.z, world.max.z]) {
+            const corner = new THREE.Vector3(x, y, z).project(ctx.stage.camera);
+            minX = Math.min(minX, corner.x); maxX = Math.max(maxX, corner.x);
+            minY = Math.min(minY, corner.y); maxY = Math.max(maxY, corner.y);
+          }
+        }
+        const width = maxX - minX;
+        const projectedHeight = maxY - minY;
+        return {
+          id,
+          inFrame: Number.isFinite(p.x) && Number.isFinite(p.y) && p.z >= -1 && p.z <= 1
+            && minX >= -0.94 && maxX <= 0.94 && minY >= -0.92 && maxY <= 0.92
+            && width <= 1.7 && projectedHeight <= 1.7,
+          x: Number(p.x.toFixed(3)), y: Number(p.y.toFixed(3)), depth: Number(p.z.toFixed(3)),
+          width: Number(width.toFixed(3)), height: Number(projectedHeight.toFixed(3)),
+          minX: Number(minX.toFixed(3)), maxX: Number(maxX.toFixed(3)),
+          minY: Number(minY.toFixed(3)), maxY: Number(maxY.toFixed(3)),
+        };
+      };
+      return [
+        project("hero", ctx.player.root, ctx.player.pos, 1.1),
+        ...ctx.enemies.presenting().map((enemy) => project(`enemy:${enemy.id}:${enemy.kind}`, enemy.root, enemy.pos, enemy.kind === "boss" ? 1.7 : 0.9)),
+      ];
+    },
+    hudState(): { visible: boolean; cinematic: boolean; bossReveal: boolean; combatChromeVisible: boolean } {
+      const root = document.getElementById("hud");
+      const visible = !!root && getComputedStyle(root).display !== "none";
+      const chrome = root?.querySelector<HTMLElement>(".plate");
+      return {
+        visible,
+        cinematic: root?.classList.contains("hud--cinematic") ?? false,
+        bossReveal: root?.classList.contains("hud--boss-reveal") ?? false,
+        combatChromeVisible: visible && !!chrome && getComputedStyle(chrome).display !== "none" && getComputedStyle(chrome).visibility !== "hidden",
+      };
+    },
+    floorLayering(): { ok: boolean; decorTop: number | null; gameplayBottom: number | null; clearance: number | null; decorCount: number; gameplayCount: number } {
+      let decorTop = -Infinity, gameplayBottom = Infinity, decorCount = 0, gameplayCount = 0;
+      const bounds = new THREE.Box3();
+      const effectivelyVisible = (object: THREE.Object3D): boolean => {
+        for (let current: THREE.Object3D | null = object; current; current = current.parent) if (!current.visible) return false;
+        return true;
+      };
+      ctx.stage.scene.updateMatrixWorld(true);
+      ctx.stage.scene.traverse((object) => {
+        const layer = object.userData.floorLayer;
+        if ((layer !== "decor" && layer !== "gameplay") || !effectivelyVisible(object)) return;
+        bounds.setFromObject(object);
+        if (bounds.isEmpty() || !Number.isFinite(bounds.min.y) || !Number.isFinite(bounds.max.y)) return;
+        if (layer === "decor") { decorTop = Math.max(decorTop, bounds.max.y); decorCount++; }
+        else { gameplayBottom = Math.min(gameplayBottom, bounds.min.y); gameplayCount++; }
+      });
+      const clearance = decorCount && gameplayCount ? gameplayBottom - decorTop : null;
+      return {
+        ok: clearance === null || clearance >= 0.008,
+        decorTop: decorCount ? Number(decorTop.toFixed(4)) : null,
+        gameplayBottom: gameplayCount ? Number(gameplayBottom.toFixed(4)) : null,
+        clearance: clearance === null ? null : Number(clearance.toFixed(4)),
+        decorCount,
+        gameplayCount,
+      };
+    },
+    transientFx(): { particles: ReturnType<typeof ctx.fx.stats>; telegraphs: ReturnType<typeof ctx.tele.stats>; impacts: ReturnType<typeof ctx.vfx.stats> } {
+      return { particles: ctx.fx.stats(), telegraphs: ctx.tele.stats(), impacts: ctx.vfx.stats() };
+    },
+    qaManifest(): Record<string, unknown> {
+      const framing = debug.actorFraming();
+      return {
+        capturedAt: new Date().toISOString(),
+        boot: { ...bootReadiness },
+        state,
+        cinematic: ctx.presentation.state(),
+        currentBossMove: debug.currentBossMove(),
+        cameraFraming: debug.cameraFraming(),
+        foregroundOcclusion: debug.foregroundOcclusion(),
+        actorFraming: framing,
+        allActorsFramed: framing.every((actor) => actor.inFrame),
+        floorLayering: debug.floorLayering(),
+        transientFx: debug.transientFx(),
+        telegraphs: ctx.tele.recent.slice(-16),
+        hud: debug.hudState(),
+        coaching: { taught: [...coached], remaining: ["tempo", "perfect-dodge", "shield", "draft", "relic", "shop", "hone"].filter((topic) => !coached.has(topic as CoachTopic)) },
+        frameErrors: frameErrorRing.slice(),
+        processCleanup: "verified by the guarded external runner",
+      };
+    },
     /** Cut to a named scenario. Returns true if the name was recognized. */
     scenario(name: string, opts: ScenarioOpts = {}): boolean {
       finishInterlude(null, false); // a debug jump must not leave interlude badges/timers lingering
+      hud.setVisible(true);
       const parts = String(name).split(":");
       switch (parts[0]) {
         case "boss": return debug.boss(parts[1], parts[2], opts);
@@ -2223,13 +2764,29 @@ void boot();
     enemy(kind: string, opts: ScenarioOpts = {}): boolean {
       ctx.run.debugLoadBoss("warden", 1, 424242, 1);
       whenBoss(() => {
-        skipCutscene();
+        // Debug portraits need a deterministic final cinematic state. The normal
+        // skip affordance has an intentional grace period; bypass it here through
+        // the director so the Warden title/HUD cannot leak into enemy portraits.
+        if (ctx.presentation.state().active) ctx.presentation.skip();
+        else finishCutscene();
         const b = livingBoss();
         if (b) { b.root.visible = false; b.setSpawnGrace(1e9); b.pos.x = 0; b.pos.z = -60; }
         ctx.enemies.spawn(kind as DebugKind, 0, 0, 0);
         ctx.player.pos.x = 26; ctx.player.pos.z = 26; ctx.player.hp = ctx.player.maxHp;
+        hud.clearBanner();
+        hud.setVisible(false);
+        soon(() => {
+          // Portrait subjects must not walk out of the authored composition
+          // while the cinematic camera finishes its damped handoff. Caster AI
+          // happened to hold position; melee silhouettes exposed the drift.
+          const subject = ctx.enemies.living().find((e) => e.kind !== "boss");
+          if (subject) {
+            subject.pos.set(0, 0, 0);
+            subject.setSpawnGrace(1e9);
+          }
+          if (opts.frame !== false) debug.frame(0, 0, opts.zoom ?? 0.36);
+        }, 100);
       });
-      if (opts.frame !== false) window.setTimeout(() => debug.frame(0, 0, opts.zoom ?? 0.36), 1500);
       return true;
     },
     /** Load any node kind: combat/elite/shop/treasure/rest/event. */
@@ -2245,16 +2802,21 @@ void boot();
     interludeLocked(): boolean | null { return interlude ? interlude.locked : null; },
     /** Dolly the cinematic camera onto a point (small zoom = closer). */
     frame(x = 0, z = 0, zoom = 0.5): void { ctx.cam.cinematic(x, z, zoom); },
+    /** Immediate deterministic variant for screenshot plates. */
+    frameNow(x = 0, z = 0, zoom = 0.5): void { ctx.cam.cinematicSnap(x, z, zoom); },
     /** Hand the camera back to gameplay follow. */
     follow(): void { ctx.cam.mode = "follow"; },
     /** Drop the active boss to a HP fraction (triggers its phase cutscene). */
     setBossPhase(frac: number): boolean { const b = livingBoss(); if (b) b.takeDamage(Math.max(1, Math.round(b.hp - b.maxHp * frac))); return !!b; },
+    /** Stage an authored boss move for deterministic telegraph/action galleries. */
+    setBossMove(move: string): boolean { return livingBoss()?.debugForceMove(move) ?? false; },
     /** Infinite HP: all incoming player damage is ignored. Defaults ON (and idempotent,
      *  so repeated calls keep it on); pass `false` to turn it off. Also tops you off.
      *  Returns the new state. */
     godmode(on = true): boolean {
       ctx.combat.god = on;
       ctx.player.hp = ctx.player.maxHp;
+      if (on) ctx.player.alive = true;
       return ctx.combat.god;
     },
     /** Clear all non-boss enemies. */

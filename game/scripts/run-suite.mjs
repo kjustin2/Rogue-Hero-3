@@ -5,7 +5,8 @@
 // timeout that tree-kills a hung child and moves on. The whole run sits under
 // the machine-wide guard lock, at below-normal priority, with a memory sentinel.
 //
-//   node scripts/run-suite.mjs core                 # the 6 high-signal smokes
+//   node scripts/run-suite.mjs develop              # one fast journey + screenshots
+//   node scripts/run-suite.mjs core                 # the 6 broader smokes
 //   node scripts/run-suite.mjs all                  # every smoke-*.mjs
 //   node scripts/run-suite.mjs visual               # flicker + visual families
 //   node scripts/run-suite.mjs electron             # builds, then the Electron fleet
@@ -39,14 +40,18 @@ const budgetFor = (f) => (BUDGET_MIN[f.replace(/\.mjs$/, "")] ?? BUDGET_MIN[f] ?
 const allSmokes = () => readdirSync(SCRIPTS_DIR).filter((f) => /^smoke-.*\.mjs$/.test(f)).sort();
 
 const CORE = ["smoke-browser.mjs", "smoke-flow.mjs", "smoke-upgrades.mjs", "smoke-bosses.mjs", "smoke-shields.mjs", "smoke-counter.mjs"];
-const VISUAL = ["shot-flicker.mjs", "smoke-visual-themes.mjs", "smoke-card-visuals.mjs", "smoke-enemy-visual.mjs", "smoke-player-animation.mjs", "smoke-polish.mjs"];
+const DEVELOP = ["smoke-browser.mjs"];
+const VISUAL = ["shot-flicker.mjs", "smoke-visual-themes.mjs", "smoke-card-visuals.mjs", "smoke-enemy-visual.mjs", "smoke-player-animation.mjs", "smoke-act1-presentation.mjs", "smoke-polish.mjs"];
+const PRESENTATION = ["smoke-visual-regressions.mjs", "smoke-gameplay-camera.mjs", "smoke-act1-presentation.mjs", "smoke-player-animation.mjs", "smoke-boss-cutscenes.mjs", "smoke-canvas-viewports.mjs"];
 // Electron fleet runs the BUILT game (needs dist/); `electron` binary, not node.
 const ELECTRON = ["smoke-electron.cjs", "smoke-display-electron.cjs"];
 const ELECTRON_WRAPPED = ["smoke-save-persist.mjs"]; // node scripts that spawn electron themselves
 
 const GROUPS = {
+  develop: () => DEVELOP,
   core: () => CORE,
   visual: () => VISUAL,
+  presentation: () => PRESENTATION,
   all: () => allSmokes(),
   electron: () => [...ELECTRON, ...ELECTRON_WRAPPED],
   release: () => [...new Set([...allSmokes(), ...VISUAL, ...ELECTRON, ...ELECTRON_WRAPPED])],
@@ -117,7 +122,7 @@ for (const file of files) {
   process.stdout.write(`[suite] ${file} … `);
   let r = await runOne(file);
   // Flake policy: one auto-retry on FAIL (same seed/config). Pass-on-retry is
-  // recorded as FLAKY — visible, tracked, but not a red run. A TIMEOUT is a hang,
+  // recorded as FLAKY for diagnosis and remains a red gate. A TIMEOUT is a hang,
   // not flake — no retry (it would just burn another full budget).
   if (r.status === "FAIL") {
     console.log(`FAIL in ${r.seconds}s — retrying once (flake check)`);
@@ -144,7 +149,8 @@ if (existsSync(join(GAME_DIR, "shots"))) {
 if (server.owned) { console.log("[suite] stopping dev server we started"); server.stop(); }
 
 // ── summary ─────────────────────────────────────────────────────────────────
-const failed = results.filter((r) => r.status !== "PASS" && r.status !== "FLAKY");
+// A retry is diagnostic only. Any first-attempt failure keeps the gate red.
+const failed = results.filter((r) => r.status !== "PASS");
 const flaky = results.filter((r) => r.status === "FLAKY");
 // Quarantine ledger: flaky scripts accumulate here until someone fixes the
 // underlying nondeterminism (usually a missing settle or a real race).

@@ -28,15 +28,29 @@ try {
     await sleep(2200);
     const theme = await page.evaluate(() => {
       const c = window.__rh3;
-      for (const e of c.enemies.living()) if (e.kind !== "boss") e.takeDamage(99999); // clear field
+      for (const e of c.enemies.living()) e.root.visible = false;
+      c.arena.setObstacles([], 0);
       c.player.pos.x = 0; c.player.pos.z = 8; c.player.hp = c.player.maxHp;
       return c.run.currentNode?.theme;
     });
     await sleep(400);
-    // Pull the camera back + look across the disc to show sky + edge dressing.
-    await page.evaluate(() => window.__rh3.cam.cinematic(0, -2, 1.9));
+    // Wide authored shot shows the irregular floor silhouette and distant set layers.
+    await page.evaluate(() => window.__rh3.cam.cinematicShot(0, -2, 1, "wide", 0.2, "linear"));
     await sleep(1400);
     await shot(`act${act}-${theme || "?"}`);
+  }
+
+  for (const special of [{ id: "echo", act: 4 }, { id: "wound", act: 5 }]) {
+    await page.evaluate(({ id, act }) => {
+      const c = window.__rh3;
+      c.arena.setActComposition(act, "boss", id);
+      for (const e of c.enemies.living()) e.root.visible = false;
+      c.arena.setObstacles([], 0);
+      c.player.pos.x = 0; c.player.pos.z = 8; c.player.hp = c.player.maxHp;
+      c.cam.cinematicShot(0, -2, 1, "wide", 0.2, "linear");
+    }, special);
+    await sleep(1400);
+    await shot(`${special.id}-set`);
   }
 } catch (err) {
   errors.push(`THREW: ${err.message}`);

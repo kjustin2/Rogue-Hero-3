@@ -4,6 +4,7 @@
  */
 export interface EventMap {
   ENEMY_HIT: { x: number; y: number; z: number; dmg: number; heavy: boolean; killed: boolean };
+  IMPACT_CUE: import("../presentation/types").ImpactCue;
   KILL: { x: number; z: number; kind: string };
   COMBO_HIT: { count: number };
   KILL_STREAK: { count: number };
@@ -40,6 +41,7 @@ export interface EventMap {
   UI_HOVER: Record<string, never>;
   UI_CLICK: Record<string, never>;
   DRAFT_OPEN: Record<string, never>;
+  COACH_TRIGGER: { topic: "shop" | "hone" };
   HEAL: { amount: number };
   /** Ascension true-final: the Unmaker fell at depth 3+, and the floor tears open. */
   WOUND_REVEAL: Record<string, never>;

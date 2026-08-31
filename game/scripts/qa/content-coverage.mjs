@@ -53,6 +53,9 @@ if (!SELFTEST) {
       // tight 9u). AoE cards knock husks out of range without killing them, so
       // re-park fresh husks right next to the player before EVERY cast.
       c.enemies.clearNonBosses();
+      // Delayed effects from the previous catalog item must not consume the
+      // fixed setup frames or kill this card's fresh targets.
+      c.caster.clear();
       const px = c.player.pos.x, pz = c.player.pos.z;
       for (const [dx, dz] of [[1.5, 0], [-1.5, 1], [0, 2]]) { try { c.enemies.spawn("husk", px + dx, pz + dz, 0); } catch {} }
       d.frames(4, 1/60);

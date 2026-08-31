@@ -27,7 +27,7 @@ await page.waitForTimeout(2500);
 const has = async (loc) => (await loc.count()) > 0;
 const click = async (loc) => { if (await loc.count()) { await loc.first().click(); await page.waitForTimeout(300); return true; } return false; };
 const kinds = new Set();
-let mapShot = false, victory = false;
+let mapShot = false, victory = false, mapLayoutOk = true;
 
 for (let step = 0; step < 520 && !victory; step++) {
   const st = await page.evaluate(() => {
@@ -42,7 +42,24 @@ for (let step = 0; step < 520 && !victory; step++) {
   if (await has(page.locator(".story-skip"))) { await click(page.locator(".story-skip")); continue; }
 
   if (await has(page.locator(".mapnode"))) {
-    if (!mapShot) { await page.screenshot({ path: "shots/x-map.png" }); mapShot = true; }
+    if (!mapShot) {
+      const layout = await page.evaluate(() => {
+        const rects = [...document.querySelectorAll(".mapnode")].map((node) => {
+          const r = node.getBoundingClientRect();
+          return { top: r.top, bottom: r.bottom, height: r.height };
+        });
+        const spread = (values) => Math.max(...values) - Math.min(...values);
+        return {
+          count: rects.length,
+          topSpread: rects.length ? spread(rects.map((r) => r.top)) : 999,
+          heightSpread: rects.length ? spread(rects.map((r) => r.height)) : 999,
+        };
+      });
+      mapLayoutOk = layout.count >= 2 && layout.topSpread <= 1 && layout.heightSpread <= 1;
+      console.log(`MAP ALIGNMENT: ${mapLayoutOk ? "OK" : "FAIL"} ${JSON.stringify(layout)}`);
+      await page.screenshot({ path: "shots/x-map.png" });
+      mapShot = true;
+    }
     // The pre-boss fork always offers rest, so a blind .first() pick would only ever
     // resolve rest. Prefer a NON-rest interstitial (shop/treasure/event) to exercise
     // those kinds; fall back to rest, then to a fight to keep progressing.
@@ -71,6 +88,7 @@ const list = [...kinds].sort().join(", ") || "(none)";
 console.log(`interstitial kinds resolved: ${list}`);
 console.log("VICTORY:", victory ? "OK" : "FAIL");
 console.log("INTERSTITIALS:", kinds.size >= 2 ? `OK (${kinds.size} kinds)` : `WEAK (${kinds.size})`);
+console.log("MAP OPTIONS LEVEL:", mapLayoutOk ? "OK" : "FAIL");
 console.log(errors.length ? `CONSOLE ERRORS (${errors.length}):\n` + errors.slice(0, 8).join("\n") : "NO CONSOLE ERRORS");
 await browser.close();
-process.exit(victory && kinds.size >= 2 && errors.length === 0 ? 0 : 1);
+process.exit(victory && kinds.size >= 2 && mapLayoutOk && errors.length === 0 ? 0 : 1);

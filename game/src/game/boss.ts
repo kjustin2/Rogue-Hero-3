@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Enemy, type EnemyKind } from "./enemies";
 import type { Ctx } from "./ctx";
+import { PIT_WARDEN_MOVE_PROFILE, bossRecoverySeconds, chooseBossMove, type BossRecoveryClass, type PitWardenMove } from "./bossMoves";
 
 interface FirePatch {
   x: number;
@@ -36,7 +37,10 @@ export class PitWarden extends Enemy {
   private leapFrom = new THREE.Vector3();
   private leapTo = new THREE.Vector3();
   private leapT = 0;
-  private slamCount = 0;
+  private actionCount = 0;
+  private lastMove: PitWardenMove | null = null;
+  private currentMove: PitWardenMove | null = null;
+  private currentRecovery: BossRecoveryClass = "standard";
   private attackCd = 0.5;
   private guardWarned = false;
   private coreMat: THREE.MeshStandardMaterial;
@@ -82,22 +86,35 @@ export class PitWarden extends Enemy {
 
     // Faint ember warmth on the hide/plates so the beast's upper body reads
     // instead of crushing to black above the molten mouth (audit finding).
-    const hide = this.stdMat(0x4a1d1d, 0x661410, 0.45);
-    const plate = this.stdMat(0x2a1518, 0xff6a2a, 0.12);
+    const hide = this.stdMat(0x9a4d42, 0xff512c, 0.62);
+    const plate = this.stdMat(0x76505a, 0xff7540, 0.5);
     const horn = this.stdMat(0xc9b8a0);
     // Brighter iron links catching the furnace heat — the "chained" pit demon is
     // the Warden's defining motif, so the bindings should actually read.
-    const chain = this.stdMat(0x281712, 0xff8a3a, 0.95);
-    const emberPlate = this.stdMat(0x3a0d06, 0xffaa44, 1.2);
-    this.coreMat = this.stdMat(0x331111, 0xff4422, 1.8);
-    this.eyeMat = this.stdMat(0x000000, 0xffaa22, 3);
+    const chain = this.stdMat(0x342019, 0xff8a3a, 0.7);
+    const emberPlate = this.stdMat(0x3a0d06, 0xff8a32, 0.72);
+    this.coreMat = this.stdMat(0x331111, 0xff4422, 1.15);
+    this.eyeMat = this.stdMat(0x000000, 0xffaa22, 2.2);
     this.hide = hide;
     this.plate = plate;
 
     // Massive torso, hunched forward
-    const torso = this.addMesh(new THREE.BoxGeometry(2.2, 1.7, 1.5), hide, 0, 1.7);
+    const torsoMat = this.stdMat(0xaa5548, 0xff5a32, 0.72);
+    const torso = this.addMesh(new THREE.BoxGeometry(2.2, 1.7, 1.5), torsoMat, 0, 1.7);
     torso.rotation.x = 0.25;
     this.core = this.addMesh(new THREE.BoxGeometry(1.0, 0.7, 0.5), this.coreMat, 0, 1.65, 0.78); // molten chest core
+    // The low reveal may look at the Warden from either side. Mirror the furnace
+    // cleft onto the back so its body never becomes a featureless black block.
+    this.addMesh(new THREE.BoxGeometry(0.72, 0.95, 0.16), this.coreMat, 0, 1.72, -0.82);
+    this.addMesh(new THREE.BoxGeometry(1.22, 0.11, 0.18), emberPlate, 0, 2.2, -0.84);
+    this.addMesh(new THREE.BoxGeometry(1.05, 0.11, 0.18), emberPlate, 0, 1.18, -0.84);
+    const braceGlow = this.stdMat(0x5a2418, 0xff7434, 1.6);
+    for (const z of [-1.02, 1.02]) {
+      for (let i = 0; i < 3; i++) {
+        const brace = this.addMesh(new THREE.BoxGeometry(1.28 - i * 0.12, 0.1, 0.07), braceGlow, 0, 1.34 + i * 0.42, z);
+        brace.rotation.z = (i - 1) * 0.08;
+      }
+    }
     // Layered frame around the core so the torso reads as armor over heat, not one block.
     this.addMesh(new THREE.BoxGeometry(1.18, 0.1, 0.16), emberPlate, 0, 2.03, 0.86);
     this.addMesh(new THREE.BoxGeometry(1.12, 0.1, 0.16), emberPlate, 0, 1.26, 0.86);
@@ -236,16 +253,16 @@ export class PitWarden extends Enemy {
       this.hide.color.set(0x5a1410);
       this.hide.emissive.set(0x8a1606);
       this.hide.emissiveIntensity = 0.5;
-      this.coreMat.emissive.set(0xff6622);
+      this.coreMat.emissive.set(0xff5522);
       this.eyeMat.emissive.set(0xffcc33);
     } else if (phase === 3) {
       this.setBossScale(1.15);
       this.eruptReveal(this.p3Crown);
       this.plate.emissive.set(0x551200);
-      this.plate.emissiveIntensity = 0.6;
-      this.coreMat.emissive.set(0xffaa44);
+      this.plate.emissiveIntensity = 0.36;
+      this.coreMat.emissive.set(0xff7a32);
       this.eyeMat.emissive.set(0xffffff);
-      this.eyeMat.emissiveIntensity = 4.5;
+      this.eyeMat.emissiveIntensity = 3.2;
     }
     // Re-baseline flash registration so hit-flash settles to the NEW look.
     for (const f of this.flashMats) {
@@ -409,24 +426,24 @@ export class PitWarden extends Enemy {
         this.tryContactDamageBoss();
         this.attackCd -= dt;
         if (this.attackCd <= 0) {
-          const k = this.slamCount;
+          const move = chooseBossMove(PIT_WARDEN_MOVE_PROFILE, this.phase, this.lastMove, d, this.ctx.rng.next());
+          this.lastMove = move.id;
+          this.currentMove = move.id;
+          this.currentRecovery = move.recovery;
           // An armored brace every 4th action (can't be bursted down).
-          if (k % 4 === 3) {
+          if (move.id === "guard") {
             this.beginGuard();
-          } else if (d > 8.5) {
+          } else if (move.id === "leap") {
             // The player is kiting — answer from range, or close the gap with a leap.
-            if (this.phase >= 2 && k % 2 === 0) this.beginLeap();
-            else this.beginFan();
-          } else if (this.phase >= 2 && k % 3 === 1) {
-            this.beginFissure();
-          } else if (this.phase >= 2 && k % 5 === 4) {
             this.beginLeap();
-          } else if (this.phase >= 3 && k % 6 === 2) {
+          } else if (move.id === "fissure") {
+            this.beginFissure();
+          } else if (move.id === "fan") {
             this.beginFan();
           } else {
             this.beginDashCombo();
           }
-          this.slamCount++;
+          this.actionCount++;
         }
         break;
       }
@@ -458,7 +475,7 @@ export class PitWarden extends Enemy {
             this.timer = 0.3;
           } else {
             this.state = "recover";
-            this.timer = 0.55;
+            this.timer = bossRecoverySeconds(this.currentRecovery);
           }
         }
         break;
@@ -493,7 +510,7 @@ export class PitWarden extends Enemy {
           this.wardShock(4.8, 18, 0xff7a3a);
           this.ctx.sfx.bossSlam();
           this.state = "recover";
-          this.timer = 0.6;
+          this.timer = bossRecoverySeconds(this.currentRecovery);
         }
         break;
 
@@ -502,7 +519,7 @@ export class PitWarden extends Enemy {
         if (this.timer <= 0) {
           this.fireFan();
           this.state = "recover";
-          this.timer = 0.5;
+          this.timer = bossRecoverySeconds(this.currentRecovery);
         }
         break;
 
@@ -510,7 +527,7 @@ export class PitWarden extends Enemy {
         if (this.timer <= 0) {
           this.eruptFissures();
           this.state = "recover";
-          this.timer = 0.55;
+          this.timer = bossRecoverySeconds(this.currentRecovery);
         }
         break;
 
@@ -548,7 +565,7 @@ export class PitWarden extends Enemy {
   }
 
   private beginDashCombo(): void {
-    this.dashesLeft = this.phase >= 3 ? 4 : 2;
+    this.dashesLeft = this.phase >= 3 ? 3 : 2;
     const tell = this.phase >= 3 ? 0.34 : 0.38;
     this.aimDash(tell);
     this.state = "dashTell";
@@ -670,14 +687,35 @@ export class PitWarden extends Enemy {
       this.ctx.combat.damagePlayer(22, this.pos.x, this.pos.z);
     }
     // Phase 2+: the slam wakes adds
-    if (this.phase >= 2 && this.slamCount % 2 === 1 && this.ctx.enemies.living().length < 5) {
-      for (let i = 0; i < 2; i++) {
+    if (this.phase >= 2 && this.actionCount % 2 === 1) {
+      const available = Math.max(0, 5 - this.ctx.enemies.living().length);
+      for (let i = 0; i < Math.min(2, available); i++) {
         const a = this.ctx.rng.next() * Math.PI * 2;
         this.ctx.enemies.spawn("swarmer", this.pos.x + Math.sin(a) * 5, this.pos.z + Math.cos(a) * 5, 1.0);
       }
     }
     this.state = "recover";
-    this.timer = 0.7;
+    this.timer = bossRecoverySeconds(this.currentRecovery);
+  }
+
+  debugMove(): string {
+    return `${this.currentMove ?? "none"}:${this.state}:phase-${this.phase}`;
+  }
+
+  debugForceMove(move: string): boolean {
+    const phase = PIT_WARDEN_MOVE_PROFILE.find((entry) => entry.phase === this.phase);
+    const def = phase?.moves.find((entry) => entry.id === move);
+    if (!def) return false;
+    this.invulnTime = 0;
+    this.currentMove = def.id;
+    this.lastMove = def.id;
+    this.currentRecovery = def.recovery;
+    if (def.id === "guard") this.beginGuard();
+    else if (def.id === "leap") this.beginLeap();
+    else if (def.id === "fissure") this.beginFissure();
+    else if (def.id === "fan") this.beginFan();
+    else this.beginDashCombo();
+    return true;
   }
 
   private dropPatch(): void {

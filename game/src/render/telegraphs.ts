@@ -84,6 +84,7 @@ export class Telegraphs {
       const impact = new THREE.Mesh(outlineGeo, impactMat);
       const zone = new THREE.Mesh(stripGeo, zoneMat);
       const sweep = new THREE.Mesh(stripGeo, sweepMat);
+      for (const mesh of [outline, fill, impact, zone, sweep]) mesh.userData.floorLayer = "gameplay";
       fill.position.y = 0.01;
       impact.position.y = 0.025;
       sweep.position.y = 0.01;
@@ -189,6 +190,22 @@ export class Telegraphs {
       t.annulus.geometry.dispose();
       t.annulus = null;
     }
+  }
+
+  /** Cancel every active warning. Room/enemy cleanup must not leave orphaned
+   * spawn or attack telegraphs in the next presentation frame. */
+  clear(): void {
+    for (const t of this.pool) {
+      if (t.active || t.group.visible || t.annulus) this.release(t);
+      else t.group.visible = false;
+    }
+  }
+
+  stats(): { active: number; visible: number } {
+    return {
+      active: this.pool.reduce((count, telegraph) => count + (telegraph.active ? 1 : 0), 0),
+      visible: this.pool.reduce((count, telegraph) => count + (telegraph.group.visible ? 1 : 0), 0),
+    };
   }
 
   update(dt: number): void {

@@ -1,9 +1,13 @@
 import * as THREE from "three";
-import { clamp, clamp01, damp, dampAngle, ease, TAU } from "../core/math";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { clamp, clamp01, damp, dampAngle, ease, lerp, TAU } from "../core/math";
 import { applyRim } from "../render/materialFx";
 import { heroById, type HeroDef } from "./heroes";
 import { DEFAULT_COSMETICS, cosmeticById } from "./cosmetics";
 import type { Ctx } from "./ctx";
+import type { ActorVisualState } from "../presentation/types";
+import type { ActionSegment, AttackFamily } from "../presentation/types";
+import { HERO_PRESENTATION, heroAttackFamily } from "../presentation/profiles";
 
 const HERO_VISUAL_SCALE = 1.2;
 /** Scratch vector for motionSample() — the recorder must not allocate per frame. */
@@ -49,6 +53,14 @@ export class Player {
   private legR!: THREE.Group;
   private legL!: THREE.Group;
   private cape!: THREE.Mesh;
+  /**
+   * One low-poly silhouette owns the hero's dynamic shadow. The visible rig is
+   * intentionally detailed, but submitting every armor rivet and trim strip to
+   * the shadow map cost almost one hundred extra draws in the 22-enemy stress
+   * scene. This proxy preserves a moving hero shadow without coupling the
+   * simulation or the visible rig to the renderer's shadow budget.
+   */
+  private shadowProxy!: THREE.Mesh;
   private torso!: THREE.Group;
   private sword!: THREE.Group;
   private bladeTipMarker!: THREE.Object3D;
@@ -77,7 +89,7 @@ export class Player {
   animMoveAmount = 0;
   animMoveX = 0;
   animMoveZ = 0;
-  animSwing: { phase: number; heavy: boolean } | null = null;
+  animSwing: { phase: number; heavy: boolean; stage?: number } | null = null;
   animDodge: { phase: number; dirX: number; dirZ: number } | null = null;
 
   private locoClock = 0;
@@ -88,6 +100,7 @@ export class Player {
   private stopPose = 0;
   private lastMoveBlend = 0;
   private visualFacing = 0;
+  private pivotPose = 0;
   private t = 0;
   private hitFlash = 0;
   // Footfall impact (IDEAS-GRAPHICS #39): rising-edge of the footPlant contact signal.
@@ -95,15 +108,74 @@ export class Player {
   // Hit flinch (IDEAS-GRAPHICS #38): a short directional body recoil when struck.
   private flinchT = 0;
   private flinchDur = 0.18;
+  private flinchHold = 0;
   private flinchPitch = 0;
   private flinchRoll = 0;
+  private executionT = 0;
+  private victoryPose = false;
+  private readonly ghostPool: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; t: number; active: boolean }[] = [];
 
   constructor(private ctx: Ctx) {
     this.root = new THREE.Group();
     this.root.userData.solidity = "mover"; // collision-truth audit: movers are exempt
     this.root.scale.setScalar(HERO_VISUAL_SCALE);
     ctx.stage.scene.add(this.root);
+    // Fixed-cost ground echoes. Cloning the complete articulated hero used to
+    // submit dozens of extra meshes and allocate a material on every dodge; the
+    // replacement capsule read like a second, featureless actor. A thin ground
+    // ring supports the restored body roll without competing with its silhouette.
+    const ghostGeometry = new THREE.TorusGeometry(0.48, 0.035, 4, 18);
+    ghostGeometry.rotateX(Math.PI / 2);
+    for (let i = 0; i < 3; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x55ddff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(ghostGeometry, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.userData.solidity = "fx";
+      mesh.userData.dodgeEcho = true;
+      ctx.stage.scene.add(mesh);
+      this.ghostPool.push({ mesh, mat, t: 1, active: false });
+    }
     this.applyHero(this.hero, DEFAULT_COSMETICS.cape, DEFAULT_COSMETICS.blade);
+  }
+
+  /** Merge ornament meshes inside each animated pivot. The torso, limbs, head
+   * and weapon remain independently poseable while shared-material details no
+   * longer cost one draw submission apiece. */
+  private batchVisualPivots(parent: THREE.Object3D): void {
+    for (const child of [...parent.children]) {
+      if (!(child instanceof THREE.Mesh)) this.batchVisualPivots(child);
+    }
+    const byMaterial = new Map<THREE.Material, THREE.Mesh[]>();
+    for (const child of parent.children) {
+      if (!(child instanceof THREE.Mesh) || Array.isArray(child.material)) continue;
+      const list = byMaterial.get(child.material) ?? [];
+      list.push(child);
+      byMaterial.set(child.material, list);
+    }
+    for (const [material, meshes] of byMaterial) {
+      if (meshes.length < 2) continue;
+      const pieces: THREE.BufferGeometry[] = [];
+      for (const mesh of meshes) {
+        mesh.updateMatrix();
+        const geometry = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+        geometry.applyMatrix4(mesh.matrix);
+        pieces.push(geometry);
+      }
+      const merged = mergeGeometries(pieces, false);
+      for (const geometry of pieces) geometry.dispose();
+      if (!merged) continue;
+      const baked = new THREE.Mesh(merged, material);
+      baked.castShadow = true;
+      parent.add(baked);
+      for (const mesh of meshes) {
+        parent.remove(mesh);
+        mesh.geometry.dispose();
+      }
+    }
   }
 
   /** Last-frame per-leg lift signals from the locomotion pose (0 = planted, 1 = peak
@@ -577,14 +649,17 @@ export class Player {
     box(0.026, capeH * 0.68, 0.018, capeTrim, capeW * 0.18, 0.0 - capeH * 0.43, -P.torsoD * 0.61, this.torso);
     box(0.02, capeH * 0.58, 0.016, capeTrim, 0, -0.02 - capeH * 0.46, -P.torsoD * 0.615, this.torso);
 
+    this.batchVisualPivots(this.body);
+
     // Tempo aura ring at the feet
     this.auraMat = new THREE.MeshBasicMaterial({
-      color: 0x3df59a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false,
+      color: 0x55ddff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const auraGeo = new THREE.RingGeometry(0.55, 0.72, 96);
     auraGeo.rotateX(-Math.PI / 2);
     this.auraRing = new THREE.Mesh(auraGeo, this.auraMat);
     this.auraRing.position.y = 0.06;
+    this.auraRing.userData.floorLayer = "gameplay";
     this.root.add(this.auraRing);
 
     this.auraLight = new THREE.PointLight(0x3df59a, 6, 9, 1.6);
@@ -611,10 +686,33 @@ export class Player {
     crashFillGeo.rotateX(-Math.PI / 2);
     this.crashRing.add(new THREE.Mesh(crashOutlineGeo, this.crashRingMat));
     this.crashRing.add(new THREE.Mesh(crashFillGeo, this.crashFillMat));
-    this.crashRing.position.y = 0.04;
+    this.crashRing.position.y = 0.06;
+    this.crashRing.userData.floorLayer = "gameplay";
     this.crashRing.visible = false;
     this.crashRing.scale.setScalar(1 / HERO_VISUAL_SCALE);
     this.root.add(this.crashRing);
+
+    // Keep the authored visible silhouette in the color pass, but collapse its
+    // shadow submission to one stable capsule. colorWrite=false makes the proxy
+    // invisible in the main pass while Three's shadow depth material still
+    // renders it into the directional-light map.
+    this.root.traverse((o) => {
+      if (o instanceof THREE.Mesh) o.castShadow = false;
+    });
+    const shadowMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    shadowMaterial.colorWrite = false;
+    shadowMaterial.depthWrite = false;
+    this.shadowProxy = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.4, 1.15, 3, 8),
+      shadowMaterial,
+    );
+    this.shadowProxy.name = "hero-shadow-proxy";
+    this.shadowProxy.position.y = 0.98;
+    this.shadowProxy.castShadow = true;
+    this.shadowProxy.receiveShadow = false;
+    this.shadowProxy.userData.solidity = "fx";
+    this.root.add(this.shadowProxy);
+
     this.visualHeroId = hero.id;
     this.visualCapeId = capeId;
     this.visualBladeId = bladeId;
@@ -631,8 +729,50 @@ export class Player {
     // Convert world push dir into the hero's local frame so pitch/roll read right.
     const local = Math.atan2(dirX / len, dirZ / len) - this.visualFacing;
     this.flinchT = this.flinchDur;
+    this.flinchHold = 0.035;
     this.flinchPitch = Math.cos(local) * 0.16;
     this.flinchRoll = -Math.sin(local) * 0.16;
+  }
+
+  playExecution(): void { this.executionT = Math.max(this.executionT, 0.72); }
+  setVictoryPose(on: boolean): void { this.victoryPose = on; }
+
+  visualState(out: ActorVisualState): ActorVisualState {
+    const swing = this.animSwing;
+    const action = !this.alive ? "death" : this.victoryPose ? "victory" : this.animDodge ? "dodge" : swing
+      ? swing.heavy ? "attack3" : swing.stage === 1 ? "attack2" : "attack1"
+      : this.executionT > 0 ? "execution" : this.flinchT > 0 ? "hit"
+      : this.pivotPose > 0.34 ? "pivot" : this.accelPose > 0.22 ? "start"
+      : this.stopPose > 0.2 ? "stop" : this.moveBlend > 0.08 ? "move" : "idle";
+    const phase = this.animDodge?.phase ?? swing?.phase ?? this.locoClock % (Math.PI * 2) / (Math.PI * 2);
+    let segment: ActionSegment = this.executionT > 0 || this.flinchT > 0 ? "recovery" : "loop";
+    let segmentPhase = phase;
+    let attackFamily: AttackFamily | null = null;
+    if (swing) {
+      const strike = swing.stage === 2 ? 0.42 : swing.stage === 1 ? 0.32 : 0.28;
+      const recoveryStart = swing.stage === 2 ? 0.7 : 0.66;
+      if (phase < strike) { segment = "anticipation"; segmentPhase = phase / strike; }
+      else if (phase < recoveryStart) { segment = "active"; segmentPhase = (phase - strike) / (recoveryStart - strike); }
+      else { segment = "recovery"; segmentPhase = (phase - recoveryStart) / (1 - recoveryStart); }
+      attackFamily = this.hero.id === "blade"
+        ? swing.stage === 2 ? "blade-finisher" : swing.stage === 1 ? "blade-return" : "blade-opener"
+        : heroAttackFamily(this.hero.id);
+    }
+    out.actorId = `hero:${this.hero.id}`;
+    out.actorKind = "hero";
+    out.action = action;
+    out.phase = phase;
+    out.segment = segment;
+    out.segmentPhase = Math.max(0, Math.min(1, segmentPhase));
+    out.attackFamily = attackFamily;
+    out.speed = this.moveBlend;
+    out.moveX = this.moveSide;
+    out.moveZ = this.moveForward;
+    out.facing = this.visualFacing;
+    out.reaction = this.flinchT > 0 ? this.flinchT / this.flinchDur : 0;
+    out.frozen = false;
+    out.alive = this.alive;
+    return out;
   }
 
   /** A step lands: a small ground-tinted dust puff + a micro cam kick by bulk. */
@@ -651,49 +791,44 @@ export class Player {
     this.bladeBaseMarker.getWorldPosition(base);
   }
 
-  /** Spawn translucent afterimage of the hero — dodge ghosts. */
+  /** Spawn a restrained, pooled ground echo behind the dodge. */
   spawnGhost(): void {
-    const ghost = this.body.clone(true);
-    const mat = new THREE.MeshBasicMaterial({
-      color: this.bladeColor, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    ghost.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
-        o.material = mat;
-        o.castShadow = false;
-      }
-    });
-    ghost.position.copy(this.pos);
-    ghost.scale.multiplyScalar(HERO_VISUAL_SCALE);
-    ghost.rotation.y = this.root.rotation.y;
-    ghost.userData.solidity = "fx";
-    this.ctx.stage.scene.add(ghost);
+    let ghost = this.ghostPool.find((entry) => !entry.active);
+    if (!ghost) ghost = this.ghostPool.reduce((oldest, entry) => entry.t > oldest.t ? entry : oldest);
+    ghost.active = true;
+    ghost.t = 0;
+    ghost.mat.color.set(this.bladeColor);
+    ghost.mat.opacity = 0.2;
+    ghost.mesh.position.set(this.pos.x, this.pos.y + 0.065, this.pos.z);
+    ghost.mesh.rotation.set(0, this.root.rotation.y, 0);
+    ghost.mesh.scale.set(0.72 * HERO_VISUAL_SCALE, 1, 1.28 * HERO_VISUAL_SCALE);
+    ghost.mesh.visible = true;
     // dt-driven fade (advanced in update()) — a private rAF + wall-clock loop
     // here defeated freezeForTest/frames(n,dt) and made captures nondeterministic
     // (the temporal gate caught it as intermittent frozen-scene shimmer).
-    this.ghostFades.push({ ghost, mat, t: 0 });
   }
 
   /** Live dodge-ghost fades — advanced by update(dt) on the threaded clock. */
-  private ghostFades: { ghost: THREE.Group; mat: THREE.MeshBasicMaterial; t: number }[] = [];
-
   private updateGhostFades(dt: number): void {
-    for (let i = this.ghostFades.length - 1; i >= 0; i--) {
-      const g = this.ghostFades[i];
+    for (const g of this.ghostPool) {
+      if (!g.active) continue;
       g.t += dt;
-      const k = g.t / 0.24;
+      const k = g.t / 0.18;
       if (k >= 1) {
-        this.ctx.stage.scene.remove(g.ghost);
-        g.mat.dispose();
-        this.ghostFades.splice(i, 1);
+        g.active = false;
+        g.mat.opacity = 0;
+        g.mesh.visible = false;
       } else {
-        g.mat.opacity = 0.35 * (1 - k);
+        g.mat.opacity = 0.2 * (1 - k) * (1 - k);
+        g.mesh.scale.x += dt * 0.7;
+        g.mesh.scale.z += dt * 1.1;
       }
     }
   }
 
   update(dt: number): void {
     this.t += dt;
+    this.executionT = Math.max(0, this.executionT - dt);
     this.updateGhostFades(dt);
     this.root.position.set(this.pos.x, this.pos.y, this.pos.z);
     this.hitFlash = Math.max(0, this.hitFlash - dt * 6);
@@ -707,6 +842,21 @@ export class Player {
         if (m.emissiveIntensity < 0.34) m.emissiveIntensity = Math.max(m.emissiveIntensity, this.hitFlash * 2);
       }
       this.armorFlashLit = this.hitFlash > 0;
+    }
+
+    // Authored procedural death settle: keep the silhouette in the aftermath
+    // instead of popping the entire caster/shadow hierarchy out of the renderer.
+    if (!this.alive) {
+      this.animMoveAmount = 0;
+      const deathSide = this.hero.id === "bulwark" ? -0.72 : this.hero.id === "revenant" ? 0.92 : this.hero.id === "tempest" ? -1.08 : -1.28;
+      this.body.position.y = damp(this.body.position.y, -0.92, 6, dt);
+      this.body.rotation.x = damp(this.body.rotation.x, -0.18, 7, dt);
+      this.body.rotation.z = damp(this.body.rotation.z, deathSide, 6, dt);
+      this.torso.rotation.x = damp(this.torso.rotation.x, 0.22, 7, dt);
+      this.armR.rotation.x = damp(this.armR.rotation.x, 0.55, 7, dt);
+      this.armL.rotation.x = damp(this.armL.rotation.x, -0.35, 7, dt);
+      this.cape.rotation.x = damp(this.cape.rotation.x, 0.72, 5, dt);
+      return;
     }
 
     // Tempo aura/visor color — only re-set the three materials when the zone color
@@ -757,21 +907,25 @@ export class Player {
       const rollYaw = Math.atan2(d.dirX, d.dirZ);
       this.visualFacing = rollYaw;
       this.root.rotation.y = rollYaw;
-      this.rollGroup.rotation.x = ease.outCubic(d.phase) * TAU;
       const tuck = Math.sin(d.phase * Math.PI);
-      this.body.position.y = damp(this.body.position.y, -0.6 + tuck * 0.12, 18, dt);
-      this.body.rotation.set(-0.24 * tuck, 0, 0.18 * Math.sin(d.phase * TAU));
-      this.torso.rotation.set(-0.18 * tuck, 0, -0.18 * tuck);
-      this.armR.rotation.x = -1.25 + tuck * 0.5;
+      // Restore the actual forward somersault. Ease only the rotation endpoints;
+      // the middle travels decisively, while the tucked limbs keep it reading as
+      // an intentional combat roll rather than a rigid cartwheel or ragdoll.
+      this.rollGroup.rotation.x = ease.inOutCubic(d.phase) * TAU;
+      this.body.position.y = damp(this.body.position.y, -0.62 + tuck * 0.11, 22, dt);
+      this.body.rotation.set(-0.2 * tuck, 0, 0.08 * Math.sin(d.phase * TAU));
+      this.torso.rotation.set(-0.2 * tuck, 0, -0.12 * tuck);
+      this.armR.rotation.x = -1.2 + tuck * 0.44;
       this.armR.rotation.z = 0.45;
-      this.armL.rotation.x = -0.95;
+      this.armL.rotation.x = -1.02 + tuck * 0.2;
       this.armL.rotation.z = -0.38;
-      this.legR.rotation.x = 0.62 * tuck;
-      this.legL.rotation.x = -0.62 * tuck;
-      this.cape.rotation.x = 0.95 + tuck * 0.28;
+      this.legR.rotation.x = 0.72 * tuck;
+      this.legL.rotation.x = -0.72 * tuck;
+      this.cape.rotation.x = 0.78 + tuck * 0.34;
       return;
     }
     this.rollGroup.rotation.x = damp(this.rollGroup.rotation.x % TAU, 0, 18, dt);
+    const facingDelta = Math.atan2(Math.sin(this.facing - this.visualFacing), Math.cos(this.facing - this.visualFacing));
     this.visualFacing = dampAngle(this.visualFacing, this.facing, 18, dt);
     this.root.rotation.y = this.visualFacing;
 
@@ -784,6 +938,7 @@ export class Player {
     const moving = this.moveBlend;
     const side = this.moveSide;
     const forward = this.moveForward;
+    this.pivotPose = damp(this.pivotPose, Math.min(1, Math.abs(facingDelta) * 1.6) * moving, 13, dt);
 
     const started = Math.max(0, moving - prevMove);
     const stopped = Math.max(0, prevMove - moving);
@@ -813,15 +968,16 @@ export class Player {
     const idleBreath = Math.sin(this.t * (h === "revenant" ? 1.25 : 1.8)) * 0.012 * (1 - moving * 0.55);
     const runLean = Math.max(0, forward) * gait.lean * moving + this.accelPose * 0.05 - this.stopPose * 0.04;
     const backLean = Math.max(0, -forward) * 0.04 * moving;
-    const strafeLean = clamp(side, -1, 1) * 0.04 * moving;
+    const strafeLean = clamp(side, -1, 1) * 0.04 * moving + Math.sign(facingDelta) * this.pivotPose * 0.035;
 
     this.body.position.y = damp(this.body.position.y, -0.55 + bob + idleBreath, 18, dt);
     this.body.rotation.x = damp(this.body.rotation.x, -runLean + backLean, 11, dt);
     this.body.rotation.z = damp(this.body.rotation.z, -strafeLean, 13, dt);
     // Hit flinch: a crisp additive recoil over the locomotion pose (IDEAS-GRAPHICS #38).
     if (this.flinchT > 0) {
-      this.flinchT = Math.max(0, this.flinchT - dt);
-      const fl = ease.outCubic(this.flinchT / this.flinchDur);
+      if (this.flinchHold > 0) this.flinchHold = Math.max(0, this.flinchHold - dt);
+      else this.flinchT = Math.max(0, this.flinchT - dt);
+      const fl = this.flinchHold > 0 ? 1 : ease.outCubic(this.flinchT / this.flinchDur);
       this.body.rotation.x += this.flinchPitch * fl;
       this.body.rotation.z += this.flinchRoll * fl;
     }
@@ -844,32 +1000,112 @@ export class Player {
     this.cape.rotation.y = damp(this.cape.rotation.y, side * 0.035 * moving, 10, dt);
 
     // Sword arm: swing animation overrides idle/run pose
-    if (this.animSwing) {
-      const { phase, heavy } = this.animSwing;
-      if (phase < 0.22) {
-        // Windup: raise and coil back
-        const k = ease.outCubic(phase / 0.22);
-        this.armR.rotation.x = -0.3 - k * 1.5;
-        this.armR.rotation.z = k * 0.5;
-        this.torso.rotation.y = k * (heavy ? 0.55 : 0.35);
-        this.torso.rotation.x = -k * 0.08;
-        this.body.rotation.x = damp(this.body.rotation.x, -0.12 - (heavy ? 0.08 : 0), 16, dt);
-        this.armL.rotation.x = damp(this.armL.rotation.x, -0.45 - k * 0.3, 16, dt);
-        this.armL.rotation.z = damp(this.armL.rotation.z, -0.35, 16, dt);
+    if (this.victoryPose) {
+      const breathe = Math.sin(this.t * 1.8) * 0.025;
+      this.armR.rotation.set(-1.62 + breathe, -0.08, 0.28);
+      this.armL.rotation.set(-0.42, 0, -0.42);
+      this.torso.rotation.set(-0.03, 0.14, -0.03);
+      this.body.rotation.set(0.02, 0, -0.025);
+      this.sword.rotation.x = -0.28;
+    } else if (this.executionT > 0 && !this.animSwing) {
+      const k = 1 - this.executionT / 0.72;
+      this.armR.rotation.set(-0.65 + k * 0.42, 0.06, -0.42 + k * 0.2);
+      this.armL.rotation.set(-0.42, 0, -0.26);
+      this.torso.rotation.set(0.1 - k * 0.06, -0.24 + k * 0.2, 0);
+      this.body.rotation.x = damp(this.body.rotation.x, 0.08, 16, dt);
+      this.sword.rotation.x = -0.4;
+    } else if (this.animSwing) {
+      const { phase, stage = 0 } = this.animSwing;
+      if (stage === 0) {
+        // Opener: compact right-shoulder coil into a fast descending diagonal.
+        if (phase < 0.2) {
+          const k = ease.outCubic(phase / 0.2);
+          this.armR.rotation.set(-0.35 - k * 1.45, -k * 0.16, 0.12 + k * 0.58);
+          this.torso.rotation.y = k * 0.42;
+          this.torso.rotation.x = -k * 0.09;
+          this.body.rotation.x = damp(this.body.rotation.x, -0.13, 18, dt);
+          this.armL.rotation.set(-0.46 - k * 0.2, 0, -0.32);
+        } else if (phase < 0.52) {
+          const k = ease.outQuart((phase - 0.2) / 0.32);
+          this.armR.rotation.set(lerp(-1.8, 1.05, k), lerp(-0.16, 0.06, k), lerp(0.7, -0.12, k));
+          this.torso.rotation.y = lerp(0.42, -0.36, k);
+          this.torso.rotation.x = lerp(-0.09, 0.12, k);
+          this.body.rotation.x = damp(this.body.rotation.x, lerp(-0.13, -0.03, k), 18, dt);
+          this.armL.rotation.set(lerp(-0.66, -0.3, k), 0, lerp(-0.32, -0.16, k));
+        } else {
+          // Finish in the next cut's guard instead of holding the sword at its
+          // extreme. Buffered combos now join continuously rather than snapping.
+          const k = ease.inOutCubic((phase - 0.52) / 0.48);
+          this.armR.rotation.set(lerp(1.05, 0.92, k), lerp(0.06, 0, k), lerp(-0.12, -0.38, k));
+          this.torso.rotation.y = lerp(-0.36, 0, k);
+          this.torso.rotation.x = lerp(0.12, 0, k);
+          this.body.rotation.x = damp(this.body.rotation.x, lerp(-0.03, 0, k), 18, dt);
+          this.armL.rotation.set(lerp(-0.3, -0.24, k), 0, lerp(-0.16, -0.15, k));
+        }
+      } else if (stage === 1) {
+        // Return cut: weight shifts to the other hip and the sword reverses across
+        // the body. The opposite torso coil makes combo stage two unmistakable.
+        if (phase < 0.23) {
+          const k = ease.outCubic(phase / 0.23);
+          this.armR.rotation.set(0.92 - k * 0.35, k * 0.32, -0.38 - k * 0.34);
+          this.torso.rotation.y = -k * 0.5;
+          this.torso.rotation.z = k * 0.08;
+          this.body.rotation.z = damp(this.body.rotation.z, 0.07, 18, dt);
+          this.armL.rotation.set(-0.24, 0, -0.15 + k * 0.28);
+        } else if (phase < 0.55) {
+          const k = ease.outQuart((phase - 0.23) / 0.32);
+          this.armR.rotation.set(lerp(0.57, -1.78, k), lerp(0.32, -0.13, k), lerp(-0.72, 0.24, k));
+          this.torso.rotation.y = lerp(-0.5, 0.44, k);
+          this.torso.rotation.z = lerp(0.08, -0.05, k);
+          this.body.rotation.z = damp(this.body.rotation.z, lerp(0.07, -0.04, k), 18, dt);
+          this.armL.rotation.set(lerp(-0.24, -0.46, k), 0, lerp(0.13, -0.15, k));
+        } else {
+          const k = ease.inOutCubic((phase - 0.55) / 0.45);
+          this.armR.rotation.set(lerp(-1.78, -0.35, k), lerp(-0.13, 0, k), lerp(0.24, 0.1, k));
+          this.torso.rotation.y = lerp(0.44, 0, k);
+          this.torso.rotation.z = lerp(-0.05, 0, k);
+          this.body.rotation.z = damp(this.body.rotation.z, lerp(-0.04, 0, k), 18, dt);
+          this.armL.rotation.set(lerp(-0.46, -0.62, k), 0, lerp(-0.15, -0.42, k));
+        }
       } else {
-        // Strike: whip through with follow-through overshoot
-        const k = ease.outQuart((phase - 0.22) / 0.78);
-        const overshoot = Math.sin(Math.min(1, k) * Math.PI) * 0.21;
-        this.armR.rotation.x = -1.8 + k * (heavy ? 3.4 : 2.9) + overshoot;
-        this.armR.rotation.z = 0.5 - k * 0.7;
-        this.torso.rotation.y = (heavy ? 0.55 : 0.35) - k * (heavy ? 1.0 : 0.7);
-        this.torso.rotation.x = k * 0.14;
-        this.body.rotation.x = damp(this.body.rotation.x, heavy ? -0.18 + k * 0.12 : -0.1 + k * 0.08, 16, dt);
-        this.armL.rotation.x = damp(this.armL.rotation.x, -0.35 + k * 0.25, 16, dt);
-        this.armL.rotation.z = damp(this.armL.rotation.z, -0.28 + k * 0.18, 16, dt);
+        // Finisher: low planted preparation, broad hip-led turn, then a visible
+        // held recovery. Feet counter-rotate so the 360 reads grounded, not floaty.
+        if (phase < 0.31) {
+          const k = ease.outCubic(phase / 0.31);
+          this.armR.rotation.set(-0.35 - k * 1.3, -k * 0.28, 0.1 + k * 0.62);
+          this.torso.rotation.y = k * 0.78;
+          this.torso.rotation.x = -k * 0.16;
+          this.body.position.y -= k * 0.08;
+          this.body.rotation.x = damp(this.body.rotation.x, -0.2, 18, dt);
+          this.legR.rotation.z = damp(this.legR.rotation.z, -0.16, 18, dt);
+          this.legL.rotation.z = damp(this.legL.rotation.z, 0.16, 18, dt);
+          this.armL.rotation.set(-0.62, 0, -0.42);
+        } else if (phase < 0.64) {
+          const k = ease.outQuart((phase - 0.31) / 0.33);
+          const settle = Math.sin(k * Math.PI) * 0.12;
+          this.armR.rotation.set(lerp(-1.65, 1.55, k) + settle, lerp(-0.28, 0.08, k), lerp(0.72, -0.3, k));
+          this.torso.rotation.y = lerp(0.78, -0.9, k);
+          this.torso.rotation.x = lerp(-0.16, 0.09, k);
+          this.body.rotation.x = damp(this.body.rotation.x, lerp(-0.2, -0.04, k), 18, dt);
+          this.legR.rotation.z = damp(this.legR.rotation.z, lerp(-0.16, -0.06, k), 18, dt);
+          this.legL.rotation.z = damp(this.legL.rotation.z, lerp(0.16, 0.06, k), 18, dt);
+          this.armL.rotation.set(lerp(-0.62, -0.24, k), 0, lerp(-0.42, -0.18, k));
+        } else {
+          // A visible re-guard closes the loop into stage one. It preserves the
+          // finisher's weight while preventing the spam cadence from popping.
+          const k = ease.inOutCubic((phase - 0.64) / 0.36);
+          this.armR.rotation.set(lerp(1.55, -0.35, k), lerp(0.08, 0, k), lerp(-0.3, 0.12, k));
+          this.torso.rotation.y = lerp(-0.9, 0, k);
+          this.torso.rotation.x = lerp(0.09, 0, k);
+          this.body.rotation.x = damp(this.body.rotation.x, lerp(-0.04, 0, k), 18, dt);
+          this.legR.rotation.z = damp(this.legR.rotation.z, lerp(-0.06, 0, k), 18, dt);
+          this.legL.rotation.z = damp(this.legL.rotation.z, lerp(0.06, 0, k), 18, dt);
+          this.armL.rotation.set(lerp(-0.24, -0.46, k), 0, lerp(-0.18, -0.32, k));
+        }
       }
       this.torso.rotation.z = damp(this.torso.rotation.z, 0, 12, dt);
       this.sword.rotation.x = -0.4;
+      this.applyHeroAttackStyle(phase, stage, dt);
     } else {
       // Idle/run arm pose, sword low at the side
       this.armR.rotation.x = damp(this.armR.rotation.x, swing * gait.arm * 0.8 * moving - 0.16 - this.stopPose * 0.1, 14, dt);
@@ -879,6 +1115,64 @@ export class Player {
       this.torso.rotation.x = damp(this.torso.rotation.x, 0.035 + Math.max(0, forward) * 0.07 * moving + this.accelPose * 0.04 - this.stopPose * 0.03, 10, dt);
       this.torso.rotation.z = damp(this.torso.rotation.z, -side * 0.035 * moving, 14, dt);
       this.sword.rotation.x = damp(this.sword.rotation.x, -0.15, 10, dt);
+      this.sword.rotation.y = damp(this.sword.rotation.y, 0, 12, dt);
+      this.sword.rotation.z = damp(this.sword.rotation.z, 0, 12, dt);
+    }
+    if (this.victoryPose) this.applyHeroVictoryStyle();
+  }
+
+  private applyHeroAttackStyle(phase: number, stage: number, dt: number): void {
+    const active = Math.sin(Math.min(1, phase) * Math.PI);
+    const profile = HERO_PRESENTATION[this.hero.id] ?? HERO_PRESENTATION.blade;
+    if (profile.trail === "cleave") {
+      this.body.position.y -= 0.08 * active;
+      this.body.rotation.x -= 0.11 * active;
+      this.torso.rotation.y *= 0.74;
+      this.armL.rotation.x = damp(this.armL.rotation.x, -1.05 + stage * 0.12, 18, dt);
+      this.armL.rotation.z = damp(this.armL.rotation.z, -0.58, 18, dt);
+      this.sword.rotation.z = 0.16 * active;
+    } else if (profile.trail === "fork") {
+      this.body.position.y += 0.06 * active;
+      this.torso.rotation.x -= 0.15 * active;
+      this.armL.rotation.x = -1.6 + active * 0.38;
+      this.armL.rotation.z = -0.5 - active * 0.18;
+      this.armR.rotation.y += Math.sin(phase * Math.PI * 2) * 0.16;
+      this.sword.rotation.x = -0.18 - active * 0.18;
+    } else if (profile.trail === "hook") {
+      this.body.rotation.x -= 0.18 * active;
+      this.torso.rotation.y *= 1.22;
+      this.armR.rotation.z -= 0.24 * active;
+      this.armL.rotation.x = -0.35 - active * 0.5;
+    } else if (profile.trail === "cyclone") {
+      const side = stage === 1 ? -1 : 1;
+      this.body.rotation.z += side * 0.12 * active;
+      this.torso.rotation.y *= 1.35;
+      this.legR.rotation.z -= 0.18 * active;
+      this.legL.rotation.z += 0.18 * active;
+      this.armL.rotation.x = -0.72 + active * 0.28;
+      this.sword.rotation.y = side * 0.14 * active;
+    } else if (profile.trail === "reap") {
+      this.body.position.y -= 0.045 * active;
+      this.torso.rotation.x += 0.09 * active;
+      this.armR.rotation.x += 0.22 * active;
+      this.armR.rotation.z -= 0.2 * active;
+      this.armL.rotation.x = -1.18 + active * 0.22;
+      this.armL.rotation.z = -0.22 - active * 0.25;
+      this.sword.rotation.x = -0.54;
+    }
+  }
+
+  private applyHeroVictoryStyle(): void {
+    if (this.hero.id === "bulwark") {
+      this.armR.rotation.set(-1.15, 0, 0.42); this.armL.rotation.set(-1.1, 0, -0.48); this.body.rotation.x = 0.04;
+    } else if (this.hero.id === "sparkmage") {
+      this.armR.rotation.set(-2.1, 0.25, 0.16); this.armL.rotation.set(-1.75, -0.2, -0.52); this.body.rotation.x = -0.08;
+    } else if (this.hero.id === "reaver") {
+      this.armR.rotation.set(-0.85, 0.1, -0.62); this.armL.rotation.set(-0.55, 0, 0.32); this.torso.rotation.y = -0.28;
+    } else if (this.hero.id === "tempest") {
+      this.armR.rotation.set(-2.2, 0.18, 0.28); this.armL.rotation.set(-0.9, 0, -0.42); this.body.rotation.z = 0.08;
+    } else if (this.hero.id === "revenant") {
+      this.armR.rotation.set(-1.8, 0.08, -0.2); this.armL.rotation.set(-1.35, 0, -0.5); this.torso.rotation.x = -0.12;
     }
   }
 }
