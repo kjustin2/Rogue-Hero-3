@@ -47,19 +47,36 @@ const TAPE = (opts = {}) => `(async () => {
   // desynced two runs. The banished boss (grace 1e9, dt-based → never ticks/draws)
   // suppresses the wave director entirely, so the only rng consumers in the tape
   // are the enemies WE spawn.
-  c.enemies.clearNonBosses();
+  // The portrait scenario's hidden Warden is presentation scaffolding. Remove it
+  // and idle the run so only this tape's actors and RNG consumers enter simHash.
+  c.run.state = "idle";
+  c.enemies.clear();
+  c.projectiles.clear();
+  c.hostiles.clear();
+  c.caster.clear();
+  c.combat.clearTransient();
+  c.controller.clearTransient();
+  c.tempo.reset();
+  while (d.presentation().cinematic.active) d.skipCutscene();
   d.frames(2, 1/60);
   c.rng.reseed(${SEED});
   for (const [kind, x, z] of ${JSON.stringify(SPAWN)}) { try { c.enemies.spawn(kind, x, z, 0); } catch {} }
   c.player.pos.x = 0; c.player.pos.z = 0; c.player.hp = c.player.maxHp;
   const hashes = [];
+  let first = null;
   for (let f = 0; f < ${FRAMES}; f++) {
     if (f === skewAt) c.rng.next();                 // fault: one extra draw
     if (cosmetic) { try { c.fx.burst({ x: 2, y: 1, z: 0, count: 3, color: 0xffffff, speed: [1,2], up: 0.4, size: [0.2,0.4], life: [0.1,0.3], gravity: -2, drag: 3 }); } catch {} }
     d.frames(1, 1/60);
     hashes.push(d.simHash());
+    if (f === 0) first = {
+      player: [c.player.pos.x, c.player.pos.z, c.player.hp], tempo: c.tempo.value,
+      rng: c.rng.getState(),
+      foes: c.enemies.living().filter((e) => e.kind !== "boss").map((e) => [e.kind, e.pos.x, e.pos.z, e.hp, e.t]),
+      boss: (() => { const b = c.enemies.living().find((e) => e.kind === "boss"); return b ? [b.phase, b.pos.x, b.pos.z, b.hp] : null; })(),
+    };
   }
-  return hashes;
+  return { hashes, first };
 })()`;
 
 /** Fresh boot → stage → reseed → spawn → tape. Two calls with identical opts must
@@ -77,8 +94,10 @@ async function trace(opts = {}) {
 let failures = 0;
 const results = {};
 
-const A = await trace();
-const B = await trace();
+const traceA = await trace();
+const traceB = await trace();
+const A = traceA.hashes;
+const B = traceB.hashes;
 const evolves = new Set(A).size > 3;            // the sim must actually change (else the hash is meaningless)
 const identical = A.length === B.length && A.every((h, i) => h === B[i]);
 results.baseline = { frames: A.length, distinctHashes: new Set(A).size, identical };
@@ -87,6 +106,8 @@ if (!evolves) { log("FAIL: sim state did not evolve — the golden trace is iner
 if (!identical) {
   const at = A.findIndex((h, i) => h !== B[i]);
   log(`FAIL: two identical (seed,tape) runs diverged at frame ${at} — a nondeterministic sim leak remains`);
+  log(`state A: ${JSON.stringify(traceA.first)}`);
+  log(`state B: ${JSON.stringify(traceB.first)}`);
   failures++;
 }
 
@@ -94,7 +115,7 @@ if (SELFTEST) {
   // DIVERGENCE fault: one extra rng draw at frame 40 on run B must flip the hash
   // from frame 40 onward (and be IDENTICAL before it — proves the hash localizes).
   const skewAt = 40;
-  const C = await trace({ skewAt });
+  const C = (await trace({ skewAt })).hashes;
   const firstDiff = A.findIndex((h, i) => h !== C[i]);
   const cleanBefore = A.slice(0, skewAt).every((h, i) => h === C[i]);
   results.skew = { skewAt, firstDiff, cleanBefore };
@@ -103,7 +124,7 @@ if (SELFTEST) {
 
   // COSMETIC negative: firing Math.random-driven particles every frame must NOT
   // change the sim hash (proves cosmetic RNG is correctly outside the sim state).
-  const D = await trace({ cosmetic: true });
+  const D = (await trace({ cosmetic: true })).hashes;
   const cosmeticMatches = A.length === D.length && A.every((h, i) => h === D[i]);
   results.cosmetic = { matches: cosmeticMatches };
   log(`selftest COSMETIC (Math.random particle burst each frame): hash unchanged=${cosmeticMatches}`);

@@ -138,20 +138,20 @@ export class MapFeatures {
       taken.push({ x, z });
       const r = 2 + this.ctx.rng.range(0, 1.3);
       // Scorched dark base so the pit reads as burnt ground, not a flat decal.
-      const baseMat = new THREE.MeshBasicMaterial({ color: 0x190a06, transparent: true, opacity: 0.82, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
-      const base = new THREE.Mesh(new THREE.CircleGeometry(r * 1.1, 30), baseMat);
+      const baseMat = new THREE.MeshBasicMaterial({ color: 0x28100c, transparent: true, opacity: 0.94, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
+      const base = new THREE.Mesh(new THREE.CircleGeometry(r * 1.1, 18), baseMat);
       base.rotation.x = -Math.PI / 2;
       base.position.set(x, DECAL_Y.base, z);
       base.renderOrder = DECAL_ORDER.base;
       // Molten inner glow, animated each frame.
-      const glowMat = new THREE.MeshBasicMaterial({ color: 0xff5a1e, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
-      const glow = new THREE.Mesh(new THREE.CircleGeometry(r, 30), glowMat);
+      const glowMat = new THREE.MeshBasicMaterial({ color: 0x8f2b1c, transparent: true, opacity: 0.62, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
+      const glow = new THREE.Mesh(new THREE.CircleGeometry(r, 18), glowMat);
       glow.rotation.x = -Math.PI / 2;
       glow.position.set(x, DECAL_Y.glow, z);
       glow.renderOrder = DECAL_ORDER.glow;
       // Bright molten rim.
-      const ringMat = new THREE.MeshBasicMaterial({ color: 0xff8a3a, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
-      const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.24, r + 0.1, 30), ringMat);
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0xff654d, transparent: true, opacity: 0.64, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.24, r + 0.1, 18), ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.position.set(x, DECAL_Y.ring, z);
       ring.renderOrder = DECAL_ORDER.ring;
@@ -379,13 +379,14 @@ export class MapFeatures {
       this.hazardCd -= dt;
       let inHazard = false, hx = 0, hz = 0;
       for (const h of this.hazards) {
-        h.glowMat.opacity = 0.36 + Math.abs(Math.sin(this.t * 5 + h.x)) * 0.32 + Math.random() * 0.08;
-        h.ringMat.opacity = 0.5 + Math.abs(Math.sin(this.t * 4 + h.z + 1)) * 0.4;
-        // Flame tongues flicker tall and thin, swaying with the heat.
+        h.glowMat.opacity = 0.52;
+        h.ringMat.opacity = 0.68;
+        // Flame tongues sway deterministically. Never inject fresh random scale or
+        // opacity per frame: a group of them read as a broken flashing backdrop.
         for (let k = 0; k < h.flames.length; k++) {
           const fl = h.flames[k];
-          const tall = 0.6 + Math.abs(Math.sin(this.t * (7 + k) + k * 1.7)) * 0.7 + Math.random() * 0.12;
-          fl.scale.set(0.7 + Math.sin(this.t * 9 + k) * 0.14, tall, 0.7 + Math.cos(this.t * 8 + k) * 0.14);
+          const tall = 0.86 + Math.sin(this.t * (2.2 + k * 0.17) + k * 1.7) * 0.2;
+          fl.scale.set(0.72 + Math.sin(this.t * 2.6 + k) * 0.06, tall, 0.72 + Math.cos(this.t * 2.3 + k) * 0.06);
           fl.position.y = 0.35 + tall * 0.4;
           fl.rotation.y += dt * 2.2;
         }
@@ -408,10 +409,10 @@ export class MapFeatures {
     if (this.pads.length === 2) {
       this.teleCd -= dt;
       for (const pad of this.pads) {
-        pad.mat.opacity = 0.4 + Math.abs(Math.sin(this.t * 2.5)) * 0.35;
+        pad.mat.opacity = 0.58;
         pad.ring.rotation.z += dt * 1.5;
         pad.shards.rotation.y += dt * 0.9;
-        pad.beamMat.opacity = 0.12 + Math.abs(Math.sin(this.t * 2.2)) * 0.12;
+        pad.beamMat.opacity = 0.18;
       }
       if (this.teleCd <= 0 && this.ctx.player.alive) {
         for (let i = 0; i < 2; i++) {
@@ -454,7 +455,7 @@ export class MapFeatures {
       const live = c >= VENT_WARN && c < VENT_WARN + VENT_LIVE;
       v.warnMat.opacity = live ? 0.5 : warning ? 0.1 + (c / VENT_WARN) * 0.42 : 0.08;
       v.column.scale.y += ((live ? 1 : 0.001) - v.column.scale.y) * Math.min(1, dt * 16);
-      v.colMat.opacity = live ? 0.55 + Math.abs(Math.sin(this.t * 20)) * 0.32 : Math.max(0, v.colMat.opacity - dt * 3);
+      v.colMat.opacity = live ? 0.68 : Math.max(0, v.colMat.opacity - dt * 3);
       v.column.rotation.y += dt * 3;
       v.rimMat.emissive.setHex(live ? 0xff3a08 : warning ? 0x511700 : 0x140600);
       v.rimMat.emissiveIntensity = live ? 2.2 : warning ? 0.6 + (c / VENT_WARN) * 1.2 : 1;
@@ -487,7 +488,7 @@ export class MapFeatures {
         }
         d.mesh.position.set(d.x, 1.1 + Math.sin(this.t * 3 + d.x) * 0.15, d.z);
         d.mesh.rotation.x += dt * 1.5; d.mesh.rotation.y += dt * 2;
-        d.mat.opacity = 0.5 + Math.abs(Math.sin(this.t * 4 + d.z)) * 0.3;
+        d.mat.opacity = 0.64;
         if (Math.random() < dt * 7) this.ctx.fx.burst({ x: d.x, y: 1.1, z: d.z, count: 1, color: 0xc24bff, speed: [0.2, 1], up: 0.4, size: [0.25, 0.5], life: [0.3, 0.6], gravity: 0.4, drag: 2, jitter: 0.6 });
         if (d.cd <= 0 && this.ctx.player.alive && Math.hypot(p.x - d.x, p.z - d.z) < d.r + this.ctx.player.radius) {
           this.ctx.combat.damagePlayer(10, d.x, d.z);
@@ -504,10 +505,10 @@ export class MapFeatures {
       s.cd -= dt;
       s.angle += s.speed * dt;
       s.bar.rotation.y = s.angle;
-      s.mat.opacity = 0.44 + Math.abs(Math.sin(this.t * 4)) * 0.1; // normal-blend body — solid, breathing
-      s.coreMat.opacity = 0.22 + Math.abs(Math.sin(this.t * 8)) * 0.08; // low additive spine (won't clip)
+      s.mat.opacity = 0.49; // normal-blend body — solid and stable
+      s.coreMat.opacity = 0.26; // low additive spine (won't clip)
       s.hub.rotation.y += dt * 1.6;
-      s.hubMat.opacity = 0.42 + Math.abs(Math.sin(this.t * 6)) * 0.14;
+      s.hubMat.opacity = 0.49;
       const rx = p.x - s.x;
       const rz = p.z - s.z;
       const along = rx * Math.sin(s.angle) + rz * Math.cos(s.angle);

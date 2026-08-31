@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
 import type { Ctx } from "./ctx";
+import type { AttackFamily } from "../presentation/types";
 
 interface Shot {
   active: boolean;
@@ -19,6 +20,9 @@ interface Shot {
   hitIds: Set<number>;
   trailAcc: number;
   color: number;
+  sourceId: string;
+  sourceKind: string;
+  attackFamily: AttackFamily;
 }
 
 let glowTexture: THREE.CanvasTexture | null = null;
@@ -67,6 +71,7 @@ function makePool(scene: THREE.Scene, count: number): Shot[] {
       x: 0, z: 0, y: 0.9, vx: 0, vz: 0,
       dmg: 0, radius: 0.25, traveled: 0, range: 30,
       pierce: false, hitIds: new Set(), trailAcc: 0, color: 0xffffff,
+      sourceId: "projectile:unknown", sourceKind: "projectile", attackFamily: "card",
     });
   }
   return pool;
@@ -80,6 +85,9 @@ export interface ShotOpts {
   range?: number;
   pierce?: boolean;
   y?: number;
+  sourceId?: string;
+  sourceKind?: string;
+  attackFamily?: AttackFamily;
 }
 
 function fire(pool: Shot[], x: number, z: number, angle: number, opts: ShotOpts): Shot | null {
@@ -99,6 +107,9 @@ function fire(pool: Shot[], x: number, z: number, angle: number, opts: ShotOpts)
   s.hitIds.clear();
   s.trailAcc = 0;
   s.color = opts.color;
+  s.sourceId = opts.sourceId ?? "projectile:unknown";
+  s.sourceKind = opts.sourceKind ?? "projectile";
+  s.attackFamily = opts.attackFamily ?? "card";
   s.mat.color.set(opts.color);
   const glow = s.mesh.children[0] as THREE.Sprite | undefined;
   if (glow) (glow.material as THREE.SpriteMaterial).color.set(opts.color);
@@ -224,7 +235,9 @@ export class HostileProjectiles {
       const dz = p.pos.z - s.z;
       const rr = p.radius + s.radius;
       if (dx * dx + dz * dz < rr * rr && p.alive) {
-        const absorbed = this.ctx.combat.damagePlayer(s.dmg, s.x, s.z, { parryable: true });
+        const absorbed = this.ctx.combat.damagePlayer(s.dmg, s.x, s.z, {
+          parryable: true, sourceId: s.sourceId, sourceKind: s.sourceKind, attackFamily: s.attackFamily,
+        });
         // Perfect-dodged shots pass through; anything else pops
         if (absorbed !== "dodged") {
           s.active = false;

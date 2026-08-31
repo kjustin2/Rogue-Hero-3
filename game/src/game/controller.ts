@@ -75,6 +75,18 @@ export class Controller {
     this.impulse.y += z;
   }
 
+  /** Test/run-boundary transient reset. Does not alter player position or stats. */
+  clearTransient(): void {
+    this.vel.set(0, 0);
+    this.impulse.set(0, 0);
+    this.dodgeTimer = -1;
+    this.dodgeCooldown = 0;
+    this.iframeTimer = 0;
+    this.externalMoveTimer = 0;
+    this.target = null;
+    this.ctx.player.animDodge = null;
+  }
+
   update(dt: number): void {
     const { input, player, tempo } = this.ctx;
     if (!player.alive) {

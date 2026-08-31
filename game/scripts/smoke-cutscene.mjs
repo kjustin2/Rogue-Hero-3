@@ -21,11 +21,17 @@ await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
 await page.waitForTimeout(700);
 await page.locator(".hero-card").first().click();
 
-// Story intro: capture line 1, then advance through
+// Story intro: three in-world compositions, then advance through.
 await page.waitForTimeout(1000);
-await page.screenshot({ path: "shots/c-story.png" });
+await page.screenshot({ path: "shots/c-story-rift.png" });
 const storyShown = await page.locator(".story__line").count();
 console.log("STORY INTRO:", storyShown ? "OK" : "MISSING");
+await page.locator(".story").click({ position: { x: 700, y: 650 } });
+await page.waitForTimeout(450);
+await page.screenshot({ path: "shots/c-story-wardens.png" });
+await page.locator(".story").click({ position: { x: 700, y: 650 } });
+await page.waitForTimeout(450);
+await page.screenshot({ path: "shots/c-story-blade.png" });
 await page.locator(".story-skip").click();
 await page.waitForTimeout(2200);
 
@@ -44,15 +50,19 @@ const backToPlay = await page.evaluate(() => !document.querySelector(".letterbox
 console.log("CUTSCENE ENDED:", backToPlay ? "OK" : "STUCK");
 await page.screenshot({ path: "shots/c-boss-fight.png" });
 
-// Skip path: reload the boss room, skip instantly with a click
+// Skip path: the click fast-forwards to the identity reveal, holds it for 600ms,
+// then returns control instead of hard-cutting the Warden title.
 await page.evaluate(() => {
   const c = window.__rh3;
   c.player.hp = c.player.maxHp;
-  c.run.debugLoadNode("boss", 2);
+  c.run.debugLoadNode("boss", 1);
 });
 await page.waitForTimeout(1100); // past the skip-grace window
 await page.mouse.click(800, 450);
-await page.waitForTimeout(400);
+await page.waitForTimeout(150);
+const revealHeld = await page.evaluate(() => /WARDEN/i.test(document.querySelector(".banner__title")?.textContent ?? ""));
+console.log("SKIP REVEAL:", revealHeld ? "OK" : "MISSING");
+await page.waitForTimeout(650);
 const skipped = await page.evaluate(() => !document.querySelector(".letterbox--top").classList.contains("letterbox--on"));
 console.log("SKIP:", skipped ? "OK" : "FAIL");
 

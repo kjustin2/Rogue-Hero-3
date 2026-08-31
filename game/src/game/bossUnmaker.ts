@@ -145,11 +145,11 @@ export class Unmaker extends Enemy {
     this.wardColor = VOID_VIOLET;
 
     this.cageMat = this.stdMat(0x0a0814, 0x2a1450, 0.5);
-    this.ringMat = this.stdMat(0x100a1e, VOID_VIOLET, 1.4);
-    this.debrisMat = this.stdMat(0x080610, 0x8a5aff, 1.2);
+    this.ringMat = this.stdMat(0x100a1e, 0x5d407d, 0.28);
+    this.debrisMat = this.stdMat(0x080610, 0x7650b8, 0.62);
     // Deeper violet + lower intensity: near-white x3.0 clipped the star to an
     // untinted white blob under bloom (emissive-must-tint).
-    this.coreMat = this.stdMat(0x0c0a18, 0xd8beff, 2.4);
+    this.coreMat = this.stdMat(0x0c0a18, 0x756884, 0.58);
 
     // Blinding collapsing core
     this.core = this.addMesh(new THREE.IcosahedronGeometry(1.0, 1), this.coreMat, 0, 2.2);
@@ -261,6 +261,9 @@ export class Unmaker extends Enemy {
       this.coreMat.emissive.set(0xffffff);
       this.coreMat.emissiveIntensity = 4.0;
     } else if (phase === 4) {
+      // Do not preserve the threshold hit's full-body white flash through the
+      // frozen mercy tableau; phase four must read as a dim, spent star.
+      this.hitFlash = 0;
       // Fading: the star dims, cools to a sad blue-grey, and sags inward — spent.
       this.setBossScale(1.04);
       this.core.scale.setScalar(0.95);
@@ -741,7 +744,7 @@ export class Unmaker extends Enemy {
     if (this.sweepMesh) {
       this.sweepMesh.position.set(this.pos.x + sx * BEAM_LEN * 0.5, 1.6, this.pos.z + cz * BEAM_LEN * 0.5);
       this.sweepMesh.rotation.y = this.sweepAngle;
-      if (this.sweepMat) this.sweepMat.opacity = 0.8 + Math.sin(this.t * 30) * 0.12;
+      if (this.sweepMat) this.sweepMat.opacity = 0.84;
     }
     // Hitscan along the current lane (throttled so it can't multi-hit per frame).
     if (this.sweepHitCd <= 0) {
@@ -802,7 +805,7 @@ export class Unmaker extends Enemy {
 
     // Living star: core pulses, rings counter-spin, the body breathes a hover.
     if (this.phase < 4) {
-      this.coreMat.emissiveIntensity = 3.0 + this.phase * 0.6 + Math.sin(this.t * (2.5 + this.phase * 1.5)) * 1.0 + this.chargeAmt * 2.6 + this.flash * 4.5;
+      this.coreMat.emissiveIntensity = 0.58 + this.phase * 0.12 + Math.sin(this.t * (2.5 + this.phase * 1.5)) * 0.08 + this.chargeAmt * 0.4 + this.flash * 0.6;
       this.rings.rotation.y -= dt * (0.8 + this.phase * 0.5 + this.chargeAmt * 2.4 + this.flash * 3.0);
       this.debris.rotation.y += dt * (1.1 + this.phase * 0.45 + this.chargeAmt * 2.0);
     } else {

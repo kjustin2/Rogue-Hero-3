@@ -1,8 +1,8 @@
 # Self-iterating improvement loop
 
-> Sibling: the **QA doctor** (`npm run qa`, `scripts/qa/`) is the assessment side — one command,
-> one health card (`artifacts/qa/QA.md`) across build/functional/stability/coverage/visual/
-> glitch/perf/runtime/judge. Typical flow: `qa` finds issues → its judge's rankedIssues become
+> Sibling: the default **development smoke** (`npm run qa`) verifies the build, drives one browser
+> journey, and leaves five fresh screenshots for AI/human review in under a minute. The forensic
+> health card (`npm run qa:deep`) is opt-in for focused diagnosis. Typical flow: screenshot review finds issues and ranked issues become
 > goals in `goals.mjs` → this loop drives them to green.
 
 A closed feedback loop that drives the game toward a set of measurable goals,

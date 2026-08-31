@@ -93,6 +93,14 @@ export interface BurstOpts {
   shape?: number | number[];
 }
 
+export interface DirectionalBurstOpts extends Omit<BurstOpts, "up" | "vertical"> {
+  dirX: number;
+  dirY: number;
+  dirZ: number;
+  /** Angular/random cone width around the supplied direction. */
+  spread?: number;
+}
+
 /**
  * Single pooled GPU point cloud for every spark/ember/burst in the game,
  * plus a pool of expanding ring meshes for shockwaves. Additive, bloom-friendly.
@@ -304,6 +312,57 @@ export class Particles {
     this.geometry.attributes.aShape.needsUpdate = true;
   }
 
+  /** Target-local impact fan. Unlike burst(), particles inherit a clear attack
+   * direction so contact reads as force instead of a spherical fireworks cloud. */
+  directionalBurst(opts: DirectionalBurstOpts): void {
+    const speed = opts.speed ?? [3, 8];
+    const size = opts.size ?? [0.3, 0.7];
+    const life = opts.life ?? [0.15, 0.35];
+    const gravity = opts.gravity ?? -7;
+    const drag = opts.drag ?? 4;
+    const jitter = opts.jitter ?? 0.08;
+    const spread = opts.spread ?? 0.5;
+    const palette = Array.isArray(opts.color) ? opts.color : null;
+    const shapePalette = Array.isArray(opts.shape) ? opts.shape : null;
+    const shape = shapePalette ? null : opts.shape ?? ParticleShape.streak;
+    const baseLen = Math.hypot(opts.dirX, opts.dirY, opts.dirZ) || 1;
+    const bx = opts.dirX / baseLen, by = opts.dirY / baseLen, bz = opts.dirZ / baseLen;
+
+    for (let n = 0; n < opts.count; n++) {
+      const i = this.cursor;
+      this.cursor = (this.cursor + 1) % MAX_PARTICLES;
+      const i3 = i * 3;
+      let dx = bx + (Math.random() - 0.5) * spread;
+      let dy = by + (Math.random() - 0.5) * spread * 0.65;
+      let dz = bz + (Math.random() - 0.5) * spread;
+      const inv = 1 / Math.max(0.001, Math.hypot(dx, dy, dz));
+      const spd = speed[0] + Math.random() * (speed[1] - speed[0]);
+      dx *= inv * spd; dy *= inv * spd; dz *= inv * spd;
+      this.positions[i3] = opts.x + (Math.random() - 0.5) * jitter * 2;
+      this.positions[i3 + 1] = opts.y + (Math.random() - 0.5) * jitter;
+      this.positions[i3 + 2] = opts.z + (Math.random() - 0.5) * jitter * 2;
+      this.velocities[i3] = dx;
+      this.velocities[i3 + 1] = dy;
+      this.velocities[i3 + 2] = dz;
+      const color = palette ? palette[Math.floor(Math.random() * palette.length)] : opts.color as number;
+      this.tmpColor.set(color);
+      this.colors[i3] = this.tmpColor.r;
+      this.colors[i3 + 1] = this.tmpColor.g;
+      this.colors[i3 + 2] = this.tmpColor.b;
+      this.sizes[i] = size[0] + Math.random() * (size[1] - size[0]);
+      const lf = life[0] + Math.random() * (life[1] - life[0]);
+      this.life[i] = lf;
+      this.lifeTotal[i] = lf;
+      this.fades[i] = 1;
+      this.gravity[i] = gravity;
+      this.drag[i] = drag;
+      this.shapes[i] = shapePalette ? shapePalette[Math.floor(Math.random() * shapePalette.length)] : (shape as number);
+    }
+    this.geometry.attributes.aColor.needsUpdate = true;
+    this.geometry.attributes.aSize.needsUpdate = true;
+    this.geometry.attributes.aShape.needsUpdate = true;
+  }
+
   /** Expanding ground shockwave ring. */
   ring(x: number, z: number, opts: { radius: number; color: number; duration?: number; y?: number; startRadius?: number }): void {
     const slot = this.rings.find((r) => !r.mesh.visible);
@@ -317,6 +376,38 @@ export class Particles {
     slot.mat.color.set(opts.color);
     slot.mat.opacity = 0.9;
     slot.mesh.scale.setScalar(slot.from);
+  }
+
+  /** Remove transient particles, shockwaves and materialization beams while
+   * retaining the pools. Scene changes and presentation plates must never
+   * inherit combat flashes from the room they replaced. */
+  clear(): void {
+    this.life.fill(0);
+    this.fades.fill(0);
+    for (let i = 1; i < this.positions.length; i += 3) this.positions[i] = -999;
+    this.geometry.attributes.position.needsUpdate = true;
+    this.geometry.attributes.aFade.needsUpdate = true;
+    for (const ring of this.rings) {
+      ring.t = ring.dur;
+      ring.mat.opacity = 0;
+      ring.mesh.visible = false;
+    }
+    for (const beam of this.beams) {
+      beam.t = -1;
+      beam.mat.opacity = 0;
+      beam.mesh.visible = false;
+    }
+    this.ambientAcc = 0;
+  }
+
+  stats(): { particles: number; rings: number; beams: number } {
+    let particles = 0;
+    for (let i = 0; i < this.life.length; i++) if (this.life[i] > 0) particles++;
+    return {
+      particles,
+      rings: this.rings.reduce((count, ring) => count + (ring.mesh.visible ? 1 : 0), 0),
+      beams: this.beams.reduce((count, beam) => count + (beam.mesh.visible ? 1 : 0), 0),
+    };
   }
 
   update(dt: number): void {

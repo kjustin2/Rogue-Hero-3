@@ -67,20 +67,20 @@ async function run(screen, { pseudoloc = false, faults = null } = {}) {
     // Wrap every text node's content to +40% length — the localization headroom
     // test, applied at the string funnel via a one-shot DOM pass (not a
     // MutationObserver — the HUD rewrites innerHTML each frame).
-    //
-    // Originals are stashed and put back by unPseudoloc(). Re-staging the screen
-    // is NOT enough: the HUD only rewrites a field when its value changes, so an
-    // unchanged label kept its inflated text into the next viewport's BASE pass —
-    // the hard gate. That leak reported the hero plate and the room title as a
-    // 1302px collision that does not exist.
     await page.evaluate(`(()=>{
       const grow = (s) => "[" + s + "~".repeat(Math.ceil(s.replace(/\\s/g,"").length*0.4)) + "]";
-      window.__plocStash = [];
+      window.__qaPseudolocNodes = [];
       for (const root of ["#hud","#overlay"]) {
         const r = document.querySelector(root); if (!r) continue;
         const w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
         const nodes = []; while (w.nextNode()) nodes.push(w.currentNode);
-        for (const n of nodes) { const t=n.textContent.trim(); if (t.length>1 && !/^[0-9%×\\/]+$/.test(t)) window.__plocStash.push([n, n.textContent]); n.textContent = grow(t); }
+        for (const n of nodes) {
+          const t=n.textContent.trim();
+          if (t.length>1 && !/^[0-9%×\\/]+$/.test(t)) {
+            window.__qaPseudolocNodes.push([n, n.textContent]);
+            n.textContent = grow(t);
+          }
+        }
       }
     })(); 0`);
   }
@@ -88,14 +88,6 @@ async function run(screen, { pseudoloc = false, faults = null } = {}) {
   const findings = await page.evaluate(`window.${S}debug.auditUI(${JSON.stringify({ allow: UA.allow })})`);
   const occ = await page.evaluate(`window.${S}debug.auditOcclusion()`);
   return [...findings, ...occ];
-}
-
-/** Undo the pseudoloc mutation exactly, node by node. */
-async function unPseudoloc() {
-  await page.evaluate(`(()=>{
-    for (const [n, t] of (window.__plocStash || [])) { try { n.textContent = t; } catch { /* detached */ } }
-    window.__plocStash = [];
-  })(); 0`);
 }
 
 const results = [];
@@ -114,8 +106,8 @@ if (!SELFTEST) {
       // clipped label. The base pass is the hard gate.
       const plocRaw = await run(screen, { pseudoloc: true });
       const ploc = plocRaw.filter((f) => f.rule === "truncated" || f.rule === "overlap").map((f) => ({ ...f, pseudoloc: true }));
-      await unPseudoloc(); // put every mutated string back before the next size
-      await stage(screen);
+      await page.evaluate(`(()=>{for(const [n,t] of (window.__qaPseudolocNodes||[])){if(n?.isConnected)n.textContent=t;}window.__qaPseudolocNodes=[];})()`);
+      await stage(screen); // drop the pseudoloc mutation before the next size
       for (const f of base) log(`  ${screen} @${w}×${h}: ${f.rule} — ${f.sel} — ${f.detail}`);
       for (const f of ploc) log(`  ${screen} @${w}×${h} [ploc WARN]: ${f.rule} — ${f.sel} — ${f.detail}`);
       results.push({ screen, viewport: `${w}x${h}`, findings: base, warnings: ploc });

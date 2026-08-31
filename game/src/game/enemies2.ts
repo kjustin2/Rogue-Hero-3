@@ -45,6 +45,7 @@ export class Wisp extends Enemy {
       const sh = this.addMesh(new THREE.TetrahedronGeometry(0.08), this.orbMat, Math.cos(a) * 0.5, Math.sin(a) * 0.22, Math.sin(a) * 0.5);
       sh.rotation.set(a, a * 1.3, 0);
     }
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -146,6 +147,7 @@ export class Leaper extends Enemy {
     const cr = this.addMesh(new THREE.ConeGeometry(0.07, 0.4, 4), clawMat, 0.28, 0.18, 0.55);
     cr.rotation.x = 1.4;
     this.lastPlayer.set(ctx.player.pos.x, ctx.player.pos.z);
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -274,6 +276,7 @@ export class Tether extends Enemy {
       const a = (i / 3) * Math.PI * 2;
       this.addMesh(new THREE.OctahedronGeometry(0.06), this.crystalMat, Math.cos(a) * 0.34, 0, Math.sin(a) * 0.34, this.crystal);
     }
+    this.mergeStaticRootMeshes([this.crystal]);
   }
 
   protected deathColor(): number {
@@ -373,6 +376,7 @@ export class Mirror extends Enemy {
     this.bubble = new THREE.Mesh(new THREE.SphereGeometry(1.5, 18, 12), this.bubbleMat);
     this.bubble.position.y = 1.1;
     this.root.add(this.bubble);
+    this.mergeStaticRootMeshes([this.bubble]);
   }
 
   protected deathColor(): number {
@@ -511,6 +515,7 @@ export class Caster extends Enemy {
     // Casting hand cradling the main orb, with a second smaller ember
     this.orb = this.addMesh(new THREE.SphereGeometry(0.2, 10, 8), this.orbMat, 0.45, 1.5, 0.25);
     this.addMesh(new THREE.SphereGeometry(0.08, 8, 6), emberMat, 0.62, 1.34, 0.22);
+    this.mergeStaticRootMeshes([this.orb]);
   }
 
   protected deathColor(): number {
@@ -641,6 +646,7 @@ export class Shade extends Enemy {
     // Dagger crossguards
     this.addMesh(new THREE.BoxGeometry(0.16, 0.04, 0.04), dagger, -0.4, 1.0, 0.0);
     this.addMesh(new THREE.BoxGeometry(0.16, 0.04, 0.04), dagger, 0.4, 1.0, 0.0);
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -782,6 +788,7 @@ export class Bastion extends Enemy {
     }
     this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, -0.6, 0.3, 0);
     this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, 0.6, 0.3, 0);
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -837,18 +844,17 @@ export class Bastion extends Enemy {
     // These mats are outside the flash loop (so the shield-HP glow isn't clobbered),
     // which also means we owe them the freeze tint the base loop gives flashMats.
     if (this.frozen > 0) {
-      const fi = 0.9 + Math.sin(this.t * 6) * 0.2;
       this.shieldMat.emissive.set(0x5599ff);
       this.plateMat.emissive.set(0x5599ff);
-      this.shieldMat.emissiveIntensity = fi;
-      this.plateMat.emissiveIntensity = fi;
+      this.shieldMat.emissiveIntensity = 1;
+      this.plateMat.emissiveIntensity = 1;
       return;
     }
     // Drive shield/plate glow off shield HP (restore ember after any freeze tint).
     this.shieldMat.emissive.set(0xff7a2a);
     this.plateMat.emissive.set(0xff7a2a);
     const frac = this.shieldHp / this.shieldMaxHp;
-    this.shieldMat.emissiveIntensity = 0.12 + frac * (1.0 + Math.sin(this.t * 2.5) * 0.3);
+    this.shieldMat.emissiveIntensity = 0.12 + frac * 1.15;
     this.plateMat.emissiveIntensity = 0.02 + frac * 0.16;
   }
 
@@ -945,6 +951,7 @@ export class Brute extends Enemy {
       const k = this.addMesh(new THREE.ConeGeometry(0.08, 0.28, 4), ironMat, fx, 0.45, 0.22);
       k.rotation.x = 1.3;
     }
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -1071,6 +1078,7 @@ export class Harrier extends Enemy {
     // Tail thruster glow propelling the strafe
     this.addMesh(new THREE.ConeGeometry(0.1, 0.26, 6), this.orbMat, 0, 0, -0.5).rotation.x = -Math.PI / 2;
     this.orb = this.addMesh(new THREE.SphereGeometry(0.15, 10, 8), this.orbMat, 0, 0, 0.5);
+    this.mergeStaticRootMeshes([this.orb]);
   }
 
   protected deathColor(): number {
@@ -1168,6 +1176,7 @@ export class Splitter extends Enemy {
       const drip = this.addMesh(new THREE.ConeGeometry(0.07, 0.3, 5), gooMat, dx, 0.16, dz);
       drip.rotation.x = Math.PI;
     }
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -1243,6 +1252,7 @@ export class Voidling extends Enemy {
       const tail = this.addMesh(new THREE.ConeGeometry(0.05, 0.4, 3), shardMat, tx, 0.4, tz);
       tail.rotation.x = -Math.PI / 2.2;
     }
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -1265,7 +1275,7 @@ export class Voidling extends Enemy {
     const tz = p.pos.z + (dx / d) * swirl;
     this.seek(tx, tz, dt);
     this.pos.y = 0.45 + Math.sin(this.t * 8 + this.phase) * 0.18;
-    this.coreMat.emissiveIntensity = 2.8 + Math.sin(this.t * 7 + this.phase) * 0.6;
+    this.coreMat.emissiveIntensity = 3.0;
     this.tryContactDamage();
   }
 }
@@ -1331,6 +1341,7 @@ export class Warper extends Enemy {
       const a = (i / 3) * Math.PI * 2;
       this.addMesh(new THREE.TetrahedronGeometry(0.05), trimMat, 0.4 + Math.cos(a) * 0.24, 1.45 + Math.sin(a) * 0.12, 0.3);
     }
+    this.mergeStaticRootMeshes([this.orb]);
   }
 
   protected deathColor(): number {

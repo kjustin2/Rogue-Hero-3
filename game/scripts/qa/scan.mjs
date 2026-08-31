@@ -37,15 +37,16 @@ const RULES = [
   },
   {
     name: "no-hitstop", severity: "FAIL",
-    re: /\bdt\s*\*=|\btimeScale\b/,
+    re: /\bdt\s*\*=|\btimeScale\b|\bhitPause\b|\bHitPause\b/,
     allow: () => false,
     hint: "no combat time-scaling — use cam.addTrauma/kick + stage.punch instead",
   },
   {
     name: "no-asset-files", severity: "FAIL",
     re: /\b(TextureLoader|GLTFLoader|FBXLoader|OBJLoader)\b|\.(glb|gltf|fbx)["'`]/,
-    allow: () => false, // meshes are procedural, textures canvas-painted; music isn't a loader
-    hint: "no asset files except music — meshes procedural, textures canvas-painted",
+    // One audited registry owns optional permissive GLBs and guarantees procedural fallbacks.
+    allow: (rel) => /presentation\/assetRegistry\.ts$/.test(rel),
+    hint: "asset loading belongs only in presentation/assetRegistry.ts; gameplay stays procedural-first",
   },
   {
     name: "strict-ts-escape", severity: "FAIL",
@@ -107,7 +108,7 @@ if (!SELFTEST) {
     { rule: "damage-funnel", bad: "src/game/player.ts", good: "src/game/combat.ts", line: "this.player.hp -= dmg;" },
     { rule: "tempo-mutation", bad: "src/game/relics.ts", good: "src/game/combat.ts", line: "tempo.value = 25;" },
     { rule: "no-hitstop", bad: "src/game/combat.ts", good: null, line: "dt *= 0.2; // slowmo" },
-    { rule: "no-asset-files", bad: "src/render/arena.ts", good: null, line: 'const m = loader.load("hero.glb");' },
+    { rule: "no-asset-files", bad: "src/render/arena.ts", good: "src/presentation/assetRegistry.ts", line: 'const m = loader.load("hero.glb");' },
     { rule: "strict-ts-escape", bad: "src/game/deck.ts", good: null, line: "const x = y as any;" },
     { rule: "placeholder-text", bad: "src/ui/menus.ts", good: null, line: 'const t = "lorem ipsum dolor";' },
     { rule: "term-rift-depth", bad: "src/ui/menus.ts", good: "src/game/difficulty.ts", line: 'label: "Ascension Depth",' },

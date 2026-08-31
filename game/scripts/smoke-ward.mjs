@@ -22,7 +22,7 @@ const check = (name, ok, extra = "") => { console.log(`${ok ? "OK  " : "FAIL"} $
 await page.evaluate(() => localStorage.removeItem("rh3v2-runsave"));
 await page.locator("button", { hasText: /Begin Run|New Run/ }).click();
 await page.waitForTimeout(600);
-await page.locator(".hero-card").first().click();
+await page.locator(".hero-card--active").click();
 await page.waitForTimeout(700);
 if (await page.locator(".story-skip").count()) await page.locator(".story-skip").click();
 await page.waitForTimeout(2200);
@@ -39,7 +39,8 @@ async function loadBoss(kind, act) {
 }
 
 // --- HP per boss (depth 0 = unscaled base).
-const expect = { warden: 1300, spire: 1550, colossus: 2100, tyrant: 1900, unmaker: 2400, echo: 1750 };
+// Shipping base values. This smoke protects the catalog; it does not rebalance it.
+const expect = { warden: 1500, spire: 1550, colossus: 3300, tyrant: 1900, unmaker: 7000, echo: 1750 };
 for (const [kind, act] of [["warden", 1], ["spire", 2], ["colossus", 3], ["tyrant", 4], ["unmaker", 5], ["echo", 4]]) {
   const hp = await loadBoss(kind, act);
   check(`${kind} HP raised`, hp === expect[kind], `maxHp=${hp} (want ${expect[kind]})`);

@@ -37,14 +37,15 @@ await page.addInitScript(() => {
   try {
     new PerformanceObserver((l) => {
       if (!perf.recording) return;
-      for (const e of l.getEntries()) perf.longTasks.push(e.duration);
+      for (const e of l.getEntries()) perf.longTasks.push({ duration: e.duration, startTime: e.startTime });
     }).observe({ type: "longtask", buffered: false });
   } catch { /* longtask unsupported */ }
-  window.__dpStart = () => { perf.frames.length = 0; perf.longTasks.length = 0; perf.recording = true; };
+  window.__dpStart = () => { perf.frames.length = 0; perf.longTasks.length = 0; perf.startedAt = performance.now(); perf.recording = true; };
   window.__dpStop = () => { perf.recording = false; };
   window.__dpStats = () => ({
     max: Math.round(Math.max(0, ...perf.frames)),
-    longMax: Math.round(Math.max(0, ...perf.longTasks)),
+    longMax: Math.round(Math.max(0, ...perf.longTasks.map((entry) => entry.duration))),
+    longTasks: perf.longTasks.map((entry) => ({ duration: Math.round(entry.duration), at: Math.round(entry.startTime - perf.startedAt) })),
     frames: perf.frames.length,
   });
 });
@@ -104,6 +105,24 @@ const pre = await page.evaluate(() => ({
   programs: window.__rh3.stage.renderer.info.programs?.length ?? -1,
 }));
 
+await page.evaluate(() => {
+  window.__deathTimings = [];
+  const wrap = (owner, key, label) => {
+    const original = owner[key];
+    owner[key] = function (...args) {
+      const start = performance.now();
+      try { return original.apply(this, args); }
+      finally { window.__deathTimings.push({ label, ms: performance.now() - start }); }
+    };
+  };
+  const c = window.__rh3;
+  wrap(c.stage, "setMood", "stage.setMood");
+  wrap(c.music, "silence", "music.silence");
+  wrap(c.stage, "punch", "stage.punch");
+  wrap(c.sfx, "defeat", "sfx.defeat");
+  wrap(c.profile, "recordRun", "profile.recordRun");
+});
+
 // Kill the player and poll tightly across the playing->dead flip (the death screen DOM
 // marks it). `preFlip` = the program count on the last frame still in the death beat;
 // `postFlip` = the count once the dead screen is up. The boss stops updating in "dead"
@@ -111,7 +130,11 @@ const pre = await page.evaluate(() => ({
 // this flip adds no programs. (A whole-window count is useless here — the live boss
 // keeps casting first-use attack VFX through the 1.7s beat, which would pollute it.)
 await page.evaluate(() => window.__dpStart());
-await page.evaluate(() => window.__rh3.combat.damagePlayer(999999, 0, 0));
+await page.evaluate(() => {
+  const start = performance.now();
+  window.__rh3.combat.damagePlayer(999999, 0, 0);
+  window.__damageCallMs = performance.now() - start;
+});
 let preFlip = pre.programs, postFlip = pre.programs, sawDeath = false;
 for (let i = 0; i < 70; i++) {
   const s = await page.evaluate(() => ({
@@ -125,6 +148,8 @@ for (let i = 0; i < 70; i++) {
 await page.waitForTimeout(400); // settle a few dead-screen frames
 await page.evaluate(() => window.__dpStop());
 const stats = await page.evaluate(() => window.__dpStats());
+const deathTimings = await page.evaluate(() => window.__deathTimings);
+const damageCallMs = await page.evaluate(() => window.__damageCallMs);
 const post = await page.evaluate(() => ({
   shadows: window.__rh3.stage.keyLight.castShadow,
   programs: window.__rh3.stage.renderer.info.programs?.length ?? -1,
@@ -136,7 +161,9 @@ const check = (name, ok, extra = "") => { console.log(`${ok ? "OK  " : "FAIL"} $
 
 console.log(`  pre: ${JSON.stringify(pre)}`);
 console.log(`  flip: preFlip=${preFlip} postFlip=${postFlip} post=${post.programs} shadows=${post.shadows} (flipDelta=${flipDelta})`);
-console.log(`  death transition: max=${stats.max}ms longMax=${stats.longMax}ms frames=${stats.frames}`);
+console.log(`  death transition: max=${stats.max}ms longMax=${stats.longMax}ms frames=${stats.frames} tasks=${JSON.stringify(stats.longTasks)}`);
+console.log(`  death handlers: ${JSON.stringify(deathTimings)}`);
+console.log(`  damage call: ${damageCallMs.toFixed(1)}ms`);
 check("ran in high quality with shadows on", pre.quality === "high" && pre.shadows === true, JSON.stringify(pre));
 check("a boss was present", pre.boss === true);
 check("the dead screen was reached", sawDeath === true);

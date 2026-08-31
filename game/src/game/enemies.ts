@@ -1,8 +1,12 @@
 import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
 import { applyRim } from "../render/materialFx";
+import { ParticleShape } from "../render/particles";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { dampAngle, TAU } from "../core/math";
 import type { Ctx } from "./ctx";
+import type { ActionSegment, ActorVisualState, AttackFamily } from "../presentation/types";
+import { ENEMY_ATTACK_FAMILY } from "../presentation/profiles";
 
 export type EnemyKind =
   | "husk" | "spitter" | "swarmer" | "bomber" | "sentinel"
@@ -40,6 +44,8 @@ export interface DamageOpts {
   allowShieldStagger?: boolean;
   /** Guards detonator relics (Shatterglass) from recursing on their own AoE. */
   noDetonate?: boolean;
+  /** Presentation identity only; never changes damage or collision. */
+  attackFamily?: AttackFamily;
 }
 
 // Shared assets for the ground-contact glow under every enemy (one soft radial
@@ -108,6 +114,8 @@ export abstract class Enemy {
   private affixCrown: THREE.Group | null = null;
   private roleSilhouettes: RoleSilhouetteRecord[] = [];
   private intentPose = 0;
+  private attackSegment: ActionSegment = "loop";
+  private attackSegmentPhase = 0;
   // Dramatic boss flourish — additive pose the base folds into the root transform.
   // All default-neutral so non-bosses are unaffected. Bosses drive these via
   // drivePose()/setBossScale()/eruptReveal() to give attacks, movement, and phase
@@ -124,10 +132,16 @@ export abstract class Enemy {
   private eruptDur = 0;
   private reactT = 0;
   private reactDur = 0.16;
+  private impactHold = 0;
+  private readonly deathDuration = 0.58;
+  private deathT = this.deathDuration;
   private reactPitch = 0;
   private reactRoll = 0;
   private reactYaw = 0;
   private reactLift = 0;
+  private lastAttackFamily: AttackFamily | null = null;
+  private cinematicYOffset = 0;
+  private cinematicTargetY = 0;
   private readonly flashWhite = new THREE.Color(0xffffff);
   private readonly vulnColor = new THREE.Color(0xffd86b);
   private readonly emissiveScratch = new THREE.Color();
@@ -236,6 +250,12 @@ export abstract class Enemy {
     this.hpBg.visible = this.hpFill.visible = true;
   }
 
+  /** Dynamic shadow maps are reserved for the boss and a tiny foreground cast.
+   * Every other enemy retains its inexpensive contact shadow. */
+  setShadowCasting(on: boolean): void {
+    this.root.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = on; });
+  }
+
   protected registerFlash(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
     this.flashMats.push({ mat, baseEmissive: mat.emissive.clone(), baseIntensity: mat.emissiveIntensity });
     return mat;
@@ -255,6 +275,44 @@ export abstract class Enemy {
     m.castShadow = true;
     parent.add(m);
     return m;
+  }
+
+  /** Bake direct, non-animated body pieces that share a material into one mesh.
+   * Animated limbs/cores are either nested under their own pivots or explicitly excluded. */
+  protected mergeStaticRootMeshes(exclude: readonly THREE.Object3D[] = []): void {
+    this.mergeStaticGroupMeshes(this.root, exclude);
+  }
+
+  private mergeStaticGroupMeshes(parent: THREE.Object3D, exclude: readonly THREE.Object3D[] = []): void {
+    const byMaterial = new Map<THREE.Material, THREE.Mesh[]>();
+    for (const child of parent.children) {
+      if (!(child instanceof THREE.Mesh) || exclude.includes(child) || Array.isArray(child.material)) continue;
+      const list = byMaterial.get(child.material) ?? [];
+      list.push(child);
+      byMaterial.set(child.material, list);
+    }
+    for (const [material, meshes] of byMaterial) {
+      if (meshes.length < 2) continue;
+      const baked: THREE.BufferGeometry[] = [];
+      for (const mesh of meshes) {
+        mesh.updateMatrix();
+        // Primitive geometry is a mix of indexed and non-indexed buffers. Normalize
+        // before merging so a decorative cone cannot invalidate the whole batch.
+        const geo = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+        geo.applyMatrix4(mesh.matrix);
+        baked.push(geo);
+      }
+      const merged = mergeGeometries(baked, false);
+      for (const geo of baked) geo.dispose();
+      if (!merged) continue;
+      const body = new THREE.Mesh(merged, material);
+      body.castShadow = true;
+      parent.add(body);
+      for (const mesh of meshes) {
+        parent.remove(mesh);
+        mesh.geometry.dispose();
+      }
+    }
   }
 
   /** A leg that STEPS: a hip-pivot group at the top of the leg, with the leg box
@@ -344,6 +402,7 @@ export abstract class Enemy {
       }
     }
 
+    this.mergeStaticGroupMeshes(g);
     this.addCreatureSignature(color);
   }
 
@@ -532,11 +591,18 @@ export abstract class Enemy {
         break;
       }
     }
+    this.mergeStaticGroupMeshes(g);
   }
 
   /** Subclasses refresh this while winding up, bracing, fusing, or committing. */
   protected setIntentPose(amount: number): void {
     this.intentPose = Math.max(this.intentPose, amount);
+    if (!this.lastAttackFamily) this.lastAttackFamily = ENEMY_ATTACK_FAMILY[this.kind] ?? "enemy-contact";
+    if (this.attackSegment === "loop") {
+      const phase = Math.max(0, Math.min(1, amount));
+      this.attackSegment = phase < 0.72 ? "anticipation" : "active";
+      this.attackSegmentPhase = phase < 0.72 ? phase / 0.72 : (phase - 0.72) / 0.28;
+    }
   }
 
   /** Ease the dramatic boss pose toward target offsets — call once per tick. */
@@ -591,6 +657,7 @@ export abstract class Enemy {
     const bossScale = this.kind === "boss" ? 0.45 : 1;
     this.reactDur = heavy ? 0.24 : 0.15;
     this.reactT = this.reactDur;
+    this.impactHold = heavy ? 0.045 : 0.025;
     this.reactPitch = -Math.cos(local) * base * bossScale;
     this.reactRoll = Math.sin(local) * base * 1.25 * bossScale;
     this.reactYaw = Math.sin(local) * base * 0.65 * bossScale;
@@ -709,6 +776,18 @@ export abstract class Enemy {
     this.spawnGrace = Math.max(this.spawnGrace, seconds);
   }
 
+  /** Cinematic handoff: the reveal itself has already supplied the safety window. */
+  releaseSpawnGrace(): void {
+    this.spawnGrace = 0;
+  }
+
+  /** Phase-title handoff: movement returns while the boss remains safely warded
+   * and its brain stays parked until the presentation finishes. */
+  holdPhaseRecovery(seconds: number): void {
+    this.spawnGrace = Math.max(this.spawnGrace, seconds);
+    this.setInvuln(seconds);
+  }
+
   /** Feedback when a hit lands on a warded boss: a clink spark + throttled "WARDED" tag. */
   private deflect(): void {
     this.hitFlash = Math.max(this.hitFlash, 0.5);
@@ -731,6 +810,7 @@ export abstract class Enemy {
       geo.rotateX(-Math.PI / 2);
       const mat = new THREE.MeshBasicMaterial({ color: this.wardColor, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
       this.wardRing = new THREE.Mesh(geo, mat);
+      this.wardRing.userData.solidity = "fx";
       this.root.add(this.wardRing);
     }
     const mat = this.wardRing.material as THREE.MeshBasicMaterial;
@@ -741,7 +821,7 @@ export abstract class Enemy {
       this.wardRing.position.y = 1.4 + Math.sin(this.t * 5) * 0.15;
       this.wardRing.rotation.y += dt * 2;
       mat.color.setHex(this.wardColor);
-      mat.opacity = 0.5 + Math.abs(Math.sin(this.t * 6)) * 0.4;
+      mat.opacity = 0.72;
     } else {
       this.wardRing.visible = false;
     }
@@ -847,13 +927,30 @@ export abstract class Enemy {
     this.onDeath();
     this.ctx.events.emit("KILL", { x: this.pos.x, z: this.pos.z, kind: this.kind });
     const c = this.deathColor();
-    this.ctx.fx.burst({
-      x: this.pos.x, y: 0.8, z: this.pos.z,
-      count: 26, color: [c, 0xffffff, c],
-      speed: [3, 11], up: 0.7, size: [0.4, 1.0], life: [0.3, 0.8], gravity: -8, drag: 2.5,
+    this.ctx.fx.directionalBurst({
+      x: this.pos.x, y: 0.55, z: this.pos.z, count: this.kind === "boss" ? 34 : 18,
+      color: [c, 0xffffff, 0x241116], dirX: Math.sin(this.heading), dirY: 0.45, dirZ: Math.cos(this.heading),
+      spread: 1.35, speed: [2.5, 9], size: [0.18, 0.58], life: [0.35, 0.9], gravity: -7, drag: 3,
+      shape: [ParticleShape.shard, ParticleShape.streak],
     });
-    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: this.radius * 3.2, color: c, duration: 0.4 });
+    this.ctx.decals.crack(this.pos.x, this.pos.z, Math.max(0.65, this.radius * 1.2));
+    this.ctx.enemies.addDying(this);
+  }
+
+  /** Fracture aftermath. The collider and AI are already gone; only the authored
+   * body collapse remains for a few frames before resources are reclaimed. */
+  updateDeath(dt: number): boolean {
+    this.deathT = Math.max(0, this.deathT - dt);
+    const k = 1 - this.deathT / this.deathDuration;
+    this.root.position.set(this.pos.x, this.pos.y - k * 0.18, this.pos.z);
+    this.root.rotation.x = -k * 0.42;
+    this.root.rotation.z = Math.sin(this.id * 2.17) * k * 0.18;
+    const squash = Math.max(0.02, 1 - k);
+    this.root.scale.set(1 + k * 0.12, squash, 1 + k * 0.12);
+    if (this.groundGlow) (this.groundGlow.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.24;
+    if (this.deathT > 0) return false;
     this.dispose();
+    return true;
   }
 
   protected onDeath(): void {}
@@ -883,10 +980,73 @@ export abstract class Enemy {
   /** Per-type brain. Only called when not frozen. */
   protected abstract tick(dt: number): void;
 
+  /** Presentation/QA identity for authored boss actions; field enemies return null. */
+  debugMove(): string | null {
+    return null;
+  }
+
+  debugForceMove(move: string): boolean {
+    void move;
+    return false;
+  }
+
+  /** Allocation-free presentation state for deterministic scenario probes. */
+  visualState(out: ActorVisualState): ActorVisualState {
+    const reacting = this.reactT > 0 || this.impactHold > 0;
+    const intent = Math.max(0, Math.min(1, this.intentPose));
+    out.actorId = `enemy:${this.id}`;
+    out.actorKind = this.kind;
+    out.action = !this.alive ? "death" : reacting ? (this.reactDur >= 0.23 ? "stagger" : "hit") : intent > 0.05 ? "attack1" : this.gaitAmt > 0.08 ? "move" : "idle";
+    out.phase = reacting ? 1 - Math.max(this.reactT, this.impactHold) / Math.max(0.001, this.reactDur) : intent;
+    out.segment = reacting ? "recovery" : intent > 0.05 ? this.attackSegment : "loop";
+    out.segmentPhase = reacting ? Math.max(0, Math.min(1, out.phase)) : intent > 0.05 ? this.attackSegmentPhase : 0;
+    out.attackFamily = this.lastAttackFamily;
+    out.speed = this.gaitAmt;
+    out.moveX = 0;
+    out.moveZ = this.gaitAmt;
+    out.facing = this.heading;
+    out.reaction = reacting ? 1 : 0;
+    out.frozen = this.frozen > 0;
+    out.alive = this.alive;
+    return out;
+  }
+
+  protected setAttackPresentation(family: AttackFamily, phase: number, segment?: ActionSegment): void {
+    this.lastAttackFamily = family;
+    this.attackSegment = segment ?? (phase < 0.62 ? "anticipation" : "active");
+    this.attackSegmentPhase = Math.max(0, Math.min(1, segment ? phase : phase < 0.62 ? phase / 0.62 : (phase - 0.62) / 0.38));
+    this.setIntentPose(phase);
+  }
+
+  /** Presentation-only boss performance. Authoritative position and AI state are
+   * untouched; the cue is folded into the rendered root pose. */
+  performCinematic(action: "drop" | "land" | "drag" | "roar" | "phase" | "last-stand"): void {
+    this.lastAttackFamily = "boss";
+    if (action === "drop") {
+      this.cinematicYOffset = 7;
+      this.cinematicTargetY = 7;
+      this.poseRear = -0.18; this.poseLunge = 0; this.poseSwell = 0.08;
+    } else if (action === "land") {
+      this.cinematicTargetY = 0;
+      this.poseRear = 0.18; this.poseLunge = 0.2; this.poseSwell = 0.13;
+      this.arrivalPop();
+    } else if (action === "drag") {
+      this.poseRear = 0; this.poseLunge = 0.28; this.poseSwell = 0.05;
+    } else if (action === "roar") {
+      this.poseRear = 0.24; this.poseLunge = 0; this.poseRise = 0.18; this.poseSwell = 0.1;
+    } else if (action === "last-stand") {
+      this.poseRear = 0.3; this.poseLunge = 0; this.poseRise = 0.12; this.poseSwell = 0.18;
+    } else {
+      this.poseRear = 0.18; this.poseLunge = 0; this.poseRise = 0.08; this.poseSwell = 0.12;
+    }
+  }
+
   update(dt: number): void {
     if (!this.alive) return;
     this.t += dt;
-    this.reactT = Math.max(0, this.reactT - dt);
+    this.cinematicYOffset += (this.cinematicTargetY - this.cinematicYOffset) * Math.min(1, dt * (this.cinematicTargetY === 0 ? 13 : 8));
+    if (this.impactHold > 0) this.impactHold = Math.max(0, this.impactHold - dt);
+    else this.reactT = Math.max(0, this.reactT - dt);
     this.contactCd -= dt;
     if (this.vulnTime > 0) this.vulnTime -= dt;
     if (this.invulnTime > 0) this.invulnTime -= dt;
@@ -903,7 +1063,7 @@ export abstract class Enemy {
       this.frozen -= dt;
       for (const f of this.flashMats) {
         f.mat.emissive.set(0x5599ff);
-        f.mat.emissiveIntensity = 0.9 + Math.sin(this.t * 6) * 0.2;
+        f.mat.emissiveIntensity = 1.0;
       }
     } else {
       // Purely dt-accumulated — a wall-clock (performance.now) backstop made the
@@ -915,12 +1075,16 @@ export abstract class Enemy {
       if (this.stagger <= 0 && this.spawnGrace <= 0) this.tick(dt);
       // Hit flash: spike emissive to white, settle back
       this.hitFlash = Math.max(0, this.hitFlash - dt * 7);
-      const vulnGlow = this.vulnTime > 0 ? 0.32 + Math.sin(this.t * 9) * 0.1 : 0;
+      const vulnGlow = this.vulnTime > 0 ? 0.36 : 0;
       for (const f of this.flashMats) {
         this.emissiveScratch.copy(f.baseEmissive);
         if (vulnGlow > 0) this.emissiveScratch.lerp(this.vulnColor, vulnGlow);
-        f.mat.emissive.copy(this.emissiveScratch).lerp(this.flashWhite, this.hitFlash);
-        f.mat.emissiveIntensity = f.baseIntensity + this.hitFlash * 3;
+        // Keep the actor's material identity through a hit. The pooled ImpactCue
+        // already owns the tiny white contact core; whitening every enemy material
+        // at once turned readable directional reactions into a featureless cutout.
+        const localFlash = this.hitFlash * 0.58;
+        f.mat.emissive.copy(this.emissiveScratch).lerp(this.flashWhite, localFlash);
+        f.mat.emissiveIntensity = f.baseIntensity + this.hitFlash * 1.35;
       }
     }
 
@@ -957,6 +1121,7 @@ export abstract class Enemy {
       }
     }
     this.intentPose = Math.max(0, this.intentPose - dt * 5.5);
+    if (this.intentPose <= 0) { this.lastAttackFamily = null; this.attackSegment = "loop"; this.attackSegmentPhase = 0; }
 
     // Knockback decay
     this.pos.x += this.kb.x * dt;
@@ -1000,9 +1165,9 @@ export abstract class Enemy {
       if (this.eruptT === 0) this.eruptList.length = 0;
     }
 
-    const reactK = this.reactDur > 0 ? this.reactT / this.reactDur : 0;
+    const reactK = this.impactHold > 0 ? 0.5 : this.reactDur > 0 ? this.reactT / this.reactDur : 0;
     const reactEase = Math.sin(Math.max(0, Math.min(1, reactK)) * Math.PI);
-    this.root.position.set(this.pos.x, this.pos.y + this.reactLift * reactEase + this.poseRise, this.pos.z);
+    this.root.position.set(this.pos.x, this.pos.y + this.cinematicYOffset + this.reactLift * reactEase + this.poseRise, this.pos.z);
     this.root.rotation.set(
       this.reactPitch * reactEase + this.poseRear - this.poseLunge,
       this.heading + this.reactYaw * reactEase,
@@ -1024,7 +1189,7 @@ export abstract class Enemy {
       this.groundGlow.position.set(this.pos.x, 0.03, this.pos.z);
       const gm = this.groundGlow.material as THREE.MeshBasicMaterial;
       const glowBase = isBoss ? 0.42 : 0.26;
-      gm.opacity = (this.frozen > 0 ? 0.12 : glowBase) + Math.sin(this.t * 2.6) * (isBoss ? 0.09 : 0.05) + this.hitFlash * 0.3;
+      gm.opacity = (this.frozen > 0 ? 0.12 : glowBase) + this.hitFlash * 0.3;
     }
 
     // Ambient boss presence: a slow drift of embers rising off the body, in its
@@ -1171,6 +1336,7 @@ export class Husk extends Enemy {
         claw.rotation.x = Math.PI / 2;
       }
     }
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -1181,6 +1347,11 @@ export class Husk extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     this.pos.y = Math.abs(Math.sin(this.t * 5)) * 0.07 * (this.state === "chase" ? 1 : 0);
+    this.drivePose(dt,
+      this.state === "windup" ? { rear: 0.18, rise: -0.04, swell: 0.04 }
+        : this.state === "lunge" ? { lunge: 0.31, rise: 0.03 }
+          : this.state === "recover" ? { rear: 0.1, rise: -0.03 } : {},
+      12);
 
     switch (this.state) {
       case "chase": {
@@ -1200,7 +1371,7 @@ export class Husk extends Enemy {
         break;
       }
       case "windup":
-        this.setIntentPose(1);
+        this.setAttackPresentation("husk-lunge", 1 - Math.max(0, this.timer) / 0.45, "anticipation");
         this.root.scale.set(1.08, 0.86, 1.18);
         this.facePlayer(dt);
         if (this.timer <= 0) {
@@ -1213,11 +1384,13 @@ export class Husk extends Enemy {
         }
         break;
       case "lunge":
-        this.setIntentPose(0.55);
+        this.setAttackPresentation("husk-lunge", 1 - Math.max(0, this.timer) / 0.22, "active");
         this.root.scale.set(0.96, 1.04, 1.16);
         if (!this.struck && this.distToPlayer() < this.radius + p.radius + 0.7) {
           this.struck = true;
-          this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z);
+          this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z, {
+            sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "husk-lunge",
+          });
         }
         if (this.timer <= 0) {
           this.state = "recover";
@@ -1226,6 +1399,7 @@ export class Husk extends Enemy {
         }
         break;
       case "recover":
+        this.setAttackPresentation("husk-lunge", 1 - Math.max(0, this.timer) / 0.75, "recovery");
         this.root.scale.set(1, 1, 1);
         if (this.timer <= 0) this.state = "chase";
         break;
@@ -1243,18 +1417,19 @@ export class Spitter extends Enemy {
   private orb: THREE.Mesh;
   private orbMat: THREE.MeshStandardMaterial;
   private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
+  private recoil = 0;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 22;
     this.speed = 2.6;
     this.radius = 0.5;
-    this.addRoleSilhouette("caster", 0x55bbff);
+    this.addRoleSilhouette("caster", 0xff6a54);
 
     const robeMat = this.stdMat(0x1c2a4a, 0x223a88, 0.3);
     const trimMat = this.stdMat(0x2e447a, 0x3366cc, 0.7);
-    const eyeMat = this.stdMat(0x000000, 0x66ccff, 2.6);
-    this.orbMat = this.stdMat(0x113355, 0x44aaff, 2.2);
+    const eyeMat = this.stdMat(0x000000, 0xff6a54, 2.6);
+    this.orbMat = this.stdMat(0x321318, 0xff5f48, 2.2);
     this.addMesh(new THREE.ConeGeometry(0.5, 1.5, 6), robeMat, 0, 0.75);
     // Hem ring + a glowing seam up the robe
     const hem = this.addMesh(new THREE.TorusGeometry(0.46, 0.05, 6, 12), trimMat, 0, 0.18);
@@ -1273,21 +1448,25 @@ export class Spitter extends Enemy {
     // Faint orbiting shard around the orb
     const shard = this.addMesh(new THREE.OctahedronGeometry(0.06), trimMat, 0.22, 1.25, 0.55);
     shard.rotation.set(0.5, 0.5, 0);
+    this.mergeStaticRootMeshes([this.orb]);
   }
 
   protected deathColor(): number {
-    return 0x44aaff;
+    return 0xff6a54;
   }
 
   protected tick(dt: number): void {
     const p = this.ctx.player;
     const d = this.distToPlayer();
     this.facePlayer(dt);
+    this.recoil = Math.max(0, this.recoil - dt);
+    this.drivePose(dt, this.recoil > 0 ? { rear: 0.24, rise: 0.04 } : this.windup >= 0 ? { rear: 0.11, swell: 0.07 } : {}, 14);
     this.pos.y = Math.sin(this.t * 2.2) * 0.08;
     this.orb.position.y = 1.25 + Math.sin(this.t * 3.1) * 0.08;
 
     // Kite band 8–12, strafe inside it
     if (this.windup < 0) {
+      if (this.recoil > 0) this.setAttackPresentation("spitter-bolt", 1 - this.recoil / 0.18, "recovery");
       if (d < 7.5) this.seek(this.pos.x * 2 - p.pos.x, this.pos.z * 2 - p.pos.z, dt, 0.9);
       else if (d > 12) this.seek(p.pos.x, p.pos.z, dt);
       else {
@@ -1304,10 +1483,10 @@ export class Spitter extends Enemy {
         // Lock the shot angle NOW and draw the lane so the player can read + dodge it
         // (fairness contract — every enemy attack telegraphs), like Wisp/Tether do.
         this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 16, 0.5, 0.38, 0x55bbff);
+        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 16, 0.5, 0.38, 0xff6a54);
       }
     } else {
-      this.setIntentPose(1 - Math.max(0, this.windup) / 0.38);
+      this.setAttackPresentation("spitter-bolt", 1 - Math.max(0, this.windup) / 0.38, "anticipation");
       this.windup -= dt;
       this.orbMat.emissiveIntensity = 2.2 + (0.38 - this.windup) * 9;
       this.orb.scale.setScalar(1 + (0.38 - this.windup) * 1.6);
@@ -1316,7 +1495,11 @@ export class Spitter extends Enemy {
         this.orbMat.emissiveIntensity = 2.2;
         this.orb.scale.setScalar(1);
         // Fire along the LOCKED angle (matches the telegraphed lane), not a fresh recompute.
-        this.ctx.hostiles.fire(this.pos.x, this.pos.z, this.lockedAngle, { speed: 9, dmg: 8, color: 0x55bbff, radius: 0.3 });
+        this.ctx.hostiles.fire(this.pos.x, this.pos.z, this.lockedAngle, {
+          speed: 9, dmg: 8, color: 0xff6a54, radius: 0.3,
+          sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "spitter-bolt",
+        });
+        this.recoil = 0.18;
         this.ctx.sfx.enemyShoot();
       }
     }
@@ -1354,6 +1537,7 @@ export class Swarmer extends Enemy {
       sp.rotation.z = (i - 1.5) * 0.45;
       sp.position.x = (i - 1.5) * 0.13;
     }
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -1415,6 +1599,7 @@ export class Bomber extends Enemy {
     this.addMesh(new THREE.CylinderGeometry(0.12, 0.14, 0.12, 6), ironMat, 0, 1.02, 0.15);
     this.addMesh(new THREE.ConeGeometry(0.08, 0.3, 4), this.coreMat, 0, 1.2, 0.15);
     this.addMesh(new THREE.SphereGeometry(0.07, 6, 5), this.coreMat, 0, 1.38, 0.15);
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -1465,7 +1650,9 @@ export class Bomber extends Enemy {
       this.seek(p.pos.x, p.pos.z, dt, 0.3);
       const k = 1 - Math.max(0, this.fuse) / 0.95;
       this.setIntentPose(k);
-      this.coreMat.emissiveIntensity = 1.6 + k * 7 + Math.sin(this.t * (10 + k * 40)) * 1.5;
+      // Charge brightness climbs monotonically. The former frequency ramp reached
+      // strobe territory and made this actor appear to share the world's flicker.
+      this.coreMat.emissiveIntensity = 1.6 + k * 8;
       this.root.scale.setScalar(1 + k * 0.25);
       if (this.fuse <= 0) {
         this.explode();
@@ -1486,17 +1673,18 @@ export class Sentinel extends Enemy {
   private beamMesh: THREE.Mesh;
   private beamMat: THREE.MeshBasicMaterial;
   private beamFade = 0;
+  private recoil = 0;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 60;
     this.speed = 1.7;
     this.radius = 0.7;
-    this.addRoleSilhouette("shield", 0xbb66ff);
+    this.addRoleSilhouette("shield", 0xff5f48);
 
     const armorMat = this.stdMat(0x2a2a3a, 0x222244, 0.3);
-    const trimMat = this.stdMat(0x55456a, 0x8844ff, 0.7);
-    this.tipMat = this.stdMat(0x221133, 0xbb66ff, 2.0);
+    const trimMat = this.stdMat(0x5a3434, 0xb83f35, 0.7);
+    this.tipMat = this.stdMat(0x2c1010, 0xff5f48, 2.0);
 
     this.addMesh(new THREE.CylinderGeometry(0.55, 0.75, 1.5, 6), armorMat, 0, 0.75);
     // Trim must protrude well past the tapered body (r≈0.62 at this height)
@@ -1518,16 +1706,17 @@ export class Sentinel extends Enemy {
     this.addMesh(new THREE.ConeGeometry(0.12, 0.4, 6), this.tipMat, 0.55, 1.3, 0.95).rotation.x = Math.PI / 2;
 
     this.beamMat = new THREE.MeshBasicMaterial({
-      color: 0xbb66ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+      color: 0xff5f48, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     this.beamMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 1), this.beamMat);
     this.beamMesh.visible = false;
     this.beamMesh.userData.solidity = "fx";
     ctx.stage.scene.add(this.beamMesh);
+    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
-    return 0xbb66ff;
+    return 0xff5f48;
   }
 
   protected barHeight(): number {
@@ -1557,8 +1746,11 @@ export class Sentinel extends Enemy {
     this.beamFade = Math.max(0, this.beamFade - dt * 5);
     this.beamMat.opacity = this.beamFade;
     this.beamMesh.visible = this.beamFade > 0;
+    this.recoil = Math.max(0, this.recoil - dt);
+    this.drivePose(dt, this.recoil > 0 ? { rear: 0.22, rise: 0.03 } : this.aiming >= 0 ? { rear: 0.08, swell: 0.045 } : {}, 12);
 
     if (this.aiming < 0) {
+      if (this.recoil > 0) this.setAttackPresentation("sentinel-lance", 1 - this.recoil / 0.2, "recovery");
       this.facePlayer(dt);
       const d = this.distToPlayer();
       if (d > 11) this.seek(p.pos.x, p.pos.z, dt);
@@ -1571,7 +1763,8 @@ export class Sentinel extends Enemy {
     } else {
       const prev = this.aiming;
       this.aiming -= dt;
-      this.setIntentPose(1 - Math.max(0, this.aiming) / 1.25);
+      if (this.aiming > 0.45) this.setAttackPresentation("sentinel-lance", 1 - (this.aiming - 0.45) / 0.8, "anticipation");
+      else this.setAttackPresentation("sentinel-lance", 1 - Math.max(0, this.aiming) / 0.45, "active");
       // Track until lock at 0.45s remaining, then the line is committed — dodge it
       if (this.aiming > 0.45) {
         this.facePlayer(dt * 0.6);
@@ -1579,7 +1772,7 @@ export class Sentinel extends Enemy {
       }
       if (prev > 0.45 && this.aiming <= 0.45) {
         // Width matches the real hit window: 0.55 beam half-width + player radius
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 17, 2.0, 0.45, 0xbb66ff);
+        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 17, 2.0, 0.45, 0xff5f48);
         this.ctx.sfx.beamCharge();
       }
       this.tipMat.emissiveIntensity = 2 + (1.25 - this.aiming) * 6;
@@ -1587,6 +1780,7 @@ export class Sentinel extends Enemy {
         this.aiming = -1;
         this.tipMat.emissiveIntensity = 2;
         this.fireBeam();
+        this.recoil = 0.2;
       }
     }
   }
@@ -1614,7 +1808,9 @@ export class Sentinel extends Enemy {
     if (along > 0 && along < len) {
       const perp = Math.abs(px * cz - pz * sx);
       if (perp < 0.55 + p.radius) {
-        this.ctx.combat.damagePlayer(16, this.pos.x, this.pos.z);
+        this.ctx.combat.damagePlayer(16, this.pos.x, this.pos.z, {
+          sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "sentinel-lance",
+        });
       }
     }
   }
@@ -1655,6 +1851,7 @@ export function makeEnemy(kind: Exclude<EnemyKind, "boss">, ctx: Ctx, x: number,
 
 export class EnemyManager {
   private enemies: Enemy[] = [];
+  private dying: Enemy[] = [];
   private pending: PendingSpawn[] = [];
   private streakCount = 0;
   private streakTimer = 0;
@@ -1666,6 +1863,7 @@ export class EnemyManager {
   // dealDamage no-ops on !alive and shove/steer toward a corpse is harmless.
   private livingCache: Enemy[] = [];
   private livingDirty = true;
+  private precompiledKinds = new Set<Exclude<EnemyKind, "boss">>();
 
   constructor(private ctx: Ctx) {
     ctx.events.on("KILL", () => {
@@ -1746,11 +1944,16 @@ export class EnemyManager {
    * would release the just-compiled GL programs (three refcounts programs per
    * material), and the first real spawn would pay the compile again.
    */
-  precompile(): void {
+  async precompile(kinds: readonly Exclude<EnemyKind, "boss">[] = [...REGISTRY.keys()]): Promise<void> {
     const dummies: Enemy[] = [];
-    for (const kind of REGISTRY.keys()) {
-      try { dummies.push(makeEnemy(kind, this.ctx, 0, -1000)); } catch { /* skip a bad ctor */ }
+    for (const kind of kinds) {
+      if (this.precompiledKinds.has(kind) || !REGISTRY.has(kind)) continue;
+      try {
+        dummies.push(makeEnemy(kind, this.ctx, 0, -1000));
+        this.precompiledKinds.add(kind);
+      } catch { /* skip a bad ctor */ }
     }
+    if (!dummies.length) return;
     const p = this.ctx.player.pos; // always centered in frame, whatever the camera mode
     for (const e of dummies) {
       e.warmVisuals(); // ground glow into the scene before the compile
@@ -1759,7 +1962,7 @@ export class EnemyManager {
       e.root.position.set(p.x, 0.6, p.z);
       e.root.scale.setScalar(0.02);
     }
-    this.ctx.stage.warmUp(); // compiles the whole scene, including the dummies just added
+    await this.ctx.stage.warmUpAsync(); // wait for real-GPU parallel shader linking
     for (const e of dummies) e.root.position.set(0, 0, -1000); // park off-arena, culled forever
   }
 
@@ -1787,10 +1990,20 @@ export class EnemyManager {
     this.ctx.events.emit("FREEZE", {});
   }
 
+  /** Debug/presentation seam: includes short-lived authored death bodies. */
+  presenting(): Enemy[] { return [...this.living(), ...this.dying]; }
+
+  addDying(enemy: Enemy): void {
+    if (!this.dying.includes(enemy)) this.dying.push(enemy);
+  }
+
   clear(): void {
     for (const e of this.enemies) if (e.alive) e.dispose();
+    for (const e of this.dying) e.dispose();
     this.enemies = [];
+    this.dying = [];
     this.pending = [];
+    this.ctx.tele.clear();
     this.streakCount = 0;
     this.livingCache.length = 0;
     this.livingDirty = false;
@@ -1821,6 +2034,11 @@ export class EnemyManager {
         const hpMult = e.kind === "boss" ? diff.enemyHpMult * diff.bossHpMult : diff.enemyHpMult;
         if (hpMult !== 1) e.hp = e.maxHp = Math.round(e.maxHp * hpMult);
         this.enemies.push(e);
+        let shadowCasters = 0;
+        for (const other of this.enemies) {
+          if (other !== e && other.alive && other.kind !== "boss") shadowCasters++;
+        }
+        e.setShadowCasting(e.kind === "boss" || shadowCasters < 2);
         this.livingDirty = true;
         this.ctx.fx.beam(s.x, s.z, e.kind === "boss" ? 0xff5533 : 0xddddff);
         this.ctx.fx.burst({
@@ -1832,6 +2050,12 @@ export class EnemyManager {
     }
 
     for (const e of this.enemies) e.update(dt);
+    let dyingWrite = 0;
+    for (let i = 0; i < this.dying.length; i++) {
+      const e = this.dying[i];
+      if (!e.updateDeath(dt)) this.dying[dyingWrite++] = e;
+    }
+    this.dying.length = dyingWrite;
     let write = 0;
     for (let read = 0; read < this.enemies.length; read++) {
       const e = this.enemies[read];

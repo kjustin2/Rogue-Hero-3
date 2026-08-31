@@ -1,7 +1,7 @@
 import * as THREE from "three";
+import type { TrailShape } from "../presentation/types";
 
 const MAX_SEGS = 14;
-const SEG_LIFE = 0.16;
 
 interface Seg {
   tip: THREE.Vector3;
@@ -26,6 +26,7 @@ export class SwordTrail {
   private positions: Float32Array;
   private alphas: Float32Array;
   private geometry: THREE.BufferGeometry;
+  private life = 0.16;
 
   constructor(scene: THREE.Scene) {
     const maxVerts = (MAX_SEGS - 1) * 6;
@@ -39,7 +40,7 @@ export class SwordTrail {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
-      uniforms: { uColor: { value: new THREE.Color(0x44ccff) } },
+      uniforms: { uColor: { value: new THREE.Color(0x44ccff) }, uIntensity: { value: 1 } },
       vertexShader: /* glsl */ `
         attribute float aAlpha;
         varying float vAlpha;
@@ -50,9 +51,10 @@ export class SwordTrail {
       `,
       fragmentShader: /* glsl */ `
         uniform vec3 uColor;
+        uniform float uIntensity;
         varying float vAlpha;
         void main() {
-          gl_FragColor = vec4(uColor * (1.0 + vAlpha), vAlpha * 0.55);
+          gl_FragColor = vec4(uColor * (0.82 + vAlpha * uIntensity), vAlpha * (0.38 + uIntensity * 0.14));
         }
       `,
     });
@@ -65,6 +67,12 @@ export class SwordTrail {
 
   setColor(c: number): void {
     (this.mat.uniforms.uColor.value as THREE.Color).set(c);
+  }
+
+  setStyle(shape: TrailShape, tempo: number): void {
+    const base = shape === "cleave" ? 0.21 : shape === "reap" ? 0.2 : shape === "cyclone" ? 0.18 : shape === "fork" ? 0.13 : shape === "hook" ? 0.17 : 0.16;
+    this.life = base + Math.max(0, Math.min(1, tempo)) * 0.035;
+    this.mat.uniforms.uIntensity.value = (shape === "cleave" || shape === "reap" ? 1.08 : shape === "fork" ? 0.9 : 1) + tempo * 0.28;
   }
 
   /** Prime two dummy segments so the boot warm frame draws (and compiles) the
@@ -100,7 +108,7 @@ export class SwordTrail {
     // Age out old segments. They age monotonically and are stored oldest-first, so
     // the expired ones are always at the front — drop them by advancing the ring head.
     for (let i = 0; i < this.count; i++) this.segAt(i).age += dt;
-    while (this.count > 0 && this.segAt(0).age >= SEG_LIFE) { this.head = (this.head + 1) % MAX_SEGS; this.count--; }
+    while (this.count > 0 && this.segAt(0).age >= this.life) { this.head = (this.head + 1) % MAX_SEGS; this.count--; }
 
     if (active) {
       // Reuse a pooled slot at the back; if the ring is full, overwrite the oldest.
@@ -120,8 +128,8 @@ export class SwordTrail {
     for (let i = 0; i < this.count - 1; i++) {
       const s0 = this.segAt(i);
       const s1 = this.segAt(i + 1);
-      const a0 = 1 - s0.age / SEG_LIFE;
-      const a1 = 1 - s1.age / SEG_LIFE;
+      const a0 = 1 - s0.age / this.life;
+      const a1 = 1 - s1.age / this.life;
       this.writeVert(v++, s0.base, a0); this.writeVert(v++, s0.tip, a0); this.writeVert(v++, s1.tip, a1);
       this.writeVert(v++, s0.base, a0); this.writeVert(v++, s1.tip, a1); this.writeVert(v++, s1.base, a1);
     }

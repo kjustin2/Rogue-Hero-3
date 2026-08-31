@@ -24,6 +24,9 @@ import type { Profile } from "./profile";
 import type { Sfx } from "../audio/sfx";
 import type { Music } from "../audio/music";
 import type { Difficulty } from "./difficulty";
+import type { AssetRegistry } from "../presentation/assetRegistry";
+import type { VfxDirector } from "../presentation/vfxDirector";
+import type { CinematicDirector } from "../presentation/cinematicDirector";
 
 export interface RunStats {
   kills: number;
@@ -83,6 +86,11 @@ export interface Ctx {
   profile: Profile;
   /** Current run's Ascension difficulty (depth modifiers). */
   difficulty: Difficulty;
+  assets: AssetRegistry;
+  /** Target-local, priority-budgeted presentation effects. */
+  vfx: VfxDirector;
+  /** Deterministic dt-driven cinematic timeline. */
+  presentation: CinematicDirector;
   stats: RunStats;
   /** True while gameplay systems should tick (not menu/paused/draft). */
   playing: boolean;

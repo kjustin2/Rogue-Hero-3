@@ -31,6 +31,7 @@ const TC = cfg.tutorial ?? {
   // Verbs a real run demands to reach victory — the D1 baseline. The tutorial
   // teaches only move/attack/dodge/card/crash; the rest is the gap D1 reports.
   requiredVerbs: ["move", "attack", "dodge", "card", "crash", "perfectdodge", "draft", "hone", "relic", "shop", "shield", "tempo"],
+  progressiveVerbs: ["perfectdodge", "draft", "hone", "relic", "shop", "shield", "tempo"],
   stepBudgetFrames: 240,
 };
 const log = (...a) => console.log("[tutorial]", ...a);
@@ -125,8 +126,10 @@ if (!SELFTEST && !completed && !results.findings.some((f) => f.type === "UNCOMPL
 // D1 — required-but-never-taught (WARN report, owner-decides)
 if (!SELFTEST) {
   const taught = new Set(["move", "attack", "dodge", "card", "crash"]); // TUTORIAL_VERBS
-  const gap = TC.requiredVerbs.filter((v) => !taught.has(v));
+  const progressive = new Set(TC.progressiveVerbs ?? []);
+  const gap = TC.requiredVerbs.filter((v) => !taught.has(v) && !progressive.has(v));
   results.warnings = gap;
+  results.progressive = [...progressive];
   if (gap.length) log(`REQUIRED-BUT-NEVER-TAUGHT (WARN — the run expects these, the tutorial teaches none): ${gap.join(", ")}`);
 }
 

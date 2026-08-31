@@ -57,10 +57,11 @@ const grab = async (name) => {
 // consecutive diffs. Saves the first frame for eyeballing.
 const shimmer = async (name, frames = 6, gapMs = 35) => {
   const b64s = [];
+  const framebuffer = page.locator("#game");
   for (let i = 0; i < frames; i++) {
-    const buf = i === 0
-      ? await page.screenshot({ path: join(OUT, `shimmer-${name}.png`) })
-      : await page.screenshot();
+    // Canvas-only: this gate owns renderer temporal stability. DOM HUD keyframes
+    // have their own UI/motion audits and must not masquerade as a WebGL flicker.
+    const buf = await framebuffer.screenshot({ path: join(OUT, `shimmer-${name}-${String(i).padStart(2, "0")}.png`) });
     b64s.push(Buffer.from(buf).toString("base64"));
     await sleep(gapMs);
   }

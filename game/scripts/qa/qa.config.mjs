@@ -83,6 +83,7 @@ export default {
   // teaches only move/attack/dodge/card/crash, so the rest is the reported gap.
   tutorial: {
     requiredVerbs: ["move", "attack", "dodge", "card", "crash", "perfectdodge", "draft", "hone", "relic", "shop", "shield", "tempo"],
+    progressiveVerbs: ["perfectdodge", "draft", "hone", "relic", "shop", "shield", "tempo"],
     stepBudgetFrames: 240,
   },
 

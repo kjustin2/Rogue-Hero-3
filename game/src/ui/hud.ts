@@ -75,6 +75,8 @@ export class Hud {
   private lastTempoRound = -1;
   private lastZoneCss = "";
   private lastCrashReady = false;
+  private coachEl: HTMLElement | null = null;
+  private coachTimer = 0;
 
   constructor(private ctx: Ctx) {
     this.root = document.getElementById("hud")!;
@@ -315,11 +317,11 @@ export class Hud {
    * white plate over the whole screen is the single most-reported FX complaint.
    */
   flash(color: string, intensity: number): void {
-    const k = this.ctx.cam.shakeScale <= 0 ? 0.35 : 1; // reduce-motion-friendly
+    const k = this.ctx.cam.shakeScale <= 0 ? 0.25 : 1; // reduce-motion-friendly
     const el = this.screenFlash;
     el.style.transition = "none";
-    el.style.background = `radial-gradient(ellipse 74% 74% at 50% 50%, transparent 34%, ${color} 100%)`;
-    el.style.opacity = String(intensity * k);
+    el.style.setProperty("--flash-color", color);
+    el.style.opacity = String(Math.min(0.22, intensity * 0.32) * k);
     void el.offsetWidth;
     el.style.transition = "opacity 0.45s ease-out";
     el.style.opacity = "0";
@@ -366,6 +368,10 @@ export class Hud {
     this.bannerSub.textContent = sub;
     this.bannerEl.className = `banner ${cls}`;
     this.replay(this.bannerEl, "banner--show");
+  }
+
+  clearBanner(): void {
+    this.bannerEl.classList.remove("banner--show");
   }
 
   setVisible(v: boolean): void {
@@ -428,6 +434,29 @@ export class Hud {
   /** Cinematic letterbox bars for cutscenes. */
   setLetterbox(on: boolean): void {
     this.root.querySelectorAll(".letterbox").forEach((el) => el.classList.toggle("letterbox--on", on));
+  }
+
+  /** A single progressive lesson, shown only when the run first reaches its concept. */
+  showCoach(title: string, body: string): void {
+    if (!this.coachEl) {
+      this.coachEl = document.createElement("div");
+      this.coachEl.className = "run-coach";
+      this.root.appendChild(this.coachEl);
+    }
+    this.coachEl.innerHTML = `<div class="run-coach__eyebrow">RIFT LESSON</div><div class="run-coach__title"></div><div class="run-coach__body"></div>`;
+    (this.coachEl.querySelector(".run-coach__title") as HTMLElement).textContent = title;
+    (this.coachEl.querySelector(".run-coach__body") as HTMLElement).textContent = body;
+    this.coachEl.classList.remove("run-coach--show");
+    void this.coachEl.offsetWidth;
+    this.coachEl.classList.add("run-coach--show");
+    window.clearTimeout(this.coachTimer);
+    this.coachTimer = window.setTimeout(() => this.coachEl?.classList.remove("run-coach--show"), 5200);
+  }
+
+  /** Keep cinematic bars/titles, but remove combat instrumentation from the shot. */
+  setCinematic(on: boolean): void {
+    this.root.classList.toggle("hud--cinematic", on);
+    if (!on) this.root.classList.remove("hud--boss-reveal");
   }
 
   private spareEl: HTMLElement | null = null;

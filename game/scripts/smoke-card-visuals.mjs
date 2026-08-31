@@ -45,10 +45,16 @@ const hud = await page.evaluate(async () => {
     c.deck.cooldowns[0] = 0;
     await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
     const slot = document.querySelector(".slot[data-card-id]");
+    const icon = slot?.querySelector(".slot__icon");
+    const name = slot?.querySelector(".slot__name");
+    const sigil = slot?.querySelector(".slot__sigil");
     const ok = !!slot
       && slot.dataset.cardId === card.id
       && slot.classList.contains(`slot--card-${card.id}`)
-      && !!slot.querySelector(".slot__sigil");
+      && icon?.textContent === card.icon
+      && name?.textContent?.startsWith(card.name)
+      && getComputedStyle(icon).display !== "none"
+      && getComputedStyle(sigil).display === "none";
     if (!ok) missing.push(card.id);
   }
   return { total: cards.length, missing };
@@ -75,10 +81,41 @@ const draft = await page.evaluate(async () => {
 });
 check("all draft cards carry unique visual identity", draft.missing.length === 0, JSON.stringify(draft));
 
+const hudReadability = await page.evaluate(async () => {
+  const c = window.__rh3;
+  const ids = ["dash-strike", "arc-bolt", "warcry"];
+  c.deck.slots = ids.map((id) => window.__rh3cards.find((card) => card.id === id));
+  c.deck.upgraded = [false, false, false];
+  c.deck.cooldowns = [0, 0, 0];
+  window.__rh3menus.clear();
+  await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+  return [...document.querySelectorAll(".slot")].map((slot) => {
+    const icon = slot.querySelector(".slot__icon");
+    const name = slot.querySelector(".slot__name");
+    const key = slot.querySelector(".slot__key");
+    const sr = slot.getBoundingClientRect();
+    const ir = icon.getBoundingClientRect();
+    const nr = name.getBoundingClientRect();
+    const kr = key.getBoundingClientRect();
+    return {
+      card: slot.dataset.cardId,
+      iconNameGap: Math.round(nr.left - ir.right),
+      nameFits: name.scrollWidth <= name.clientWidth + 1 && name.scrollHeight <= name.clientHeight + 1,
+      keyContained: kr.left >= sr.left && kr.top >= sr.top && kr.right <= sr.right && kr.bottom <= sr.bottom,
+    };
+  });
+});
+check(
+  "HUD cards keep command names clear of icon art",
+  hudReadability.length === 3 && hudReadability.every((slot) => slot.card && slot.iconNameGap >= 4 && slot.nameFits && slot.keyContained),
+  JSON.stringify(hudReadability),
+);
+
 await page.evaluate(() => window.__rh3menus.showDraft(window.__rh3cards.slice(7, 10), () => {}));
 await page.waitForTimeout(240);
 await page.screenshot({ path: join(OUT, "card-visual-draft.png") });
 await page.evaluate(() => window.__rh3menus.clear());
+await page.waitForTimeout(120);
 await page.screenshot({ path: join(OUT, "card-visual-identities.png") });
 
 if (errors.length) {
