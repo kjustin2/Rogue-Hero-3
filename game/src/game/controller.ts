@@ -16,6 +16,8 @@ const PERFECT_WINDOW = 0.11;
  */
 export class Controller {
   private vel = new THREE.Vector2();
+  /** Damped RESOLVED movement, for the locomotion pose only — never the sim. */
+  private animVel = new THREE.Vector2();
   private dodgeTimer = -1;
   private dodgeCooldown = 0;
   private dodgeDir = new THREE.Vector2(0, 1);
@@ -220,8 +222,16 @@ export class Controller {
     const rightZ = -Math.sin(player.facing);
     const fwdX = Math.sin(player.facing);
     const fwdZ = Math.cos(player.facing);
-    const movX = dt > 0 ? (player.pos.x - preX) / dt : 0;
-    const movZ = dt > 0 ? (player.pos.z - preZ) / dt : 0;
+    // Raw displacement/dt is correct but noisy frame-to-frame (it jumps the moment
+    // a correction lands, and dt itself varies), which showed up as a 6x rise in
+    // measured limb jerk. Damp it into a dedicated ANIMATION velocity: the gait
+    // still stops dead against a wall, without the per-frame chatter. Deliberately
+    // separate from this.vel so the sim is untouched (no golden re-bless).
+    if (dt > 0) {
+      this.animVel.x = damp(this.animVel.x, (player.pos.x - preX) / dt, 16, dt);
+      this.animVel.y = damp(this.animVel.y, (player.pos.z - preZ) / dt, 16, dt);
+    }
+    const movX = this.animVel.x, movZ = this.animVel.y;
     player.animMoveAmount = clamp01(Math.hypot(movX, movZ) / speedBase);
     player.animMoveX = Math.max(-1, Math.min(1, (movX * rightX + movZ * rightZ) / speedBase));
     player.animMoveZ = Math.max(-1, Math.min(1, (movX * fwdX + movZ * fwdZ) / speedBase));

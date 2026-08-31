@@ -388,16 +388,17 @@ export class Menus {
   back(): boolean {
     const s = this.root.querySelector<HTMLElement>(".screen");
     if (!s) return false;
-    const skip = s.querySelector<HTMLElement>(".story-skip, .draft-skip");
+    // Deliberately NOT a skip fallback (menuNav's B button has one). Escape on a
+    // card draft must never click .draft-skip and silently forfeit the reward;
+    // story screens handle Escape themselves in storyIntro.
     const btn = [...s.querySelectorAll<HTMLElement>("button:not([disabled])")].find(
       (e) =>
         e.dataset.act === "back" ||
         e.dataset.act === "leave" ||
         /^(back|leave|move on|cancel|no,|not now)/i.test((e.textContent || "").trim())
     );
-    const target = btn ?? skip;
-    if (!target) return false;
-    target.click();
+    if (!btn) return false;
+    btn.click();
     return true;
   }
 

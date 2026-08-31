@@ -2755,7 +2755,9 @@ body.rh-no-anim .menu-sigil {
   display: block;
   font-size: 40px;
   font-weight: 700;
-  line-height: 1;
+  /* Not 1: at 40px the display face's ascent+descent overflow a line-height:1
+     box, so the digits' glyph rect ran into the HIT label under them. */
+  line-height: 1.15;
   color: #fff;
   text-shadow: 0 0 18px rgba(120, 200, 255, 0.7);
 }
@@ -2764,7 +2766,7 @@ body.rh-no-anim .menu-sigil {
   font-size: 13px;
   letter-spacing: 3px;
   color: var(--ui-dim);
-  margin-top: 2px;
+  margin-top: 5px;
 }
 .combo--hot .combo__n {
   color: #ffd27a;

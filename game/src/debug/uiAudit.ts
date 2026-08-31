@@ -21,6 +21,42 @@ function selectorOf(el: Element): string {
   return `${el.tagName.toLowerCase()}${id}${cls}`.slice(0, 80);
 }
 
+/**
+ * The rectangle the element's GLYPHS actually occupy, via a Range over its
+ * contents — not its layout box. A right-aligned label inside a full-width bar
+ * has a box spanning the whole screen but ink only at the right edge; comparing
+ * boxes reported the HUD's hero plate and room title as a 320x21px collision
+ * that no player can see. Falls back to the box when there are no text rects.
+ */
+function inkRect(el: Element): DOMRect | null {
+  try {
+    // Range over the ELEMENT would return its line boxes, which for a block span
+    // the full content width regardless of text-align — that is what reported the
+    // HUD's left name plate and right room title as a 1302px collision. Ranging
+    // over each TEXT NODE gives the glyph run's own rectangle.
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    const range = document.createRange();
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!(n.textContent || "").trim()) continue;
+      range.selectNodeContents(n);
+      for (const q of Array.from(range.getClientRects())) {
+        if (q.width <= 0 || q.height <= 0) continue;
+        l = Math.min(l, q.left); t = Math.min(t, q.top);
+        r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+      }
+    }
+    range.detach?.();
+    // No glyphs: an empty element cannot collide with anything. Falling back to
+    // its layout box here is what made two EMPTY full-width HUD slots on the shop
+    // screen report a 1302px collision with each other.
+    if (!isFinite(l)) return null;
+    return new DOMRect(l, t, r - l, b - t);
+  } catch {
+    return el.getBoundingClientRect();
+  }
+}
+
 function rectOf(el: Element): { x: number; y: number; w: number; h: number } {
   const r = el.getBoundingClientRect();
   return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
@@ -166,18 +202,21 @@ export function auditUI(opts: { roots?: string[]; allow?: string[] } = {}): UiFi
     }
   }
 
-  // overlap — leaf-text pairs whose rects intersect by >2px on both axes
+  // overlap — leaf-text pairs whose INK intersects by >2px on both axes
   const texts = visible.filter(leafText);
+  const ink = new Map<Element, DOMRect>();
+  for (const e of texts) { const r = inkRect(e); if (r && r.width > 0 && r.height > 0) ink.set(e, r); }
   for (let i = 0; i < texts.length; i++) {
     for (let j = i + 1; j < texts.length; j++) {
       const a = texts[i], b = texts[j];
       if (a.contains(b) || b.contains(a)) continue; // nested, not a collision
-      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const ra = ink.get(a), rb = ink.get(b);
+      if (!ra || !rb) continue; // one of them has no glyphs on screen
       const ox = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
       const oy = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
       if (ox > 2 && oy > 2) {
         const sel = `${selectorOf(a)} ∥ ${selectorOf(b)}`;
-        if (!allow.has(`overlap:${sel}`)) findings.push({ rule: "overlap", sel, detail: `text boxes intersect ${Math.round(ox)}×${Math.round(oy)}px`, rect: rectOf(a) });
+        if (!allow.has(`overlap:${sel}`)) findings.push({ rule: "overlap", sel, detail: `glyphs intersect ${Math.round(ox)}×${Math.round(oy)}px`, rect: rectOf(a) });
       }
     }
   }
