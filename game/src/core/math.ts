@@ -1,5 +1,15 @@
 export const TAU = Math.PI * 2;
 
+/** Earliest segment contact with a circle, including contact at the origin. */
+export function segmentCircleContact(ax: number, az: number, bx: number, bz: number, x: number, z: number, radius: number): number {
+  const dx=bx-ax,dz=bz-az,ox=ax-x,oz=az-z,c=ox*ox+oz*oz-radius*radius;
+  if(c<=0)return 0;
+  const a=dx*dx+dz*dz;if(a<1e-10)return Infinity;
+  const b=ox*dx+oz*dz,discriminant=b*b-a*c;if(discriminant<0)return Infinity;
+  const t=(-b-Math.sqrt(discriminant))/a;
+  return t>=0&&t<=1?t:Infinity;
+}
+
 export function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }

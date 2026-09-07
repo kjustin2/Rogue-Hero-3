@@ -1,4 +1,10 @@
 import * as THREE from "three";
+import { forgeGuardian } from "../render/guardianForge";
+import { forgeBrute, forgeLeaper } from "../render/beastForge";
+import { forgeCaster } from "../render/casterForge";
+import { forgeFlier } from "../render/flierForge";
+import { forgeWraith } from "../render/wraithForge";
+import { forgeSplitter, forgeVoidling } from "../render/broodForge";
 import { ARENA_RADIUS } from "../render/arena";
 import { Enemy, registerEnemy, type EnemyKind, type DamageOpts } from "./enemies";
 import type { Ctx } from "./ctx";
@@ -18,34 +24,18 @@ export class Wisp extends Enemy {
   private windup = -1;
   private lockedAngle = 0;
   private orbMat: THREE.MeshStandardMaterial;
+  private wings: THREE.Group[];
   private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 10;
     this.speed = 3.0;
-    this.radius = 0.42;
-    this.addRoleSilhouette("flier", 0x3effd2);
-
-    this.orbMat = this.stdMat(0x0a2a24, 0x3effd2, 2.4);
-    const shellMat = this.stdMat(0x10312a, 0x1a8a70, 0.5);
-    const coreMat = this.stdMat(0x062018, 0x9affe6, 3.0);
-    // Faceted glass shell over a brighter inner core
-    this.addMesh(new THREE.IcosahedronGeometry(0.34, 1), this.orbMat, 0, 0);
-    this.addMesh(new THREE.OctahedronGeometry(0.16), coreMat, 0, 0);
-    // Twin crossed halo rings
-    const halo = this.addMesh(new THREE.TorusGeometry(0.52, 0.045, 8, 24), shellMat, 0, 0);
-    halo.rotation.x = Math.PI / 2;
-    const halo2 = this.addMesh(new THREE.TorusGeometry(0.42, 0.035, 8, 20), shellMat, 0, 0);
-    halo2.rotation.set(Math.PI / 2, 0, 0.6);
-    halo2.rotation.z = 0.9;
-    // Orbiting glass shards
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      const sh = this.addMesh(new THREE.TetrahedronGeometry(0.08), this.orbMat, Math.cos(a) * 0.5, Math.sin(a) * 0.22, Math.sin(a) * 0.5);
-      sh.rotation.set(a, a * 1.3, 0);
-    }
-    this.mergeStaticRootMeshes();
+    this.radius = 0.5;
+    this.pos.y = 1.25;
+    const rig = forgeFlier(this.root, this.stdMat.bind(this), "wisp");
+    this.wings = rig.wings;
+    this.orbMat = rig.focusMat;
   }
 
   protected deathColor(): number {
@@ -62,6 +52,10 @@ export class Wisp extends Enemy {
     // which is the intended balance against its paper HP.
     this.pos.y = 1.25 + Math.sin(this.t * 2.6) * 0.18;
     this.facePlayer(dt);
+    for (const [i, wing] of this.wings.entries()) {
+      const beat = this.windup >= 0 ? 0.45 : 0.16 + Math.sin(this.t * 14) * 0.24;
+      wing.rotation.z = (i === 0 ? -1 : 1) * beat;
+    }
 
     const d = this.distToPlayer();
     if (this.windup < 0) {
@@ -77,15 +71,14 @@ export class Wisp extends Enemy {
         this.windup = 0.4;
         this.fireTimer = 2.8;
         this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 5, 0.9, 0.4, 0x3effd2);
+        this.warnLine(this.pos.x, this.pos.z, this.lockedAngle, 5, 0.9, 0.4, 0x3effd2);
       }
     } else {
-      this.setIntentPose(1 - Math.max(0, this.windup) / 0.4);
       this.windup -= dt;
-      this.orbMat.emissiveIntensity = 2.4 + (0.4 - this.windup) * 8;
+      this.orbMat.emissiveIntensity = 1.1 + (0.4 - this.windup) * 2;
       if (this.windup <= 0) {
         this.windup = -1;
-        this.orbMat.emissiveIntensity = 2.4;
+        this.orbMat.emissiveIntensity = 1.1;
         this.ctx.hostiles.fire(this.pos.x, this.pos.z, this.lockedAngle, {
           speed: 6.5, dmg: 7, color: 0x3effd2, radius: 0.32, y: 1.1,
         });
@@ -107,47 +100,16 @@ export class Leaper extends Enemy {
   private playerVel = new THREE.Vector2();
   private lastPlayer = new THREE.Vector2();
   private eyeMat: THREE.MeshStandardMaterial;
+  private rig: ReturnType<typeof forgeLeaper>;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 26;
     this.speed = 4.0;
-    this.radius = 0.55;
-    this.addRoleSilhouette("charger", 0xcc55ff);
-
-    const bodyMat = this.stdMat(0x2a1535, 0x551177, 0.4);
-    const clawMat = this.stdMat(0x1a0d22);
-    const fangMat = this.stdMat(0x6a5570, 0x332244, 0.3);
-    this.eyeMat = this.stdMat(0x000000, 0xff44ff, 2.6);
-
-    const torso = this.addMesh(new THREE.BoxGeometry(0.7, 0.5, 0.95), bodyMat, 0, 0.5);
-    torso.rotation.x = -0.2;
-    this.addMesh(new THREE.BoxGeometry(0.45, 0.35, 0.4), bodyMat, 0, 0.72, 0.55);
-    this.addMesh(new THREE.BoxGeometry(0.09, 0.07, 0.05), this.eyeMat, -0.11, 0.78, 0.76);
-    this.addMesh(new THREE.BoxGeometry(0.09, 0.07, 0.05), this.eyeMat, 0.11, 0.78, 0.76);
-    // Snarling lower jaw with fangs
-    this.addMesh(new THREE.BoxGeometry(0.38, 0.14, 0.3), bodyMat, 0, 0.56, 0.6);
-    for (let i = 0; i < 3; i++) {
-      const fang = this.addMesh(new THREE.ConeGeometry(0.04, 0.16, 4), fangMat, (i - 1) * 0.11, 0.6, 0.74);
-      fang.rotation.x = Math.PI;
-    }
-    // Ridged spine plates
-    for (let i = 0; i < 4; i++) {
-      const ridge = this.addMesh(new THREE.ConeGeometry(0.07, 0.2 - i * 0.02, 4), clawMat, 0, 0.78 - i * 0.02, 0.28 - i * 0.28);
-      ridge.rotation.x = -0.3;
-    }
-    // Haunches
-    const hl = this.addMesh(new THREE.ConeGeometry(0.22, 0.7, 4), clawMat, -0.35, 0.4, -0.25);
-    hl.rotation.z = 0.5;
-    const hr = this.addMesh(new THREE.ConeGeometry(0.22, 0.7, 4), clawMat, 0.35, 0.4, -0.25);
-    hr.rotation.z = -0.5;
-    // Forelimb claws reaching ahead
-    const cl = this.addMesh(new THREE.ConeGeometry(0.07, 0.4, 4), clawMat, -0.28, 0.18, 0.55);
-    cl.rotation.x = 1.4;
-    const cr = this.addMesh(new THREE.ConeGeometry(0.07, 0.4, 4), clawMat, 0.28, 0.18, 0.55);
-    cr.rotation.x = 1.4;
+    this.radius = 0.65;
+    this.rig = forgeLeaper(this.root, this.stdMat.bind(this));
+    this.eyeMat = this.rig.eyes;
     this.lastPlayer.set(ctx.player.pos.x, ctx.player.pos.z);
-    this.mergeStaticRootMeshes();
   }
 
   protected deathColor(): number {
@@ -157,6 +119,17 @@ export class Leaper extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
+    const crouch = this.state === "crouch", jumping = this.state === "leap";
+    this.rig.body.position.y = 0.77 - (crouch ? 0.16 : 0);
+    this.rig.body.rotation.x = crouch ? -0.12 : jumping ? 0.17 : 0;
+    this.rig.head.rotation.x = crouch ? 0.18 : jumping ? -0.12 : 0;
+    for (let i = 0; i < this.rig.legs.length; i++) {
+      const target = crouch ? (i < 2 ? -0.28 : 0.45) : jumping ? (i < 2 ? -0.75 : 0.8)
+        : this.state === "stalk" ? Math.sin(this.t * 10 + (i === 0 || i === 3 ? 0 : Math.PI)) * 0.4 : 0;
+      const leg = this.rig.legs[i];
+      leg.rotation.x += (target - leg.rotation.x) * Math.min(1, dt * 18);
+    }
+    this.eyeMat.emissiveIntensity = crouch ? 1.6 : 1.2;
     // Smoothed player velocity estimate for leap prediction
     const vx = (p.pos.x - this.lastPlayer.x) / Math.max(dt, 0.001);
     const vz = (p.pos.z - this.lastPlayer.y) / Math.max(dt, 0.001);
@@ -168,19 +141,16 @@ export class Leaper extends Enemy {
       case "stalk": {
         const d = this.seek(p.pos.x, p.pos.z, dt);
         this.pos.y = Math.abs(Math.sin(this.t * 6)) * 0.08;
-        if (d < 8 && this.timer <= 0) {
+        if (d < 8 && this.timer <= 0 && this.commitMelee(1.2)) {
           this.state = "crouch";
           this.timer = 0.5;
-          this.eyeMat.emissiveIntensity = 6;
+          this.eyeMat.emissiveIntensity = 1.6;
         }
         break;
       }
       case "crouch": {
-        this.setIntentPose(1);
         this.facePlayer(dt);
-        this.root.scale.y = 0.75 + (this.timer / 0.5) * 0.25;
         if (this.timer <= 0) {
-          this.root.scale.y = 1;
           // Lead the player — clamped into the arena
           let tx = p.pos.x + this.playerVel.x * 0.55;
           let tz = p.pos.z + this.playerVel.y * 0.55;
@@ -192,15 +162,16 @@ export class Leaper extends Enemy {
           }
           this.leapFrom.copy(this.pos);
           this.leapTo.set(tx, 0, tz);
+          this.ctx.arena.resolveObstacles(this.leapTo, this.radius);
+          tx = this.leapTo.x; tz = this.leapTo.z;
           this.leapT = 0;
           this.state = "leap";
-          this.ctx.tele.circle(tx, tz, 2.2, 0.55, 0xcc55ff);
+          this.warnCircle(tx, tz, 2.2, 0.55, 0xcc55ff);
           this.ctx.sfx.enemyLunge();
         }
         break;
       }
       case "leap": {
-        this.setIntentPose(0.45);
         this.leapT += dt / 0.55;
         const k = Math.min(1, this.leapT);
         this.pos.x = this.leapFrom.x + (this.leapTo.x - this.leapFrom.x) * k;
@@ -211,12 +182,12 @@ export class Leaper extends Enemy {
           this.pos.y = 0;
           this.state = "recover";
           this.timer = 0.9;
-          this.eyeMat.emissiveIntensity = 2.6;
+          this.eyeMat.emissiveIntensity = 1.2;
           this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 2.2, color: 0xcc55ff, duration: 0.4 });
           this.ctx.fx.burst({
             x: this.pos.x, y: 0.4, z: this.pos.z,
-            count: 16, color: [0xcc55ff, 0x885599],
-            speed: [2, 8], up: 0.7, size: [0.35, 0.8], life: [0.2, 0.5], gravity: -6, drag: 3,
+            count: 10, color: [0xba9baf, 0x796879],
+            speed: [2, 8], up: 0.7, size: [0.12, 0.3], life: [0.2, 0.5], gravity: -6, drag: 3,
           });
           if (Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < 2.2 + p.radius) {
             this.ctx.combat.damagePlayer(14, this.pos.x, this.pos.z);
@@ -245,49 +216,28 @@ export class Tether extends Enemy {
   private crystalMat: THREE.MeshStandardMaterial;
   private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
+  private arms: THREE.Group[];
+
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 24;
     this.speed = 2.4;
     this.radius = 0.5;
-    // Amber identity: tether wore the same cyan halo as spitter/wisp/harrier —
-    // 4 of 17 units in one hue failed the color-role read (audit finding).
-    this.addRoleSilhouette("caster", 0xffb84d);
-
-    const robeMat = this.stdMat(0x2a2014, 0x4a3410, 0.4);
-    const trimMat = this.stdMat(0x3a2c14, 0xd89a3a, 0.7);
-    this.crystalMat = this.stdMat(0x2a1a08, 0xffb84d, 2.0);
-    this.addMesh(new THREE.ConeGeometry(0.5, 1.4, 5), robeMat, 0, 0.7);
-    // Glowing hem ring + a seam climbing the robe
-    const hem = this.addMesh(new THREE.TorusGeometry(0.47, 0.045, 6, 12), trimMat, 0, 0.12);
-    hem.rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.BoxGeometry(0.06, 0.9, 0.06), trimMat, 0, 0.85, 0.4);
-    // Hooded head peering up at the focus crystal
-    this.addMesh(new THREE.ConeGeometry(0.24, 0.4, 5), robeMat, 0, 1.55);
-    this.addMesh(new THREE.SphereGeometry(0.04, 6, 5), this.crystalMat, 0, 1.45, 0.16);
-    // Shoulder shards framing the channel
-    const sl = this.addMesh(new THREE.OctahedronGeometry(0.1), trimMat, -0.3, 1.25, 0);
-    sl.rotation.set(0.4, 0, 0.3);
-    const sr = this.addMesh(new THREE.OctahedronGeometry(0.1), trimMat, 0.3, 1.25, 0);
-    sr.rotation.set(0.4, 0, -0.3);
-    // Floating focus crystal with three small satellites
-    this.crystal = this.addMesh(new THREE.OctahedronGeometry(0.28), this.crystalMat, 0, 1.8);
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      this.addMesh(new THREE.OctahedronGeometry(0.06), this.crystalMat, Math.cos(a) * 0.34, 0, Math.sin(a) * 0.34, this.crystal);
-    }
-    this.mergeStaticRootMeshes([this.crystal]);
+    const rig = forgeCaster(this.root, this.stdMat.bind(this), "tether");
+    this.arms = rig.arms;
+    this.crystal = rig.focus; this.crystalMat = rig.focusMat;
   }
 
   protected deathColor(): number {
-    return 0x55bbff;
+    return 0xffb84d;
   }
 
   protected tick(dt: number): void {
     const p = this.ctx.player;
     const d = this.distToPlayer();
     this.facePlayer(dt);
-    this.crystal.rotation.y += dt * 2.2;
+    for (const arm of this.arms) arm.rotation.x += ((this.windup >= 0 ? -0.35 : 0) - arm.rotation.x) * Math.min(1, dt * 14);
+    this.crystal.rotation.y += dt * 1.1;
     this.crystal.position.y = 1.8 + Math.sin(this.t * 2.4) * 0.1;
 
     if (this.windup < 0) {
@@ -305,16 +255,15 @@ export class Tether extends Enemy {
         const aim = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
         this.lockedAngles = [aim - 0.35, aim, aim + 0.35];
         for (const a of this.lockedAngles) {
-          this.ctx.tele.line(this.pos.x, this.pos.z, a, 10, 1.0, 0.45, 0x55bbff);
+          this.warnLine(this.pos.x, this.pos.z, a, 10, 1.0, 0.45, 0xffb84d);
         }
       }
     } else {
-      this.setIntentPose(1 - Math.max(0, this.windup) / 0.45);
       this.windup -= dt;
-      this.crystalMat.emissiveIntensity = 2 + (0.45 - this.windup) * 8;
+      this.crystalMat.emissiveIntensity = 1.1 + (0.45 - this.windup) * 1.8;
       if (this.windup <= 0) {
         this.windup = -1;
-        this.crystalMat.emissiveIntensity = 2;
+        this.crystalMat.emissiveIntensity = 1.1;
         for (const a of this.lockedAngles) {
           this.ctx.hostiles.fire(this.pos.x, this.pos.z, a, { speed: 10, dmg: 7, color: 0xffb84d, radius: 0.28 });
         }
@@ -325,7 +274,7 @@ export class Tether extends Enemy {
 }
 
 // ---------------------------------------------------------------- Mirror
-/** Walking bulwark. At half HP it raises an unbreakable mirror — disengage or burn cards. */
+/** Walking bulwark. At half HP it raises a mirror shield; breaking it opens a punish window. */
 export class Mirror extends Enemy {
   readonly kind: EnemyKind = "mirror";
   private state: "walk" | "windup" | "recover" = "walk";
@@ -334,6 +283,7 @@ export class Mirror extends Enemy {
   private slamZ = 0;
   private shieldTimer = 0;
   private shieldUsed = false;
+  private strikeArm: THREE.Group;
   private bubble: THREE.Mesh;
   private bubbleMat: THREE.MeshBasicMaterial;
 
@@ -343,32 +293,10 @@ export class Mirror extends Enemy {
     this.speed = 2.0;
     this.radius = 0.7;
     this.shieldBarColor = 0x99ddff;
-    this.addRoleSilhouette("shield", 0x99ddff);
-
-    // Mid-value plates with the glow confined to trims/visor — full-plate emissive
-    // blew the whole knight out to a flat white-blue sticker (audit finding).
-    const plateMat = this.stdMat(0x39414f, 0x4a6a8a, 0.18);
-    const trimMat = this.stdMat(0x222831, 0x99ccff, 0.6);
-    const eyeMat = this.stdMat(0x000000, 0xbbeeff, 2.4);
-    this.addMesh(new THREE.BoxGeometry(1.2, 1.5, 0.9), plateMat, 0, 0.95);
-    this.addMesh(new THREE.BoxGeometry(0.6, 0.45, 0.5), plateMat, 0, 1.9);
-    // Visor slit across the helm
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.08, 0.06), eyeMat, 0, 1.92, 0.27);
-    // Crowning crest ridge
-    this.addMesh(new THREE.BoxGeometry(0.1, 0.3, 0.4), trimMat, 0, 2.22, -0.05);
-    // Glowing belt through the upper torso. Must NOT end flush with the
-    // torso top (y=1.70) — coplanar caps z-fight and flicker.
-    this.addMesh(new THREE.BoxGeometry(1.34, 0.16, 1.04), trimMat, 0, 1.34);
-    // Chest sigil
-    this.addMesh(new THREE.OctahedronGeometry(0.16), trimMat, 0, 1.0, 0.48);
-    // Tower-shield arms
-    this.addMesh(new THREE.BoxGeometry(0.22, 1.2, 0.7), trimMat, -0.78, 0.95, 0.15);
-    this.addMesh(new THREE.BoxGeometry(0.22, 1.2, 0.7), trimMat, 0.78, 0.95, 0.15);
-    // Shoulder studs on the tower arms
-    this.addMesh(new THREE.SphereGeometry(0.13, 6, 5), plateMat, -0.78, 1.5, 0.15);
-    this.addMesh(new THREE.SphereGeometry(0.13, 6, 5), plateMat, 0.78, 1.5, 0.15);
-    this.legL = this.addLeg(0.5, 0.5, 0.5, plateMat, -0.45, 0.25, 0);
-    this.legR = this.addLeg(0.5, 0.5, 0.5, plateMat, 0.45, 0.25, 0);
+    const rig = forgeGuardian(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity), "mirror");
+    this.legL = rig.legL;
+    this.legR = rig.legR;
+    this.strikeArm = rig.armR;
 
     this.bubbleMat = new THREE.MeshBasicMaterial({
       color: 0x99ddff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide,
@@ -413,6 +341,7 @@ export class Mirror extends Enemy {
   protected onShieldBreak(opts?: DamageOpts): void {
     this.shieldTimer = 0;
     if (opts?.allowShieldStagger !== false) {
+      this.cancelWarnings();
       this.stagger = 0.8; // bigger achievement than the Bastion's wall → longer punish window
       this.state = "recover";
       this.timer = 0;
@@ -422,10 +351,11 @@ export class Mirror extends Enemy {
   }
 
   protected tick(dt: number): void {
+    const raise = this.state === "windup" ? Math.min(1, (0.6 - this.timer) / 0.28) : 0;
+    this.strikeArm.rotation.x += (-raise * 1.5 - this.strikeArm.rotation.x) * Math.min(1, dt * (raise ? 13 : 24));
     const p = this.ctx.player;
     this.timer -= dt;
     if (this.shieldTimer > 0) {
-      this.setIntentPose(0.85);
       this.shieldTimer -= dt;
       // Bubble visibly thins as it is beaten down — "keep hitting, it is about to pop".
       const sFrac = this.shieldMaxHp > 0 ? this.shieldHp / this.shieldMaxHp : 0;
@@ -452,12 +382,11 @@ export class Mirror extends Enemy {
           const fz = Math.cos(this.heading);
           this.slamX = this.pos.x + fx * 1.3;
           this.slamZ = this.pos.z + fz * 1.3;
-          this.ctx.tele.circle(this.slamX, this.slamZ, 2.0, 0.6, 0x99ccff);
+          this.warnCircle(this.slamX, this.slamZ, 2.0, 0.6, 0x99ccff);
         }
         break;
       }
       case "windup":
-        this.setIntentPose(1);
         if (this.timer <= 0) {
           this.ctx.fx.ring(this.slamX, this.slamZ, { radius: 2.0, color: 0x99ccff, duration: 0.35 });
           this.ctx.cam.addTrauma(0.15);
@@ -482,40 +411,22 @@ export class Caster extends Enemy {
   readonly kind: EnemyKind = "caster";
   private castTimer = 1.6;
   private blinkCd = 0;
+  private blinkTimer = -1;
+  private blinkTarget = new THREE.Vector3();
   private pendingBlast: { x: number; z: number; timer: number } | null = null;
   private orbMat: THREE.MeshStandardMaterial;
   private orb: THREE.Mesh;
+
+  private arms: THREE.Group[];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 22;
     this.speed = 1.6;
     this.radius = 0.55;
-    this.addRoleSilhouette("caster", 0xff7733);
-
-    const robeMat = this.stdMat(0x33150e, 0x882211, 0.5);
-    const emberMat = this.stdMat(0x4a1d0a, 0xff5522, 0.9);
-    const eyeMat = this.stdMat(0x000000, 0xffaa33, 2.8);
-    this.orbMat = this.stdMat(0x331505, 0xff7733, 2.2);
-    this.addMesh(new THREE.ConeGeometry(0.55, 1.6, 6), robeMat, 0, 0.8);
-    // Cracked molten seams: glowing hem + a fissure up the robe
-    const hem = this.addMesh(new THREE.TorusGeometry(0.5, 0.05, 6, 14), emberMat, 0, 0.16);
-    hem.rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.BoxGeometry(0.08, 1.1, 0.07), emberMat, -0.05, 0.85, 0.45);
-    // Deep cowl with smouldering eyes
-    const hood = this.addMesh(new THREE.ConeGeometry(0.3, 0.46, 6), robeMat, 0, 1.8);
-    hood.rotation.x = 0.15;
-    this.addMesh(new THREE.SphereGeometry(0.2, 8, 6), robeMat, 0, 1.72, 0.04);
-    this.addMesh(new THREE.SphereGeometry(0.045, 6, 5), eyeMat, -0.08, 1.74, 0.17);
-    this.addMesh(new THREE.SphereGeometry(0.045, 6, 5), eyeMat, 0.08, 1.74, 0.17);
-    // Forge stave clutched in the off hand, capped with a coal
-    const staff = this.addMesh(new THREE.CylinderGeometry(0.04, 0.04, 1.7, 5), robeMat, -0.5, 0.9, 0.1);
-    staff.rotation.z = 0.12;
-    this.addMesh(new THREE.SphereGeometry(0.1, 8, 6), this.orbMat, -0.6, 1.78, 0.1);
-    // Casting hand cradling the main orb, with a second smaller ember
-    this.orb = this.addMesh(new THREE.SphereGeometry(0.2, 10, 8), this.orbMat, 0.45, 1.5, 0.25);
-    this.addMesh(new THREE.SphereGeometry(0.08, 8, 6), emberMat, 0.62, 1.34, 0.22);
-    this.mergeStaticRootMeshes([this.orb]);
+    const rig = forgeCaster(this.root, this.stdMat.bind(this), "caster");
+    this.arms = rig.arms;
+    this.orb = rig.focus; this.orbMat = rig.focusMat;
   }
 
   protected deathColor(): number {
@@ -526,33 +437,32 @@ export class Caster extends Enemy {
     const p = this.ctx.player;
     this.facePlayer(dt);
     this.blinkCd -= dt;
-    this.orb.position.y = 1.5 + Math.sin(this.t * 3) * 0.1;
+    this.orb.position.y = 1.5 + Math.sin(this.t * 3) * 0.04;
+    for (const arm of this.arms) arm.rotation.x += ((this.pendingBlast ? -0.3 : 0) - arm.rotation.x) * Math.min(1, dt * 12);
+    this.orbMat.emissiveIntensity = this.pendingBlast ? 1.7 : 1.1;
 
-    // Blink away when crowded
-    if (this.distToPlayer() < 4 && this.blinkCd <= 0) {
-      this.blinkCd = 2.2;
-      const fromX = this.pos.x;
-      const fromZ = this.pos.z;
+    // Commit to a visible gathering beat before the escape. The destination
+    // is resolved before the effect appears, so the arrival cannot jump a pillar.
+    if (this.blinkTimer >= 0) {
+      this.blinkTimer -= dt;
+      this.pos.y = Math.sin(Math.max(0, this.blinkTimer) / 0.22 * Math.PI) * 0.12;
+      if (this.blinkTimer <= 0) {
+        const fromX = this.pos.x, fromZ = this.pos.z;
+        this.pos.copy(this.blinkTarget); this.blinkTimer = -1;
+        for (const [x, z] of [[fromX, fromZ], [this.pos.x, this.pos.z]]) {
+          this.ctx.fx.burst({ x, y: 0.8, z, count: 9, color: [0xc4a287, 0xffa873], speed: [1, 4], up: 0.6, size: [0.1, 0.25], life: [0.16, 0.32], gravity: -1, drag: 3 });
+        }
+        this.ctx.sfx.spawn();
+      }
+    } else if (this.distToPlayer() < 4 && this.blinkCd <= 0) {
+      this.blinkCd = 2.8; this.blinkTimer = 0.22;
       const away = Math.atan2(this.pos.x - p.pos.x, this.pos.z - p.pos.z) + this.ctx.rng.range(-0.7, 0.7);
-      let tx = this.pos.x + Math.sin(away) * 8;
-      let tz = this.pos.z + Math.cos(away) * 8;
-      const r = Math.hypot(tx, tz);
-      const maxR = ARENA_RADIUS - 2;
-      if (r > maxR) {
-        tx *= maxR / r;
-        tz *= maxR / r;
-      }
-      this.pos.x = tx;
-      this.pos.z = tz;
-      for (const [bx, bz] of [[fromX, fromZ], [tx, tz]] as const) {
-        this.ctx.fx.burst({
-          x: bx, y: 1, z: bz,
-          count: 12, color: 0xff7733, speed: [1, 5], up: 0.7, size: [0.3, 0.6], life: [0.2, 0.45], gravity: -1, drag: 3,
-        });
-      }
-      this.ctx.sfx.spawn();
+      this.blinkTarget.set(this.pos.x + Math.sin(away) * 8, 0, this.pos.z + Math.cos(away) * 8);
+      const radius = Math.hypot(this.blinkTarget.x, this.blinkTarget.z), limit = ARENA_RADIUS - 2;
+      if (radius > limit) { this.blinkTarget.x *= limit / radius; this.blinkTarget.z *= limit / radius; }
+      this.ctx.arena.resolveObstacles(this.blinkTarget, this.radius);
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 0.65, color: 0xe3b890, duration: 0.22 });
     } else {
-      // Slow reposition drift
       const drift = Math.sin(this.t * 0.7) * 4;
       this.seek(p.pos.x + Math.sin(this.t * 0.5) * 9, p.pos.z + drift, dt, 0.5);
     }
@@ -562,21 +472,20 @@ export class Caster extends Enemy {
     if (this.castTimer <= 0 && !this.pendingBlast && this.distToPlayer() < 18) {
       this.castTimer = 3.0;
       this.pendingBlast = { x: p.pos.x, z: p.pos.z, timer: 1.0 };
-      this.ctx.tele.circle(p.pos.x, p.pos.z, 2.6, 1.0, 0xff7733);
-      this.orbMat.emissiveIntensity = 6;
+      this.warnCircle(p.pos.x, p.pos.z, 2.6, 1.0, 0xff7733);
+      this.orbMat.emissiveIntensity = 1.7;
     }
     if (this.pendingBlast) {
-      this.setIntentPose(1 - Math.max(0, this.pendingBlast.timer) / 1.0);
       this.pendingBlast.timer -= dt;
       if (this.pendingBlast.timer <= 0) {
         const b = this.pendingBlast;
         this.pendingBlast = null;
-        this.orbMat.emissiveIntensity = 2.2;
+        this.orbMat.emissiveIntensity = 1.1;
         this.ctx.fx.ring(b.x, b.z, { radius: 2.6, color: 0xff7733, duration: 0.45 });
         this.ctx.fx.burst({
           x: b.x, y: 0.4, z: b.z,
-          count: 26, color: [0xff7733, 0xffcc66],
-          speed: [3, 9], up: 1.0, size: [0.4, 0.85], life: [0.25, 0.6], gravity: -5, drag: 2.5,
+          count: 16, color: [0xff935c, 0xe7bf82],
+          speed: [3, 9], up: 1.0, size: [0.14, 0.38], life: [0.25, 0.6], gravity: -5, drag: 2.5,
         });
         this.ctx.sfx.explosion();
         if (Math.hypot(p.pos.x - b.x, p.pos.z - b.z) < 2.6 + p.radius) {
@@ -596,6 +505,8 @@ export class Shade extends Enemy {
   private timer = 2.2;
   private strikeX = 0;
   private strikeZ = 0;
+  private body: THREE.Group;
+  private arms: THREE.Group[];
   private bodyMats: THREE.MeshStandardMaterial[] = [];
   private opacity = 0.75;
   private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
@@ -605,48 +516,13 @@ export class Shade extends Enemy {
     this.hp = this.maxHp = 20;
     this.speed = 3.6;
     this.radius = 0.45;
-    this.addRoleSilhouette("void", 0xff66aa);
-
-    const mk = (color: number, emissive: number, ei: number) => {
-      const m = this.stdMat(color, emissive, ei);
-      m.transparent = true;
-      m.opacity = 0.75;
-      this.bodyMats.push(m);
-      return m;
+    const material = (color: number, emissive = 0, intensity = 0) => {
+      const m = this.stdMat(color, emissive, intensity);
+      m.transparent = true; m.opacity = 0.75;
+      this.bodyMats.push(m); return m;
     };
-    // Lifted cloak emissive: the robe crushed to a mud silhouette on dark floors
-    // (only its rings read). Still dim — it's a shade — but the form now exists.
-    const cloak = mk(0x1a0c2e, 0x6a22aa, 0.85);
-    const wisp = mk(0x1a0c2a, 0xa844dd, 1.3);
-    const eye = mk(0x000000, 0xff2266, 3.0);
-    const torso = this.addMesh(new THREE.ConeGeometry(0.45, 1.5, 5), cloak, 0, 0.75);
-    torso.rotation.y = 0.4;
-    // Ragged cloak tatters trailing off the hem
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + 0.4;
-      const tat = this.addMesh(new THREE.ConeGeometry(0.07, 0.5, 3), cloak, Math.cos(a) * 0.32, 0.18, Math.sin(a) * 0.32);
-      tat.rotation.set(0.25, a, 0);
-    }
-    // Hooded head with a low brim shadowing the eye-slit
-    this.addMesh(new THREE.SphereGeometry(0.22, 8, 6), cloak, 0, 1.6);
-    const brim = this.addMesh(new THREE.ConeGeometry(0.27, 0.32, 5), cloak, 0, 1.74);
-    brim.rotation.x = 0.1;
-    this.addMesh(new THREE.BoxGeometry(0.16, 0.05, 0.06), eye, 0, 1.62, 0.2);
-    // Wraith wisps curling off the shoulders
-    const wl = this.addMesh(new THREE.ConeGeometry(0.06, 0.4, 4), wisp, -0.3, 1.3, 0);
-    wl.rotation.set(0, 0, 0.6);
-    const wr = this.addMesh(new THREE.ConeGeometry(0.06, 0.4, 4), wisp, 0.3, 1.3, 0);
-    wr.rotation.set(0, 0, -0.6);
-    // Twin daggers
-    const dagger = this.stdMat(0x223344, 0x6688aa, 0.8);
-    const dl = this.addMesh(new THREE.ConeGeometry(0.05, 0.6, 4), dagger, -0.4, 1.0, 0.2);
-    dl.rotation.x = Math.PI / 2;
-    const dr = this.addMesh(new THREE.ConeGeometry(0.05, 0.6, 4), dagger, 0.4, 1.0, 0.2);
-    dr.rotation.x = Math.PI / 2;
-    // Dagger crossguards
-    this.addMesh(new THREE.BoxGeometry(0.16, 0.04, 0.04), dagger, -0.4, 1.0, 0.0);
-    this.addMesh(new THREE.BoxGeometry(0.16, 0.04, 0.04), dagger, 0.4, 1.0, 0.0);
-    this.mergeStaticRootMeshes();
+    const rig = forgeWraith(this.root, material, "shade");
+    this.body = rig.body; this.arms = rig.arms;
   }
 
   protected deathColor(): number {
@@ -656,6 +532,14 @@ export class Shade extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
+
+    const poised = this.state === "strike" ? 1 : this.state === "recover" ? -0.35 : 0;
+    for (let i = 0; i < this.arms.length; i++) {
+      const arm = this.arms[i], side = i === 0 ? -1 : 1;
+      arm.rotation.x += ((-0.1 - poised * 0.8) - arm.rotation.x) * Math.min(1, dt * 18);
+      arm.rotation.z += ((side * (0.08 + poised * 0.3)) - arm.rotation.z) * Math.min(1, dt * 18);
+    }
+    this.body.rotation.x += ((this.state === "recover" ? 0.18 : -poised * 0.12) - this.body.rotation.x) * Math.min(1, dt * 14);
 
     // Opacity follows state
     const targetOpacity = this.state === "fade" ? 0.06 : this.state === "lurk" ? 0.55 : 0.95;
@@ -677,30 +561,32 @@ export class Shade extends Enemy {
         break;
       }
       case "fade":
-        this.setIntentPose(0.75);
         if (this.timer <= 0) {
           // Materialize behind the player's current facing
           const bx = p.pos.x - Math.sin(p.facing) * 2.2;
           const bz = p.pos.z - Math.cos(p.facing) * 2.2;
           this.pos.x = bx;
           this.pos.z = bz;
+          const radius = Math.hypot(this.pos.x, this.pos.z), limit = ARENA_RADIUS - 2;
+          if (radius > limit) { this.pos.x *= limit / radius; this.pos.z *= limit / radius; }
+          this.ctx.arena.resolveObstacles(this.pos, this.radius);
           this.strikeX = p.pos.x;
           this.strikeZ = p.pos.z;
-          this.ctx.tele.circle(p.pos.x, p.pos.z, 1.8, 0.55, 0xff2266);
+          this.warnCircle(p.pos.x, p.pos.z, 1.8, 0.55, 0xff2266);
           this.facePlayer(1);
           this.state = "strike";
           this.timer = 0.55;
           this.ctx.fx.burst({
-            x: bx, y: 1, z: bz,
-            count: 14, color: 0xcc2266, speed: [1, 5], up: 0.6, size: [0.3, 0.6], life: [0.2, 0.45], gravity: -1, drag: 3,
+            x: this.pos.x, y: 1, z: this.pos.z,
+            count: 8, color: [0xa67795, 0xe2bfd1], speed: [1, 4], up: 0.6, size: [0.1, 0.23], life: [0.2, 0.45], gravity: -1, drag: 3,
           });
         }
         break;
       case "strike":
-        this.setIntentPose(1);
         this.facePlayer(dt * 2);
         if (this.timer <= 0) {
-          if (Math.hypot(p.pos.x - this.strikeX, p.pos.z - this.strikeZ) < 1.8 + p.radius) {
+          if (Math.hypot(p.pos.x - this.strikeX, p.pos.z - this.strikeZ) < 1.8 + p.radius
+            && !this.ctx.arena.blocksSegment(this.pos.x, this.pos.z, p.pos.x, p.pos.z)) {
             this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z);
           }
           this.ctx.fx.ring(this.strikeX, this.strikeZ, { radius: 1.8, color: 0xff2266, duration: 0.3 });
@@ -740,55 +626,11 @@ export class Bastion extends Enemy {
     this.radius = 0.7;
     this.shieldHp = this.shieldMaxHp = 36; // ≈ one full melee combo (9+9+18) at neutral tempo
     this.shieldBarColor = 0xff8a3a;
-    this.addRoleSilhouette("shield", 0xff7a2a);
-
-    const hide = this.stdMat(0x241a12, 0x3a1606, 0.22);   // charred war-hide
-    const iron = this.stdMat(0x2b2f3a, 0x10131c, 0.08);   // cold dark battle-iron (body plates)
-    const eyeMat = this.stdMat(0x000000, 0xff7a2a, 2.8);  // hot ember glare
-    // Shield frame/rune (bright) + wall face (dark iron, faintly rune-lit). Kept OUT
-    // of the flash loop so the shield-HP glow we drive each frame survives the hit-flash.
-    this.shieldMat = new THREE.MeshStandardMaterial({
-      color: 0x14171f, emissive: 0xff7a2a, emissiveIntensity: 1.1, roughness: 0.55, metalness: 0.3, flatShading: true,
-    });
-    this.plateMat = new THREE.MeshStandardMaterial({
-      color: 0x1c2029, emissive: 0xff7a2a, emissiveIntensity: 0.22, roughness: 0.6, metalness: 0.3, flatShading: true,
-    });
-    // Hunched brute hauling the wall: body sits low, helm + pauldrons crest the rim.
-    this.addMesh(new THREE.BoxGeometry(1.0, 1.3, 0.8), hide, 0, 0.85);
-    this.addMesh(new THREE.BoxGeometry(0.56, 0.46, 0.46), iron, 0, 1.78);  // helm
-    // Brow ridge + a glaring visor slit so the warrior reads above the shield
-    this.addMesh(new THREE.BoxGeometry(0.6, 0.1, 0.08), iron, 0, 1.99, 0.2);
-    this.addMesh(new THREE.BoxGeometry(0.36, 0.08, 0.06), eyeMat, 0, 1.83, 0.24);
-    for (const sx of [-1, 1]) {
-      const pa = this.addMesh(new THREE.BoxGeometry(0.5, 0.34, 0.66), iron, sx * 0.72, 1.64, 0);
-      pa.rotation.z = sx * -0.22;
-    }
-    // Backpack counterweight + spine of rivets so it reads from behind (the kill angle)
-    this.addMesh(new THREE.BoxGeometry(0.7, 0.9, 0.3), hide, 0, 0.95, -0.5);
-    for (let i = 0; i < 3; i++) {
-      this.addMesh(new THREE.SphereGeometry(0.07, 5, 4), iron, 0, 0.6 + i * 0.35, -0.66);
-    }
-    // The wall: a great round war-shield (a faceted iron aspis) — a disc is
-    // unmistakably a shield and never a treasure chest. Dark iron face split into
-    // a wheel by recessed iron spokes, with a single bright domed umbo + rim runes.
-    const R = 0.98, SY = 1.05, SZ = 0.6, TAU = Math.PI * 2;
-    const disc = this.addMesh(new THREE.CylinderGeometry(R, R, 0.16, 12), this.plateMat, 0, SY, SZ);
-    disc.rotation.x = Math.PI / 2;                                                            // face the player (+z)
-    this.addMesh(new THREE.TorusGeometry(R, 0.08, 6, 12), this.shieldMat, 0, SY, SZ + 0.02);  // bright rune rim
-    this.addMesh(new THREE.TorusGeometry(R * 0.6, 0.045, 6, 12), this.shieldMat, 0, SY, SZ + 0.05); // inner ring
-    for (let i = 0; i < 3; i++) {                                                             // recessed iron spokes → a wheel, not slats
-      const bar = this.addMesh(new THREE.BoxGeometry(R * 1.78, 0.07, 0.16), iron, 0, SY, SZ + 0.03);
-      bar.rotation.z = i * (Math.PI / 3);
-    }
-    const umbo = this.addMesh(new THREE.ConeGeometry(0.28, 0.34, 8), this.shieldMat, 0, SY, SZ + 0.08); // central domed boss
-    umbo.rotation.x = Math.PI / 2;
-    for (let i = 0; i < 8; i++) {                                                             // rim rivets
-      const a = (i / 8) * TAU;
-      this.addMesh(new THREE.SphereGeometry(0.06, 5, 4), this.shieldMat, Math.cos(a) * R * 0.86, SY + Math.sin(a) * R * 0.86, SZ + 0.06);
-    }
-    this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, -0.6, 0.3, 0);
-    this.addMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), hide, 0.6, 0.3, 0);
-    this.mergeStaticRootMeshes();
+    const rig = forgeGuardian(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity), "bastion");
+    this.shieldMat = rig.shieldMat;
+    this.plateMat = rig.plateMat;
+    this.legL = rig.legL;
+    this.legR = rig.legR;
   }
 
   protected deathColor(): number {
@@ -832,6 +674,7 @@ export class Bastion extends Enemy {
 
   protected onShieldBreak(opts?: DamageOpts): void {
     if (opts?.allowShieldStagger !== false) {
+      this.cancelWarnings();
       this.stagger = 0.6;
       this.slamWindup = -1;
       this.slamTimer = Math.max(this.slamTimer, 0.9);
@@ -854,7 +697,7 @@ export class Bastion extends Enemy {
     this.shieldMat.emissive.set(0xff7a2a);
     this.plateMat.emissive.set(0xff7a2a);
     const frac = this.shieldHp / this.shieldMaxHp;
-    this.shieldMat.emissiveIntensity = 0.12 + frac * 1.15;
+    this.shieldMat.emissiveIntensity = 0.06 + frac * 0.34;
     this.plateMat.emissiveIntensity = 0.02 + frac * 0.16;
   }
 
@@ -878,10 +721,9 @@ export class Bastion extends Enemy {
         this.slamTimer = 3.0;
         const fx = Math.sin(this.heading);
         const fz = Math.cos(this.heading);
-        this.ctx.tele.circle(this.pos.x + fx * 1.6, this.pos.z + fz * 1.6, 2.2, 0.6, 0xff7a2a);
+        this.warnCircle(this.pos.x + fx * 1.6, this.pos.z + fz * 1.6, 2.2, 0.6, 0xff7a2a);
       }
     } else {
-      this.setIntentPose(1 - Math.max(0, this.slamWindup) / 0.6);
       this.facePlayer(dt * 0.4);
       this.slamWindup -= dt;
       if (this.slamWindup <= 0) {
@@ -910,48 +752,18 @@ export class Brute extends Enemy {
   private chargeDir = new THREE.Vector2();
   private struck = false;
   private eyeMat: THREE.MeshStandardMaterial;
+  private rig: ReturnType<typeof forgeBrute>;
+  private rushDistance = 0;
+  override get anchored(): boolean { return this.state === "windup" || this.state === "charge"; }
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 85;
     this.speed = 1.5;
-    this.radius = 0.8;
-    this.addRoleSilhouette("charger", 0xff5511);
-
-    const armorMat = this.stdMat(0x2a2620, 0x442211, 0.25);
-    const ironMat = this.stdMat(0x4a4438, 0x664422, 0.4);
-    const moltenMat = this.stdMat(0x401505, 0xff5511, 1.0);
-    this.eyeMat = this.stdMat(0x000000, 0xff5511, 2.4);
-
-    this.addMesh(new THREE.BoxGeometry(1.4, 1.3, 1.1), armorMat, 0, 0.95);
-    // Glowing forge-seams cracking across the chest
-    this.addMesh(new THREE.BoxGeometry(1.42, 0.1, 0.04), moltenMat, 0, 1.15, 0.56);
-    this.addMesh(new THREE.BoxGeometry(0.1, 0.7, 0.04), moltenMat, 0.1, 0.85, 0.56);
-    this.addMesh(new THREE.BoxGeometry(0.7, 0.55, 0.6), armorMat, 0, 1.85, 0.1); // head
-    // Brow ridge over smouldering eyes
-    this.addMesh(new THREE.BoxGeometry(0.72, 0.12, 0.1), ironMat, 0, 2.06, 0.36);
-    this.addMesh(new THREE.BoxGeometry(0.14, 0.1, 0.06), this.eyeMat, -0.18, 1.92, 0.42);
-    this.addMesh(new THREE.BoxGeometry(0.14, 0.1, 0.06), this.eyeMat, 0.18, 1.92, 0.42);
-    // Tusks jutting from the jaw
-    const tl = this.addMesh(new THREE.ConeGeometry(0.06, 0.24, 4), ironMat, -0.16, 1.66, 0.36);
-    tl.rotation.x = Math.PI;
-    const tr = this.addMesh(new THREE.ConeGeometry(0.06, 0.24, 4), ironMat, 0.16, 1.66, 0.36);
-    tr.rotation.x = Math.PI;
-    // Pauldron horns
-    const hl = this.addMesh(new THREE.ConeGeometry(0.18, 0.55, 4), ironMat, -0.7, 1.55, 0);
-    hl.rotation.z = 0.7;
-    const hr = this.addMesh(new THREE.ConeGeometry(0.18, 0.55, 4), ironMat, 0.7, 1.55, 0);
-    hr.rotation.z = -0.7;
-    // Frontal plate ridge
-    this.addMesh(new THREE.BoxGeometry(1.5, 0.2, 0.24), ironMat, 0, 1.0, 0.6);
-    this.legL = this.addLeg(0.4, 0.6, 0.4, armorMat, -0.5, 0.3, 0);
-    this.legR = this.addLeg(0.4, 0.6, 0.4, armorMat, 0.5, 0.3, 0);
-    // Knuckle spikes on the battering fists
-    for (const fx of [-0.5, 0.5]) {
-      const k = this.addMesh(new THREE.ConeGeometry(0.08, 0.28, 4), ironMat, fx, 0.45, 0.22);
-      k.rotation.x = 1.3;
-    }
-    this.mergeStaticRootMeshes();
+    this.radius = 0.9;
+    this.rig = forgeBrute(this.root, this.stdMat.bind(this));
+    this.eyeMat = this.rig.eyes;
+    this.legL = this.rig.legs[0]; this.legR = this.rig.legs[1];
   }
 
   protected deathColor(): number {
@@ -965,12 +777,22 @@ export class Brute extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
-    this.pos.y = this.state === "chase" ? Math.abs(Math.sin(this.t * 4)) * 0.06 : 0;
+    this.pos.y = 0;
+    const winding = this.state === "windup", rushing = this.state === "charge";
+    const blend = Math.min(1, dt * 14);
+    this.rig.body.rotation.x += ((winding ? -0.13 : rushing ? 0.28 : 0) - this.rig.body.rotation.x) * blend;
+    this.rig.head.rotation.x += ((winding ? 0.22 : rushing ? -0.18 : 0) - this.rig.head.rotation.x) * blend;
+    for (const [i, arm] of this.rig.arms.entries()) {
+      const target = winding ? -0.5 : rushing ? -1.15 : this.state === "chase" ? Math.sin(this.t * 4 + i * Math.PI) * 0.12 : 0;
+      arm.rotation.x += (target - arm.rotation.x) * blend;
+    }
+    this.eyeMat.emissiveIntensity = winding ? 1.8 : 1.2;
+    if (this.anchored) this.kb.set(0, 0);
 
     switch (this.state) {
       case "chase": {
         const d = this.seek(p.pos.x, p.pos.z, dt);
-        if (d < 7 && this.timer <= 0) {
+        if (d < 7 && this.timer <= 0 && this.commitMelee(1.4)) {
           this.state = "windup";
           this.timer = 0.7;
           this.struck = false;
@@ -979,49 +801,53 @@ export class Brute extends Enemy {
           const len = Math.hypot(dx, dz) || 1;
           this.chargeDir.set(dx / len, dz / len);
           const ang = Math.atan2(this.chargeDir.x, this.chargeDir.y);
-          // Lane covers the full dash: ~9m travel, wide enough for the 0.8 body + player radius
-          this.ctx.tele.line(this.pos.x, this.pos.z, ang, 9, 2.0, 0.7, 0xff5511);
-          this.eyeMat.emissiveIntensity = 5;
+          // Warn the full committed rush, including the reach of the battering body.
+          this.warnLine(this.pos.x, this.pos.z, ang, 10, (this.radius + 0.6) * 2, 0.7, 0xff5511);
+          this.eyeMat.emissiveIntensity = 1.8;
         }
         break;
       }
       case "windup":
-        this.setIntentPose(1);
-        this.root.scale.set(1.1, 0.88, 1.18);
-        this.facePlayer(dt * 0.6);
-        // Lock the charge direction to the current facing as the lane commits
-        this.chargeDir.set(Math.sin(this.heading), Math.cos(this.heading));
+        // The displayed lane is locked. Tracking the player here redirected the rush off its warning.
+        this.heading = Math.atan2(this.chargeDir.x, this.chargeDir.y);
         if (this.timer <= 0) {
-          this.root.scale.set(1, 1, 1);
           this.state = "charge";
-          this.timer = 0.65;
-          this.kb.x += this.chargeDir.x * 26;
-          this.kb.y += this.chargeDir.y * 26;
+          this.timer = 0.58;
+          this.rushDistance = 0;
           this.ctx.cam.addTrauma(0.18);
           this.ctx.sfx.bossDash();
         }
         break;
-      case "charge":
-        this.setIntentPose(0.6);
-        this.root.scale.set(0.96, 1.05, 1.22);
-        // Sustain the dash impulse so the overshoot reads as a committed lunge
-        this.kb.x += this.chargeDir.x * 70 * dt;
-        this.kb.y += this.chargeDir.y * 70 * dt;
-        if (!this.struck && this.distToPlayer() < this.radius + p.radius + 0.6) {
-          this.struck = true;
-          this.ctx.combat.damagePlayer(18, this.pos.x, this.pos.z);
+      case "charge": {
+        const travel = Math.min(8.5 - this.rushDistance, 16 * dt);
+        const steps = Math.max(1, Math.ceil(travel / 0.25));
+        let blocked = false;
+        for (let i = 0; i < steps; i++) {
+          const ox = this.pos.x, oz = this.pos.z, step = travel / steps;
+          this.pos.x += this.chargeDir.x * step; this.pos.z += this.chargeDir.y * step;
+          const r = Math.hypot(this.pos.x, this.pos.z), limit = ARENA_RADIUS - this.radius;
+          if (r > limit) { this.pos.x *= limit / r; this.pos.z *= limit / r; }
+          this.ctx.arena.resolveObstacles(this.pos, this.radius);
+          const dx = this.pos.x - ox, dz = this.pos.z - oz, lengthSq = dx * dx + dz * dz;
+          const along = lengthSq > 0 ? Math.max(0, Math.min(1, ((p.pos.x - ox) * dx + (p.pos.z - oz) * dz) / lengthSq)) : 0;
+          if (!this.struck && Math.hypot(p.pos.x - ox - dx * along, p.pos.z - oz - dz * along) < this.radius + p.radius + 0.6) {
+            this.struck = true;
+            this.ctx.combat.damagePlayer(18, this.pos.x, this.pos.z);
+          }
+          this.rushDistance += step;
+          if (dx * this.chargeDir.x + dz * this.chargeDir.y < step * 0.5) { blocked = true; break; }
         }
-        if (this.timer <= 0) {
+        if (blocked || this.rushDistance >= 8.5 || this.timer <= 0) {
           this.state = "recover";
-          this.timer = 1.0;
-          this.eyeMat.emissiveIntensity = 2.4;
-          this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 1.6, color: 0xff5511, duration: 0.35 });
-          this.ctx.cam.addTrauma(0.12);
+          this.timer = blocked ? 1.25 : 1.0;
+          this.eyeMat.emissiveIntensity = 1.2;
+          this.ctx.fx.burst({ x: this.pos.x, y: 0.15, z: this.pos.z, count: 8, color: [0xa2927b, 0x696875], speed: [1, 4], up: 0.5, size: [0.1, 0.25], life: [0.2, 0.4], gravity: -4, drag: 4 });
+          this.ctx.cam.addTrauma(blocked ? 0.16 : 0.08);
           this.ctx.sfx.bossSlam();
         }
         break;
+      }
       case "recover":
-        this.root.scale.set(1, 1, 1);
         if (this.timer <= 0) {
           this.state = "chase";
           this.timer = 0.5;
@@ -1040,45 +866,19 @@ export class Harrier extends Enemy {
   private lockedAngle = 0;
   private orb: THREE.Mesh;
   private orbMat: THREE.MeshStandardMaterial;
+  private wings: THREE.Group[];
   private strafeDir = this.ctx.rng.next() < 0.5 ? 1 : -1;
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 16;
     this.speed = 5.0;
-    this.radius = 0.42;
+    this.radius = 0.5;
     this.pos.y = 1.6;
-    this.addRoleSilhouette("flier", 0x33ccff);
-
-    const wingMat = this.stdMat(0x20303a, 0x2a6688, 0.5);
-    const bodyMat = this.stdMat(0x142028, 0x3388aa, 0.35);
-    const eyeMat = this.stdMat(0x000000, 0x88eeff, 2.6);
-    this.orbMat = this.stdMat(0x06222e, 0x33ccff, 2.4);
-    this.addMesh(new THREE.ConeGeometry(0.3, 0.9, 5), bodyMat, 0, 0, 0).rotation.x = Math.PI / 2;
-    // Cockpit eye on the dorsal hull
-    this.addMesh(new THREE.SphereGeometry(0.07, 8, 6), eyeMat, 0, 0.12, 0.18);
-    // Swept wings with glowing leading edges
-    const wl = this.addMesh(new THREE.BoxGeometry(0.7, 0.06, 0.34), wingMat, -0.5, 0.05, -0.1);
-    wl.rotation.z = 0.25;
-    const wr = this.addMesh(new THREE.BoxGeometry(0.7, 0.06, 0.34), wingMat, 0.5, 0.05, -0.1);
-    wr.rotation.z = -0.25;
-    this.addMesh(new THREE.BoxGeometry(0.4, 0.03, 0.04), this.orbMat, -0.55, 0.1, 0.04).rotation.z = 0.25;
-    this.addMesh(new THREE.BoxGeometry(0.4, 0.03, 0.04), this.orbMat, 0.55, 0.1, 0.04).rotation.z = -0.25;
-    // Wingtip running lights
-    this.addMesh(new THREE.SphereGeometry(0.05, 6, 5), eyeMat, -0.82, 0.1, -0.1);
-    this.addMesh(new THREE.SphereGeometry(0.05, 6, 5), eyeMat, 0.82, 0.1, -0.1);
-    // Upright tail fin
-    const fin = this.addMesh(new THREE.ConeGeometry(0.14, 0.4, 3), wingMat, 0, 0.18, -0.42);
-    fin.rotation.x = -0.3;
-    // Underslung raptor blade-talons folded along the hull
-    const tl = this.addMesh(new THREE.ConeGeometry(0.05, 0.5, 3), wingMat, -0.18, -0.12, 0.18);
-    tl.rotation.set(-1.2, 0, 0.2);
-    const tr = this.addMesh(new THREE.ConeGeometry(0.05, 0.5, 3), wingMat, 0.18, -0.12, 0.18);
-    tr.rotation.set(-1.2, 0, -0.2);
-    // Tail thruster glow propelling the strafe
-    this.addMesh(new THREE.ConeGeometry(0.1, 0.26, 6), this.orbMat, 0, 0, -0.5).rotation.x = -Math.PI / 2;
-    this.orb = this.addMesh(new THREE.SphereGeometry(0.15, 10, 8), this.orbMat, 0, 0, 0.5);
-    this.mergeStaticRootMeshes([this.orb]);
+    const rig = forgeFlier(this.root, this.stdMat.bind(this), "harrier");
+    this.wings = rig.wings;
+    this.orbMat = rig.focusMat;
+    this.orb = rig.focus;
   }
 
   protected deathColor(): number {
@@ -1093,6 +893,10 @@ export class Harrier extends Enemy {
     const p = this.ctx.player;
     const d = this.distToPlayer();
     this.facePlayer(dt);
+    for (const [i, wing] of this.wings.entries()) {
+      const beat = this.windup >= 0 ? 0.45 : 0.16 + Math.sin(this.t * 8) * 0.24;
+      wing.rotation.z = (i === 0 ? -1 : 1) * beat;
+    }
     // Hovers high and bobs — hard to corner, but melee sweeps (2D) still reach it.
     this.pos.y = 1.6 + Math.sin(this.t * 4) * 0.22;
 
@@ -1110,16 +914,15 @@ export class Harrier extends Enemy {
         this.windup = 0.32;
         this.fireTimer = 1.7;
         this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 6, 0.7, 0.32, 0x33ccff);
+        this.warnLine(this.pos.x, this.pos.z, this.lockedAngle, 6, 0.7, 0.32, 0x33ccff);
       }
     } else {
-      this.setIntentPose(1 - Math.max(0, this.windup) / 0.32);
       this.windup -= dt;
-      this.orbMat.emissiveIntensity = 2.4 + (0.32 - this.windup) * 11;
+      this.orbMat.emissiveIntensity = 1.1 + (0.32 - this.windup) * 2.5;
       this.orb.scale.setScalar(1 + (0.32 - this.windup) * 2.0);
       if (this.windup <= 0) {
         this.windup = -1;
-        this.orbMat.emissiveIntensity = 2.4;
+        this.orbMat.emissiveIntensity = 1.1;
         this.orb.scale.setScalar(1);
         this.ctx.hostiles.fire(this.pos.x, this.pos.z, this.lockedAngle, {
           speed: 12, dmg: 7, color: 0x55ddff, radius: 0.26, y: 1.4,
@@ -1131,52 +934,20 @@ export class Harrier extends Enemy {
 }
 
 // ---------------------------------------------------------------- Splitter
-/** Slow gooey blob. Harmless to touch, but on death it bursts into two swarmers. */
+/** Plated brood carrier. Harmless to touch; two egg cases split into swarmers. */
 export class Splitter extends Enemy {
   readonly kind: EnemyKind = "splitter";
+
+  private sacs: THREE.Group[];
+  private legs: THREE.Group[];
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 28;
     this.speed = 1.9;
-    this.radius = 0.6;
-    this.addRoleSilhouette("splitter", 0x66ff88);
-
-    const gooMat = this.stdMat(0x163a1c, 0x33cc55, 0.6);
-    const coreMat = this.stdMat(0x0a2410, 0x66ff88, 1.4);
-    const eyeMat = this.stdMat(0x000000, 0xaaffbb, 2.6);
-    // Two fused lobes about to split apart, each one a future swarmer.
-    const lobeL = this.addMesh(new THREE.SphereGeometry(0.42, 10, 8), gooMat, -0.24, 0.5, 0);
-    const lobeR = this.addMesh(new THREE.SphereGeometry(0.42, 10, 8), gooMat, 0.24, 0.55, 0);
-    lobeL.scale.set(1.05, 0.95, 1.0);
-    lobeR.scale.set(1.05, 0.95, 1.0);
-    // Lumpy smaller masses bulging off each lobe
-    this.addMesh(new THREE.SphereGeometry(0.3, 8, 6), gooMat, -0.4, 0.4, 0.16);
-    this.addMesh(new THREE.SphereGeometry(0.28, 8, 6), gooMat, 0.42, 0.46, -0.12);
-    this.addMesh(new THREE.SphereGeometry(0.22, 8, 6), gooMat, 0.1, 0.92, 0.16);
-    // The dividing seam: a bright vertical fissure where the body will tear in two
-    this.addMesh(new THREE.BoxGeometry(0.08, 0.85, 0.5), coreMat, 0, 0.55, 0);
-    const seamRing = this.addMesh(new THREE.TorusGeometry(0.42, 0.04, 6, 16), coreMat, 0, 0.55, 0);
-    seamRing.scale.set(1, 1, 0.6);
-    // Surface pustules bulging off the mass
-    this.addMesh(new THREE.SphereGeometry(0.12, 6, 5), gooMat, -0.18, 0.82, 0.42);
-    this.addMesh(new THREE.SphereGeometry(0.1, 6, 5), gooMat, 0.44, 0.72, 0.2);
-    // A bleary eye glaring out of each lobe — twin halves, twin stares
-    this.addMesh(new THREE.SphereGeometry(0.11, 8, 6), eyeMat, -0.22, 0.6, 0.42);
-    this.addMesh(new THREE.SphereGeometry(0.11, 8, 6), eyeMat, 0.24, 0.64, 0.4);
-    // Embedded cores — the two it will spawn — each with a glowing seam ring
-    this.addMesh(new THREE.IcosahedronGeometry(0.15, 0), coreMat, -0.26, 0.5, 0.28);
-    this.addMesh(new THREE.IcosahedronGeometry(0.15, 0), coreMat, 0.28, 0.56, 0.26);
-    const ringL = this.addMesh(new THREE.TorusGeometry(0.19, 0.025, 5, 10), coreMat, -0.26, 0.5, 0.28);
-    ringL.rotation.x = Math.PI / 2;
-    const ringR = this.addMesh(new THREE.TorusGeometry(0.19, 0.025, 5, 10), coreMat, 0.28, 0.56, 0.26);
-    ringR.rotation.x = Math.PI / 2;
-    // Dripping ooze tendrils hanging from the underbelly
-    for (const [dx, dz] of [[-0.3, 0.12], [0.32, -0.1], [0.05, 0.3]] as const) {
-      const drip = this.addMesh(new THREE.ConeGeometry(0.07, 0.3, 5), gooMat, dx, 0.16, dz);
-      drip.rotation.x = Math.PI;
-    }
-    this.mergeStaticRootMeshes();
+    this.radius = 0.65;
+    const rig = forgeSplitter(this.root, this.stdMat.bind(this));
+    this.sacs = rig.sacs; this.legs = rig.legs;
   }
 
   protected deathColor(): number {
@@ -1188,7 +959,7 @@ export class Splitter extends Enemy {
   }
 
   protected onDeath(): void {
-    // Burst into two swarmers near where the blob fell (telegraphed spawn rings come for free)
+    // Each egg case hatches one swarmer with the usual arrival warning.
     this.ctx.enemies.spawn("swarmer", this.pos.x - 0.6, this.pos.z, 0.5);
     this.ctx.enemies.spawn("swarmer", this.pos.x + 0.6, this.pos.z, 0.5);
   }
@@ -1196,22 +967,27 @@ export class Splitter extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.seek(p.pos.x, p.pos.z, dt);
-    // Gelatinous squash-and-stretch wobble
-    const wob = Math.sin(this.t * 4) * 0.08;
-    this.root.scale.set(1 + wob, 1 - wob, 1 + wob);
-    this.pos.y = Math.abs(Math.sin(this.t * 3)) * 0.05;
+    this.facePlayer(dt);
+    for (let i = 0; i < this.legs.length; i++) this.legs[i].rotation.x = Math.sin(this.t * 9 + i * Math.PI / 3) * 0.28;
+    for (let i = 0; i < this.sacs.length; i++) this.sacs[i].rotation.z = Math.sin(this.t * 3 + i * Math.PI) * 0.04;
+    this.pos.y = Math.abs(Math.sin(this.t * 9)) * 0.018;
   }
 }
 
 // ---------------------------------------------------------------- Voidling
 /**
  * Cosmic swarm mote (Act V). Fast, fragile, drifts in erratic spirals and bites
- * on contact. Pale-white/violet glow — the Hollow Star's lesser children.
+ * with a planted, telegraphed pulse. Pale-white/violet glow — the Hollow Star's lesser children.
  */
 export class Voidling extends Enemy {
   readonly kind: EnemyKind = "voidling";
   private phase = this.ctx.rng.next() * Math.PI * 2;
   private wander = this.ctx.rng.next() * Math.PI * 2;
+  private pulseTime = -1;
+  private pulseCooldown = 0;
+  override get anchored(): boolean { return this.pulseTime >= 0; }
+  private jaws: THREE.Group[];
+  private tails: THREE.Group[];
   private coreMat: THREE.MeshStandardMaterial;
 
   constructor(ctx: Ctx, x: number, z: number) {
@@ -1219,40 +995,8 @@ export class Voidling extends Enemy {
     this.hp = this.maxHp = 14;
     this.speed = 5.0;
     this.radius = 0.38;
-    this.contactDmg = 7;
-    this.addRoleSilhouette("void", 0xc8a6ff);
-
-    const shellMat = this.stdMat(0x140a26, 0x9a6aff, 1.0);
-    this.coreMat = this.stdMat(0x1a1030, 0xf0e6ff, 2.8);
-    const shardMat = this.stdMat(0x0c0618, 0xc8a6ff, 1.6);
-    const fangMat = this.stdMat(0x080410, 0xe0d0ff, 1.2);
-    // Split void husk — an upper and lower jaw plate gaping around the core
-    const upper = this.addMesh(new THREE.IcosahedronGeometry(0.3, 0), shellMat, 0, 0.46, -0.02);
-    upper.scale.set(1, 0.7, 1);
-    const lower = this.addMesh(new THREE.IcosahedronGeometry(0.26, 0), shellMat, 0, 0.3, 0.04);
-    lower.scale.set(0.9, 0.55, 0.9);
-    // Bright white-violet core glaring from the gap — a single hungry eye
-    this.addMesh(new THREE.OctahedronGeometry(0.17), this.coreMat, 0, 0.4, 0.02);
-    this.addMesh(new THREE.SphereGeometry(0.06, 6, 5), this.coreMat, 0, 0.4, 0.22);
-    // Ring of inward fangs around the maw
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const fang = this.addMesh(new THREE.ConeGeometry(0.04, 0.16, 4), fangMat, Math.cos(a) * 0.22, 0.4 + Math.sin(a) * 0.1, 0.2);
-      fang.rotation.x = Math.PI / 2;
-      fang.rotation.z = a;
-    }
-    // A loose cage of orbiting shards reading as "debris"
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2;
-      const sh = this.addMesh(new THREE.TetrahedronGeometry(0.09), shardMat, Math.cos(a) * 0.42, 0.4 + Math.sin(a) * 0.18, Math.sin(a) * 0.42);
-      sh.rotation.set(a, a * 1.4, 0);
-    }
-    // Wispy void-tendrils trailing behind as it darts
-    for (const [tx, tz] of [[-0.18, -0.3], [0.18, -0.3], [0, -0.36]] as const) {
-      const tail = this.addMesh(new THREE.ConeGeometry(0.05, 0.4, 3), shardMat, tx, 0.4, tz);
-      tail.rotation.x = -Math.PI / 2.2;
-    }
-    this.mergeStaticRootMeshes();
+    const rig = forgeVoidling(this.root, this.stdMat.bind(this));
+    this.jaws = rig.jaws; this.tails = rig.tails; this.coreMat = rig.coreMat;
   }
 
   protected deathColor(): number {
@@ -1273,10 +1017,30 @@ export class Voidling extends Enemy {
     const swirl = Math.sin(this.t * 5 + this.phase) * 1.1 + Math.sin(this.wander) * 0.6;
     const tx = p.pos.x + (-dz / d) * swirl;
     const tz = p.pos.z + (dx / d) * swirl;
-    this.seek(tx, tz, dt);
-    this.pos.y = 0.45 + Math.sin(this.t * 8 + this.phase) * 0.18;
-    this.coreMat.emissiveIntensity = 3.0;
-    this.tryContactDamage();
+    this.pulseCooldown = Math.max(0, this.pulseCooldown - dt);
+    if (this.pulseTime >= 0) {
+      this.kb.set(0, 0);
+      this.pulseTime -= dt;
+      if (this.pulseTime <= 0) {
+        this.pulseTime = -1;
+        this.pulseCooldown = 1.1;
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 1.25, color: 0xb5a2de, duration: .2 });
+        if (this.distToPlayer() < 1.25 + p.radius && !this.ctx.arena.blocksSegment(this.pos.x, this.pos.z, p.pos.x, p.pos.z)) {
+          this.ctx.combat.damagePlayer(7, this.pos.x, this.pos.z, { sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "voidling-pulse" });
+        }
+      }
+    } else if (d < 1.7 && this.pulseCooldown <= 0 && this.commitMelee(.6)) {
+      this.pulseTime = .46;
+      this.warnCircle(this.pos.x, this.pos.z, 1.25, .46, 0xcd8aca);
+    } else if (d > 1.5) this.seek(tx, tz, dt, this.pulseCooldown > .8 ? .35 : 1);
+    const charging = this.pulseTime >= 0;
+    this.pos.y = charging ? .45 + (1 - this.pulseTime / .46) * .24 : .45 + Math.sin(this.t * 8 + this.phase) * .12;
+    this.facePlayer(dt * 2);
+    const gape = charging ? .18 + (1 - this.pulseTime / .46) * .48 : .08;
+    this.jaws[0].rotation.x = -gape;
+    this.jaws[1].rotation.x = gape;
+    for (let i = 0; i < this.tails.length; i++) this.tails[i].rotation.y = Math.sin(this.t * 7 + i * 0.7) * 0.18;
+    this.coreMat.emissiveIntensity = charging ? 1.05 + (1 - this.pulseTime / .46) * 1.2 : 1.05;
   }
 }
 
@@ -1291,10 +1055,12 @@ export class Warper extends Enemy {
   private state: "drift" | "blinkTell" | "aim" = "drift";
   private timer = 1.4;
   private blinkCd = 2.4 + this.ctx.rng.next();
-  private blinkTo = new THREE.Vector2();
+  private blinkTo = new THREE.Vector3();
   private lockedAngle = 0;
   private orb: THREE.Mesh;
   private orbMat: THREE.MeshStandardMaterial;
+  private body: THREE.Group;
+  private arms: THREE.Group[];
   private bodyMats: THREE.MeshStandardMaterial[] = [];
   private opacity = 1;
 
@@ -1303,45 +1069,15 @@ export class Warper extends Enemy {
     this.hp = this.maxHp = 26;
     this.speed = 2.2;
     this.radius = 0.5;
-    this.addRoleSilhouette("void", 0xc8a6ff);
-
-    const mk = (color: number, emissive: number, ei: number): THREE.MeshStandardMaterial => {
-      const m = this.stdMat(color, emissive, ei);
-      m.transparent = true;
-      m.opacity = 1;
-      this.bodyMats.push(m);
-      return m;
+    const material = (color: number, emissive = 0, intensity = 0) => {
+      const m = this.stdMat(color, emissive, intensity);
+      m.transparent = true; m.opacity = 1;
+      this.bodyMats.push(m); return m;
     };
-    const robeMat = mk(0x180e2c, 0x6a3acc, 0.5);
-    const trimMat = mk(0x2a1a44, 0xb088ff, 0.9);
-    const eyeMat = mk(0x000000, 0xeadcff, 2.8);
-    this.orbMat = mk(0x140a26, 0xc8a6ff, 2.2);
-    // Hovering void-cultist: tapered robe, hooded head, a focus orb in hand
-    this.addMesh(new THREE.ConeGeometry(0.5, 1.5, 5), robeMat, 0, 0.78);
-    const hem = this.addMesh(new THREE.TorusGeometry(0.47, 0.05, 6, 14), trimMat, 0, 0.16);
-    hem.rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.BoxGeometry(0.07, 1.0, 0.07), trimMat, 0, 0.85, 0.42);
-    const hood = this.addMesh(new THREE.ConeGeometry(0.3, 0.5, 5), robeMat, 0, 1.7);
-    hood.rotation.x = 0.16;
-    this.addMesh(new THREE.SphereGeometry(0.2, 8, 6), robeMat, 0, 1.6, 0.04);
-    this.addMesh(new THREE.SphereGeometry(0.05, 6, 5), eyeMat, -0.08, 1.62, 0.18);
-    this.addMesh(new THREE.SphereGeometry(0.05, 6, 5), eyeMat, 0.08, 1.62, 0.18);
-    // Floating shoulder shards
-    const sl = this.addMesh(new THREE.OctahedronGeometry(0.1), trimMat, -0.32, 1.3, 0);
-    sl.rotation.set(0.4, 0, 0.3);
-    const sr = this.addMesh(new THREE.OctahedronGeometry(0.1), trimMat, 0.32, 1.3, 0);
-    sr.rotation.set(0.4, 0, -0.3);
-    // Void halo ring crowning the hood — the blink-rune
-    const halo = mk(0x140a26, 0xc8a6ff, 1.4);
-    const haloRing = this.addMesh(new THREE.TorusGeometry(0.26, 0.025, 6, 18), halo, 0, 1.95, -0.05);
-    haloRing.rotation.x = 1.1;
-    this.orb = this.addMesh(new THREE.SphereGeometry(0.18, 10, 8), this.orbMat, 0.4, 1.45, 0.3);
-    // Cosmic motes orbiting the focus orb
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      this.addMesh(new THREE.TetrahedronGeometry(0.05), trimMat, 0.4 + Math.cos(a) * 0.24, 1.45 + Math.sin(a) * 0.12, 0.3);
-    }
-    this.mergeStaticRootMeshes([this.orb]);
+    const rig = forgeWraith(this.root, material, "warper");
+    this.body = rig.body; this.arms = rig.arms;
+    this.orb = rig.focus!; this.orbMat = rig.focusMat;
+    this.arms[1].rotation.x = -0.55;
   }
 
   protected deathColor(): number {
@@ -1352,9 +1088,10 @@ export class Warper extends Enemy {
   freeze(duration: number): void {
     super.freeze(duration);
     if (this.state !== "drift") {
+      this.cancelWarnings();
       this.state = "drift";
       this.timer = 0.6;
-      this.orbMat.emissiveIntensity = 2.2;
+      this.orbMat.emissiveIntensity = 1.1;
     }
   }
 
@@ -1371,14 +1108,16 @@ export class Warper extends Enemy {
       tx *= maxR / r;
       tz *= maxR / r;
     }
-    this.blinkTo.set(tx, tz);
+    this.blinkTo.set(tx, 0, tz);
+    this.ctx.arena.resolveObstacles(this.blinkTo, this.radius);
+    tx = this.blinkTo.x; tz = this.blinkTo.z;
     this.state = "blinkTell";
     this.timer = 0.5;
     // Telegraph the destination so the reposition reads, plus the vanish FX.
-    this.ctx.tele.circle(tx, tz, 1.4, 0.5, 0xc8a6ff);
+    this.ctx.fx.ring(tx, tz, { radius: 0.7, duration: 0.5, color: 0xc8a6ff });
     this.ctx.fx.burst({
       x: this.pos.x, y: 1.0, z: this.pos.z,
-      count: 12, color: [0xc8a6ff, 0xffffff], speed: [1, 5], up: 0.6, size: [0.3, 0.6], life: [0.2, 0.45], gravity: -1, drag: 3,
+      count: 8, color: [0xc8a6ff, 0xb3a2ca], speed: [1, 4], up: 0.6, size: [0.1, 0.22], life: [0.2, 0.45], gravity: -1, drag: 3,
     });
     this.ctx.sfx.spawn();
   }
@@ -1389,6 +1128,10 @@ export class Warper extends Enemy {
     this.timer -= dt;
     this.blinkCd -= dt;
     this.orb.position.y = 1.45 + Math.sin(this.t * 3) * 0.08;
+
+    const reach = this.state === "aim" ? -0.8 : this.state === "blinkTell" ? -0.4 : 0;
+    this.arms[0].rotation.x += (reach - this.arms[0].rotation.x) * Math.min(1, dt * 12);
+    this.body.rotation.x += ((this.state === "blinkTell" ? -0.14 : 0) - this.body.rotation.x) * Math.min(1, dt * 12);
 
     // Opacity dips while blinking, full otherwise.
     const targetOpacity = this.state === "blinkTell" ? 0.18 : 1;
@@ -1410,30 +1153,28 @@ export class Warper extends Enemy {
           this.state = "aim";
           this.timer = 0.45;
           this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-          this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 14, 1.0, 0.45, 0xc8a6ff);
+          this.warnLine(this.pos.x, this.pos.z, this.lockedAngle, 14, 1.0, 0.45, 0xc8a6ff);
         }
         break;
       }
       case "blinkTell":
-        this.setIntentPose(0.8);
         if (this.timer <= 0) {
           // Arrive at the telegraphed destination.
           this.pos.x = this.blinkTo.x;
-          this.pos.z = this.blinkTo.y;
+          this.pos.z = this.blinkTo.z;
           this.ctx.fx.burst({
             x: this.pos.x, y: 1.0, z: this.pos.z,
-            count: 14, color: [0xc8a6ff, 0xffffff], speed: [2, 6], up: 0.7, size: [0.3, 0.7], life: [0.2, 0.5], gravity: -1, drag: 3,
+            count: 8, color: [0xc8a6ff, 0xb3a2ca], speed: [2, 5], up: 0.7, size: [0.1, 0.23], life: [0.2, 0.5], gravity: -1, drag: 3,
           });
           this.state = "drift";
           this.timer = 0.5;
         }
         break;
       case "aim":
-        this.setIntentPose(1 - Math.max(0, this.timer) / 0.45);
         this.facePlayer(dt * 0.5);
-        this.orbMat.emissiveIntensity = 2.2 + (0.45 - this.timer) * 8;
+        this.orbMat.emissiveIntensity = 1.1 + (0.45 - this.timer) * 1.7;
         if (this.timer <= 0) {
-          this.orbMat.emissiveIntensity = 2.2;
+          this.orbMat.emissiveIntensity = 1.1;
           this.ctx.hostiles.fire(this.pos.x, this.pos.z, this.lockedAngle, {
             speed: 11, dmg: 8, color: 0xc8a6ff, radius: 0.3, y: 1.2,
           });

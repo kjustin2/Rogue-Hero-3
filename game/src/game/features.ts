@@ -123,11 +123,26 @@ export class MapFeatures {
       const r = rng.range(minR, ARENA_RADIUS - 4);
       const x = Math.sin(a) * r;
       const z = Math.cos(a) * r;
-      if (Math.hypot(x - 0, z - ARENA_RADIUS * 0.55) <= 6.5) continue;
+      if (!this.ctx.arena.containsPoint(x,z,3.5)) continue;
+      if (Math.hypot(x, z - ARENA_RADIUS * 0.55) <= 6.5) continue;
+      if (this.ctx.arena.obstacles.some(o => Math.hypot(x-o.x,z-o.z) < o.r+3.5)) continue;
       if (taken.some((t) => Math.hypot(x - t.x, z - t.z) < FEATURE_MIN_SEP)) continue;
       return { x, z };
     }
-    return { x: 0, z: -6 };
+    // A deterministic fallback maximizes actual clearance, never a fixed pile-up.
+    let best = -Infinity, point = { x: 0, z: -6 };
+    for (let i = 0; i < 64; i++) {
+      const a = i / 32 * Math.PI * 2;
+      const r=i<32?8:12,x = Math.sin(a)*r, z = Math.cos(a)*r;
+      const clearance = Math.min(
+        (this.ctx.arena.boundary?.clearance(x,z) ?? ARENA_RADIUS-Math.hypot(x,z))-3.5,
+        Math.hypot(x,z-ARENA_RADIUS*0.55)-6.5,
+        ...taken.map(t => Math.hypot(x-t.x,z-t.z)-FEATURE_MIN_SEP),
+        ...this.ctx.arena.obstacles.map(o => Math.hypot(x-o.x,z-o.z)-o.r-3.5),
+      );
+      if (clearance > best) { best = clearance; point = { x, z }; }
+    }
+    return point;
   }
 
   private makeHazards(): void {
@@ -485,6 +500,13 @@ export class MapFeatures {
           const dot = d.vx * nx + d.vz * nz;
           d.vx -= 2 * dot * nx; d.vz -= 2 * dot * nz;
           d.x = nx * maxR; d.z = nz * maxR;
+        }
+        const x=d.x,z=d.z;
+        this.ctx.arena.resolveObstacles(d,d.r);
+        const pushX=d.x-x,pushZ=d.z-z,pushLength=Math.hypot(pushX,pushZ);
+        if(pushLength>.00001) {
+          const nx=pushX/pushLength,nz=pushZ/pushLength,dot=d.vx*nx+d.vz*nz;
+          if(dot<0){d.vx-=2*dot*nx;d.vz-=2*dot*nz;}
         }
         d.mesh.position.set(d.x, 1.1 + Math.sin(this.t * 3 + d.x) * 0.15, d.z);
         d.mesh.rotation.x += dt * 1.5; d.mesh.rotation.y += dt * 2;

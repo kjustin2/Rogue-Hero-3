@@ -8,32 +8,14 @@ const _lead = new THREE.Vector3();
 // effective FOV past the player's own ceiling.
 const FOV_SETTINGS_MAX = 62;
 
-/**
- * Authored gameplay lens. The old follow camera was almost overhead
- * (15.5 high / 9.6 back), which flattened the procedural rigs and hid the
- * basilica's vertical composition. This three-quarter lens keeps roughly the
- * same arena coverage while making bodies, weapons, walls, and distant scenery
- * read as a 3D space.
- */
+/** Higher combat lens exposes dodge lanes and feet without hiding the rigs' faces. */
 export const GAMEPLAY_CAMERA_PROFILE = Object.freeze({
-  offsetX: 0,
-  offsetY: 11.5,
-  offsetZ: 14.2,
+  offsetX: 7.5,
+  offsetY: 14.5,
+  offsetZ: 10,
   lookY: 0.75,
   lookAhead: 0.22,
 });
-
-export interface GameplayCameraFraming {
-  mode: "follow" | "menu" | "cinematic";
-  offsetX: number;
-  offsetY: number;
-  offsetZ: number;
-  lookY: number;
-  lookAhead: number;
-  pitchDeg: number;
-  eyeDistance: number;
-  currentFov: number;
-}
 
 /**
  * Trauma-based follow camera. Shake intensity is trauma², so small hits whisper
@@ -74,6 +56,7 @@ export class CameraRig {
   private orbitRadius = 26;
   private orbitHeight = 13;
   private orbitLookY = 1.5;
+  private showcase = false;
 
   private offset = new THREE.Vector3(
     GAMEPLAY_CAMERA_PROFILE.offsetX,
@@ -129,23 +112,6 @@ export class CameraRig {
     this.tempoFrac = clamp01(frac);
   }
 
-  /** Serializable presentation metric used by the screenshot/manifest gate. */
-  gameplayFraming(): GameplayCameraFraming {
-    const vertical = this.offset.y - this.followLookY;
-    const horizontal = Math.hypot(this.offset.x, this.offset.z);
-    return {
-      mode: this.mode,
-      offsetX: this.offset.x,
-      offsetY: this.offset.y,
-      offsetZ: this.offset.z,
-      lookY: this.followLookY,
-      lookAhead: this.lookAhead,
-      pitchDeg: Number((Math.atan2(vertical, horizontal) * 180 / Math.PI).toFixed(2)),
-      eyeDistance: Number(Math.hypot(vertical, horizontal).toFixed(2)),
-      currentFov: Number(this.camera.fov.toFixed(2)),
-    };
-  }
-
   /** Dutch-roll kick (#50) — small camera.up tilt (radians) that springs back in ~150-200ms. */
   kickRoll(amount: number): void {
     this.rollVel += amount;
@@ -199,12 +165,25 @@ export class CameraRig {
     // The Warden is more than three metres tall before its phase growth. A true
     // low angle still needs enough distance to keep horns, fists and planted feet
     // in frame instead of reading as an accidental extreme close-up.
-    else if (preset === "low-reveal") { this.cineFlatOffset.set(1.35, 2.75, 7.15); this.cineLookY = 1.45; }
+    else if (preset === "low-reveal") { this.cineFlatOffset.set(2.7, 2.65, 7.15); this.cineLookY = 1.65; }
     else if (preset === "handoff") { this.cineFlatOffset.set(0, 5.6, 8.4); this.cineLookY = 1.0; }
   }
 
+  followImmediately(x: number, z: number): void {
+    this.mode = "follow";
+    this.snapTo(x, z);
+    this.aimPoint.set(x, 0, z);
+    this.cineBlend = 0;
+    this.zoom = 1;
+    this.update(0);
+  }
+
+  /** Follow an authored walk without restarting the lens transition each frame. */
+  trackCinematic(x: number, z: number): void { this.cineTarget.set(x, 0, z); }
+
   /** Default wide arena orbit for menus. */
   menuOrbit(): void {
+    this.showcase = false;
     this.mode = "menu";
     this.orbitCenter.set(0, 0, 0);
     this.orbitRadius = 26;
@@ -214,6 +193,7 @@ export class CameraRig {
 
   /** Slow, close orbit around a world point — the victory beauty shot. */
   heroOrbit(x: number, z: number): void {
+    this.showcase = false;
     this.mode = "menu";
     this.orbitCenter.set(x, 0, z);
     this.orbitRadius = 8;
@@ -224,11 +204,12 @@ export class CameraRig {
   /** Three-quarter title composition: readable hero with enough basilica context to feel placed. */
   showcaseOrbit(x: number, z: number): void {
     this.mode = "menu";
-    this.orbitAngle = 0.72;
+    this.showcase = true;
+    this.orbitAngle = 1.08;
     this.orbitCenter.set(x, 0, z);
-    this.orbitRadius = 8.6;
-    this.orbitHeight = 4.1;
-    this.orbitLookY = 1.3;
+    this.orbitRadius = 5.6;
+    this.orbitHeight = 2.65;
+    this.orbitLookY = 1.32;
   }
 
   update(dt: number): void {
@@ -236,14 +217,17 @@ export class CameraRig {
 
     if (this.mode === "menu") {
       this.camera.up.set(0, 1, 0); // guard against a dutch-roll left mid-spring from combat
-      this.orbitAngle += dt * 0.08;
+      if (this.showcase) this.orbitAngle = 1.08 + Math.sin(this.t * 0.07) * 0.045;
+      else this.orbitAngle += dt * 0.08;
       const r = this.orbitRadius;
       this.camera.position.set(
         this.orbitCenter.x + Math.cos(this.orbitAngle) * r,
         this.orbitHeight + Math.sin(this.t * 0.21) * r * 0.046,
         this.orbitCenter.z + Math.sin(this.orbitAngle) * r
       );
-      this.camera.lookAt(this.orbitCenter.x, this.orbitLookY, this.orbitCenter.z);
+      const shift = this.showcase ? 1.45 : 0;
+      this.camera.lookAt(this.orbitCenter.x - Math.sin(this.orbitAngle) * shift, this.orbitLookY,
+        this.orbitCenter.z + Math.cos(this.orbitAngle) * shift);
       this.camera.fov = damp(this.camera.fov, this.baseFov, 4, dt);
       this.camera.updateProjectionMatrix();
       return;
@@ -313,16 +297,16 @@ export class CameraRig {
     const lifeZoom = 1 + this.speedZoomOff - this.tempoZoomOff;
 
     // Cinematic mode pulls the rig in close for drama
-    this.zoom = damp(this.zoom, cine ? this.cineZoom : 1, 2.8, dt);
+    this.zoom = damp(this.zoom, cine ? this.cineZoom : 1, cine ? 2.8 : 10, dt);
 
     // Cinematic language (#45) — blend from the steep gameplay offset (scaled by zoom and
     // the speed/tempo dolly) toward a flatter, near-eye-level offset that slowly drifts
     // around the dolly target for the hold, rather than just shrinking the steep offset.
-    this.cineBlend = damp(this.cineBlend, cine ? 1 : 0, 3.5, dt);
+    this.cineBlend = damp(this.cineBlend, cine ? 1 : 0, cine ? 3.5 : 10, dt);
     if (cine) this.cineDrift += dt * 0.06;
-    const flatZ = this.cineFlatOffset.z;
-    const driftX = -flatZ * Math.sin(this.cineDrift);
-    const driftZ = flatZ * Math.cos(this.cineDrift);
+    const flatX = this.cineFlatOffset.x, flatZ = this.cineFlatOffset.z;
+    const driftX = flatX * Math.cos(this.cineDrift) - flatZ * Math.sin(this.cineDrift);
+    const driftZ = flatX * Math.sin(this.cineDrift) + flatZ * Math.cos(this.cineDrift);
     const steepZoom = this.zoom * lifeZoom;
     const offX = lerp(this.offset.x * steepZoom, driftX, this.cineBlend);
     const offY = lerp(this.offset.y * steepZoom, this.cineFlatOffset.y, this.cineBlend);

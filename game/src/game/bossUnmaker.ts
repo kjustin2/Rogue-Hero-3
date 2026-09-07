@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
 import { Enemy, type EnemyKind } from "./enemies";
 import type { Ctx } from "./ctx";
+import { forgeUnmaker } from "../render/unmakerForge";
 
 const PHASE_LINES = [
   "I AM THE HOLLOW STAR. COME, LITTLE LIGHT — END WHAT YOU CAME TO END.",
@@ -36,6 +37,7 @@ interface PendingBeam {
   z: number;
   angle: number;
   timer: number;
+  width?: number;
 }
 
 /** A queued collapse nova: telegraphed circle, then a ring of hostile bolts on expiry. */
@@ -110,8 +112,6 @@ export class Unmaker extends Enemy {
   private flash = 0;
   /** Cadence accumulator for the inward energy-gather rings shown while charging. */
   private gatherAcc = 0;
-  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
-  private dimTimer = 0;
   // Rotating sweep-lance state.
   private sweepAngle = 0;
   private sweepDir = 1;
@@ -138,108 +138,62 @@ export class Unmaker extends Enemy {
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
-    // The Hollow Star is the last and hardest watch — a deeper well of health.
-    this.hp = this.maxHp = 7000;
+    // Pressure comes from the escalating patterns; the finale should not require
+    // repeating the same rotations for several minutes after the build is complete.
+    this.hp = this.maxHp = 4600;
     this.speed = 3.0;
     this.radius = 1.7;
     this.wardColor = VOID_VIOLET;
 
-    this.cageMat = this.stdMat(0x0a0814, 0x2a1450, 0.5);
-    this.ringMat = this.stdMat(0x100a1e, 0x5d407d, 0.28);
-    this.debrisMat = this.stdMat(0x080610, 0x7650b8, 0.62);
-    // Deeper violet + lower intensity: near-white x3.0 clipped the star to an
-    // untinted white blob under bloom (emissive-must-tint).
-    this.coreMat = this.stdMat(0x0c0a18, 0x756884, 0.58);
-
-    // Blinding collapsing core
-    this.core = this.addMesh(new THREE.IcosahedronGeometry(1.0, 1), this.coreMat, 0, 2.2);
-    this.core.castShadow = false;
-    // A bright inner pip so the core reads as a star, not a ball
-    this.innerCore = this.addMesh(new THREE.OctahedronGeometry(0.5), this.coreMat, 0, 2.2);
-    const innerHalo = this.addMesh(new THREE.TorusGeometry(1.12, 0.035, 6, 36), this.coreMat, 0, 2.2);
-    innerHalo.rotation.set(1.05, 0.22, 0.35);
-    this.quietHalo.push(innerHalo);
-
-    // Dark broken cage struts hemming the core
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2;
-      const strut = this.addMesh(new THREE.BoxGeometry(0.16, 2.2, 0.16), this.cageMat, Math.sin(a) * 1.05, 2.2, Math.cos(a) * 1.05);
-      strut.rotation.x = Math.sin(a) * 0.22;
-      strut.rotation.z = Math.cos(a) * 0.22;
-      this.cageStruts.push(strut);
-    }
-    // Jagged shroud shards clinging around the core
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + 0.3;
-      const sh = this.addMesh(new THREE.TetrahedronGeometry(0.4), this.cageMat, Math.sin(a) * 1.3, 2.2 + Math.cos(a * 1.7) * 0.5, Math.cos(a) * 1.3);
-      sh.rotation.set(a, a * 1.3, a * 0.7);
-      this.shroudShards.push(sh);
-    }
-    // Anchoring skirt
-    this.addMesh(new THREE.CylinderGeometry(0.5, 1.4, 0.9, 6), this.cageMat, 0, 0.5);
-
-    // Dark broken rings caging the star (counter-spinning groups)
-    this.rings = new THREE.Group();
-    this.rings.position.y = 2.2;
-    this.root.add(this.rings);
-    const r1 = this.addMesh(new THREE.TorusGeometry(2.3, 0.1, 6, 40, Math.PI * 1.55), this.ringMat, 0, 0, 0, this.rings);
-    r1.rotation.x = Math.PI / 2;
-    const r2 = this.addMesh(new THREE.TorusGeometry(2.6, 0.08, 6, 40, Math.PI * 1.3), this.ringMat, 0, 0, 0, this.rings);
-    r2.rotation.set(Math.PI / 2, 0, 0);
-    r2.rotation.z = 0.7;
-    r2.rotation.x = 1.1;
-    const r3 = this.addMesh(new THREE.TorusGeometry(1.75, 0.055, 6, 40, Math.PI * 1.75), this.coreMat, 0, 0, 0, this.rings);
-    r3.rotation.set(0.85, 0.35, 1.2);
-    this.quietHalo.push(r1, r2, r3);
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2 + 0.2;
-      const spike = this.addMesh(new THREE.ConeGeometry(0.1, 0.82, 4), this.ringMat, Math.sin(a) * 2.15, Math.cos(a * 2) * 0.25, Math.cos(a) * 2.15, this.rings);
-      spike.rotation.set(Math.PI / 2 + Math.cos(a) * 0.2, a, 0);
-    }
-
-    // Orbiting void debris cloud
-    this.debris = new THREE.Group();
-    this.debris.position.y = 2.2;
-    this.root.add(this.debris);
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const rr = 2.9 + (i % 3) * 0.4;
-      const piece = this.addMesh(new THREE.OctahedronGeometry(0.22 + (i % 2) * 0.1), this.debrisMat, Math.sin(a) * rr, Math.sin(a * 2) * 0.5, Math.cos(a) * rr, this.debris);
-      piece.rotation.set(a, a * 1.5, 0);
-    }
-    for (let i = 0; i < 10; i++) {
-      const a = (i / 10) * Math.PI * 2 + 0.12;
-      const rr = 2.15 + (i % 4) * 0.28;
-      const shard = this.addMesh(new THREE.TetrahedronGeometry(0.09 + (i % 2) * 0.04), this.debrisMat, Math.sin(a) * rr, Math.cos(a * 3) * 0.35, Math.cos(a) * rr, this.debris);
-      shard.rotation.set(a * 0.4, a * 1.8, a);
-    }
-
-    this.buildPhaseLooks();
+    const rig = forgeUnmaker(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.bindCinematicParts([rig.rings,rig.debris,rig.core,rig.innerCore,...rig.cageStruts,...rig.quietHalo], "orbit");
+    this.coreMat = rig.coreMat;
+    this.ringMat = rig.ringMat;
+    this.debrisMat = rig.debrisMat;
+    this.cageMat = rig.cageMat;
+    this.core = rig.core;
+    this.innerCore = rig.innerCore;
+    this.rings = rig.rings;
+    this.debris = rig.debris;
+    this.cageStruts = rig.cageStruts;
+    this.shroudShards = rig.shroudShards;
+    this.quietHalo = rig.quietHalo;
+    this.p2Shards = rig.phaseShards;
+    this.p3Spikes = rig.phaseSpikes;
   }
 
-  /** Pre-build escalation geometry hidden until its phase unveils it. */
-  private buildPhaseLooks(): void {
-    // Phase 2: a second debris belt of brighter violet shards spins out.
-    const shardMat = this.stdMat(0x18082e, 0xc070ff, 2.0);
-    const shardGeo = new THREE.OctahedronGeometry(0.26);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const sh = this.addMesh(shardGeo, shardMat, Math.sin(a) * 1.7, 0, Math.cos(a) * 1.7, this.debris);
-      sh.rotation.y = a;
-      sh.visible = false;
-      this.p2Shards.push(sh);
+  protected animateDeath(dt: number, progress: number): boolean {
+    const close = Math.min(1, progress / .64);
+    this.settleDeathPart(this.root, dt, 0, this.root.rotation.y, 0);
+    this.core.scale.setScalar(Math.max(.01, 1 - close));
+    this.innerCore.scale.setScalar(Math.max(.02, 1 - close * close));
+    this.rings.rotation.y += dt * (1 - close) * .6;
+    this.rings.scale.setScalar(1 - close * .48);
+    this.debris.scale.setScalar(1 - close * .88);
+    for (let i = 0; i < this.cageStruts.length; i++) {
+      this.settleDeathPart(this.cageStruts[i], dt, .04, 0, i < 3 ? -.14 : .14);
     }
-    // Phase 3: a white-violet crown of star-spikes erupts as the core swells.
-    const spikeMat = this.stdMat(0x2a0a44, VOID_WHITE, 3.0);
-    const spikeGeo = new THREE.ConeGeometry(0.18, 1.3, 4);
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const sp = this.addMesh(spikeGeo, spikeMat, Math.sin(a) * 0.7, 3.9, Math.cos(a) * 0.7);
-      sp.rotation.x = Math.cos(a) * 0.45;
-      sp.rotation.z = -Math.sin(a) * 0.45;
-      sp.visible = false;
-      this.p3Spikes.push(sp);
+    for (const ring of this.quietHalo) ring.scale.setScalar(Math.max(.04, 1 - close));
+    return true;
+  }
+
+  protected animateCinematic(action: string, time: number, dt: number): boolean {
+    const channel=action!=="manifest", gather=Math.min(1,time/.7);
+    const release=channel?Math.min(1,Math.max(0,(time-.65)/.42)):0;
+    const open=release*release*(3-2*release), k=Math.min(1,dt*9);
+    this.rings.rotation.z-=dt*(.14+gather*.55-open*.55);
+    this.rings.rotation.x+=(.5*(1-open)-this.rings.rotation.x)*k;
+    this.rings.scale.setScalar(1-gather*.14+open*.2);
+    this.debris.rotation.y+=dt*(.45+gather*.65-open*.55);
+    this.debris.scale.setScalar(1-gather*.37+open*.47);
+    this.innerCore.scale.setScalar(.72+gather*.18+open*.18);
+    this.coreMat.emissiveIntensity=.42+gather*.45+Math.sin(open*Math.PI)*.38;
+    for(let i=0;i<this.cageStruts.length;i++) {
+      const side=i<3?-1:1;
+      this.cageStruts[i].rotation.z += (side*(gather*.07-open*.19)-this.cageStruts[i].rotation.z)*k;
     }
+    this.drivePose(dt,{rise:.28*gather});
+    return true;
   }
 
   /** Visibly escalate the boss at each phase transition. */
@@ -248,7 +202,7 @@ export class Unmaker extends Enemy {
       this.setBossScale(1.1);
       this.eruptReveal(this.p2Shards);
       this.ringMat.emissive.set(0xc070ff);
-      this.ringMat.emissiveIntensity = 2.0;
+      this.ringMat.emissiveIntensity = 0.18;
       this.debrisMat.emissive.set(0xb080ff);
       this.coreMat.emissive.set(0xf6f0ff);
     } else if (phase === 3) {
@@ -257,9 +211,9 @@ export class Unmaker extends Enemy {
       this.core.scale.setScalar(1.25);
       this.cageMat.color.set(0x1a1030);
       this.ringMat.emissive.set(0xe6d0ff);
-      this.ringMat.emissiveIntensity = 2.6;
+      this.ringMat.emissiveIntensity = 0.3;
       this.coreMat.emissive.set(0xffffff);
-      this.coreMat.emissiveIntensity = 4.0;
+      this.coreMat.emissiveIntensity = 1.4;
     } else if (phase === 4) {
       // Do not preserve the threshold hit's full-body white flash through the
       // frozen mercy tableau; phase four must read as a dim, spent star.
@@ -279,6 +233,16 @@ export class Unmaker extends Enemy {
       f.baseEmissive.copy(f.mat.emissive);
       f.baseIntensity = f.mat.emissiveIntensity;
     }
+  }
+
+  interruptAttack(): void {
+    super.interruptAttack();
+    this.disposeExtras();
+  }
+
+  protected onGuardBroken(): void {
+    this.state = "recover";
+    this.timer = 1.35;
   }
 
   protected deathColor(): number {
@@ -304,7 +268,8 @@ export class Unmaker extends Enemy {
         for (let p = from + 1; p <= 3; p++) this.applyPhaseLook(p);
         this.enterFading();
       } else {
-        this.state = "phaseShift";
+        this.interruptAttack();
+      this.state = "phaseShift";
         this.timer = 1.3;
         // Walk intervening phases so a two-threshold hit still fires each phase's content.
         for (let p = from + 1; p <= targetPhase; p++) {
@@ -331,10 +296,7 @@ export class Unmaker extends Enemy {
         this.ctx.cam.pulseFov(1.0);
         this.ctx.stage.punch(0.5);
         this.ctx.sfx.bossRoar();
-        // The room holds its breath a beat, then snaps back to full light.
-        this.ctx.arena.cutsceneDim = 1;
-        this.dimTimer = 0.7;
-        // Collapse shoves the player outward.
+          // Collapse shoves the player outward.
         const p = this.ctx.player;
         const dx = p.pos.x - this.pos.x;
         const dz = p.pos.z - this.pos.z;
@@ -351,12 +313,10 @@ export class Unmaker extends Enemy {
   }
 
   die(): void {
-    // Safety net: a killing blow landing inside the phase-shift dim window must not
-    // leave the arena stuck dark — tick() stops running the instant alive flips false.
-    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
+    if (!this.alive) return;
     this.disposeExtras();
-    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
+    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
   }
 
   dispose(): void {
@@ -387,6 +347,7 @@ export class Unmaker extends Enemy {
   // ---------------------------------------------------------------- fading (the end)
   /** The star gives up: it stops fighting, dims, and waits for the last blow. */
   private enterFading(): void {
+    this.interruptAttack();
     this.state = "fading";
     this.timer = 1e9; // never queues another attack
     // Drop everything in flight — it will not raise a hand against you again.
@@ -426,10 +387,10 @@ export class Unmaker extends Enemy {
 
   /** Unmaking ward: the star seals itself (invulnerable), then a close annihilation pulse. */
   private beginGuard(): void {
-    this.setInvuln(1.45);
+    this.raiseGuard();
     this.state = "guard";
-    this.timer = 0.58; // wind-up = telegraph duration
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.58, VOID_WHITE);
+    this.timer = 0.82; // wind-up = telegraph duration
+    this.warnCircle(this.pos.x, this.pos.z, 4.8, 0.82, VOID_WHITE);
     this.ctx.sfx.beamCharge();
   }
 
@@ -452,7 +413,7 @@ export class Unmaker extends Enemy {
     for (let i = 0; i < fan; i++) {
       const off = fan === 1 ? 0 : (i - (fan - 1) / 2) * spread * 2;
       const angle = this.lockAngle + off;
-      this.ctx.tele.line(this.pos.x, this.pos.z, angle, BEAM_LEN, BEAM_WIDTH, BEAM_TELL, VOID_WHITE);
+      this.warnLine(this.pos.x, this.pos.z, angle, BEAM_LEN, BEAM_WIDTH, BEAM_TELL, VOID_WHITE);
       this.beams.push({ x: this.pos.x, z: this.pos.z, angle, timer: BEAM_TELL });
     }
     this.ctx.sfx.beamCharge();
@@ -462,11 +423,13 @@ export class Unmaker extends Enemy {
     const p = this.ctx.player;
     const sx = Math.sin(b.angle);
     const cz = Math.cos(b.angle);
+    const width = b.width ?? BEAM_WIDTH;
 
     const mat = new THREE.MeshBasicMaterial({
       color: VOID_WHITE, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const mesh = new THREE.Mesh(BEAM_GEO, mat);
+    mesh.scale.x = width / BEAM_WIDTH;
     mesh.position.set(b.x + sx * BEAM_LEN * 0.5, 1.6, b.z + cz * BEAM_LEN * 0.5);
     mesh.rotation.y = b.angle;
     this.ctx.stage.scene.add(mesh);
@@ -483,7 +446,7 @@ export class Unmaker extends Enemy {
     const along = px * sx + pz * cz;
     if (along > 0 && along < BEAM_LEN) {
       const perp = Math.abs(px * cz - pz * sx);
-      if (perp < BEAM_WIDTH * 0.5 + p.radius) this.ctx.combat.damagePlayer(19, b.x, b.z);
+      if (perp < width * 0.5 + p.radius) this.ctx.combat.damagePlayer(19, b.x, b.z);
     }
   }
 
@@ -497,8 +460,8 @@ export class Unmaker extends Enemy {
     const base = this.ctx.rng.next() * Math.PI * 2;
     for (let i = 0; i < n; i++) {
       const angle = base + (i / n) * Math.PI * 2;
-      this.ctx.tele.line(this.pos.x, this.pos.z, angle, BEAM_LEN, BEAM_WIDTH * 0.8, tell, VOID_WHITE);
-      this.beams.push({ x: this.pos.x, z: this.pos.z, angle, timer: tell });
+      this.warnLine(this.pos.x, this.pos.z, angle, BEAM_LEN, BEAM_WIDTH * 0.8, tell, VOID_WHITE);
+      this.beams.push({ x: this.pos.x, z: this.pos.z, angle, timer: tell, width: BEAM_WIDTH * 0.8 });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -512,7 +475,7 @@ export class Unmaker extends Enemy {
     for (let i = 0; i < 3; i++) {
       const t = 0.55 + i * 0.3;
       maxT = Math.max(maxT, t);
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, t, i % 2 ? VOID_VIOLET : VOID_WHITE);
+      this.warnCircle(this.pos.x, this.pos.z, 3.4, t, i % 2 ? VOID_VIOLET : VOID_WHITE);
       this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin: (i - 1) * 0.24, timer: t });
     }
     this.timer = maxT + 0.1;
@@ -525,7 +488,7 @@ export class Unmaker extends Enemy {
     this.timer = 0.62;
     const count = this.phase >= 3 ? 23 : this.phase === 2 ? 17 : 12;
     const spin = this.phase >= 2 ? (this.ctx.rng.next() < 0.5 ? -1 : 1) * (0.25 + this.phase * 0.12) : 0;
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.62, VOID_VIOLET);
+    this.warnCircle(this.pos.x, this.pos.z, 3.4, 0.62, VOID_VIOLET);
     this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.62 });
     this.ctx.sfx.beamCharge();
   }
@@ -552,11 +515,11 @@ export class Unmaker extends Enemy {
     this.timer = 0.8;
     const R = this.phase >= 3 ? 6.2 : 5.4;
     // The deadly core slam at the center — escape its radius before it lands.
-    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.8, VOID_WHITE);
+    this.warnCircle(this.pos.x, this.pos.z, R, 0.8, VOID_WHITE);
     this.pulls.push({ x: this.pos.x, z: this.pos.z, radius: R, timer: 0.8, pulled: false });
     // P3 pairs the implosion with a spinning nova so the safe ground squeezes.
     if (this.phase >= 3) {
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.4, 0.8, VOID_VIOLET);
+      this.warnCircle(this.pos.x, this.pos.z, 3.4, 0.8, VOID_VIOLET);
       this.novas.push({ x: this.pos.x, z: this.pos.z, count: 18, spin: (this.ctx.rng.next() < 0.5 ? -1 : 1) * 0.5, timer: 0.8 });
     }
     this.ctx.sfx.beamCharge();
@@ -614,7 +577,7 @@ export class Unmaker extends Enemy {
       }
       const timer = STAR_TELL + i * 0.06;
       const radius = this.phase >= 3 ? 1.55 : 1.4;
-      this.ctx.tele.circle(x, z, radius, timer, i === 0 ? VOID_WHITE : VOID_VIOLET);
+      this.warnCircle(x, z, radius, timer, i === 0 ? VOID_WHITE : VOID_VIOLET);
       this.stars.push({ x, z, radius, timer });
     }
     this.ctx.sfx.beamCharge();
@@ -643,7 +606,7 @@ export class Unmaker extends Enemy {
     this.timer = 0.5; // wind-up = telegraph duration
     const R = this.phase >= 3 ? 4.9 : 4.3;
     this.crushRadius = R;
-    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.5, VOID_CORE);
+    this.warnCircle(this.pos.x, this.pos.z, R, 0.5, VOID_CORE);
     // A collapsing ring screams "incoming" so the close player can dive clear.
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R, color: VOID_VIOLET, duration: 0.5, startRadius: R + 1.4 });
     this.ctx.sfx.beamCharge();
@@ -682,7 +645,7 @@ export class Unmaker extends Enemy {
     // Telegraph the whole salvo up front so the close player can read it and leave.
     for (let i = 0; i < n; i++) {
       const t = tell + i * gap;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, radius, t, i % 2 === 0 ? VOID_VIOLET : VOID_WHITE);
+      this.warnCircle(this.pos.x, this.pos.z, radius, t, i % 2 === 0 ? VOID_VIOLET : VOID_WHITE);
       this.pulses.push({ x: this.pos.x, z: this.pos.z, radius, timer: t });
     }
     this.ctx.sfx.beamCharge();
@@ -714,7 +677,7 @@ export class Unmaker extends Enemy {
     const toP = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
     this.sweepAngle = toP - this.sweepDir * 0.6;
     this.sweepRemaining = this.phase >= 3 ? Math.PI * 1.7 : Math.PI * 1.2;
-    this.ctx.tele.line(this.pos.x, this.pos.z, this.sweepAngle, BEAM_LEN, BEAM_WIDTH, 0.55, VOID_WHITE);
+    this.warnLine(this.pos.x, this.pos.z, this.sweepAngle, BEAM_LEN, BEAM_WIDTH, 0.55, VOID_WHITE);
     this.ctx.sfx.beamCharge();
   }
 
@@ -781,11 +744,6 @@ export class Unmaker extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
-    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
-    if (this.dimTimer > 0) {
-      this.dimTimer -= dt;
-      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
-    }
 
     // Wind-up read: the core swells white-hot and the rings/debris spin up while charging.
     const charging = this.phase < 4 && (this.state.endsWith("Tell") || this.state === "beamTrack" || this.state === "guard" || this.state === "sweeping" || this.state === "pulseAura");
@@ -806,19 +764,19 @@ export class Unmaker extends Enemy {
     // Living star: core pulses, rings counter-spin, the body breathes a hover.
     if (this.phase < 4) {
       this.coreMat.emissiveIntensity = 0.58 + this.phase * 0.12 + Math.sin(this.t * (2.5 + this.phase * 1.5)) * 0.08 + this.chargeAmt * 0.4 + this.flash * 0.6;
-      this.rings.rotation.y -= dt * (0.8 + this.phase * 0.5 + this.chargeAmt * 2.4 + this.flash * 3.0);
-      this.debris.rotation.y += dt * (1.1 + this.phase * 0.45 + this.chargeAmt * 2.0);
+      this.rings.rotation.z -= dt * (0.09 + this.phase * 0.025 + this.chargeAmt * 0.22 + this.flash * 0.2);
+      this.debris.rotation.y += dt * (0.24 + this.phase * 0.065 + this.chargeAmt * 0.3);
     } else {
       // Fading: a dim, guttering core; rings slow almost to a stop; debris settles.
       this.coreMat.emissiveIntensity = 0.55 + Math.sin(this.t * 1.1) * 0.22 + this.flash * 2.0;
-      this.rings.rotation.y -= dt * 0.15;
+      this.rings.rotation.z -= dt * 0.04;
       this.debris.rotation.y += dt * 0.18;
     }
     this.rings.rotation.x = Math.sin(this.t * 0.6) * 0.2;
     this.pos.y = 0.4 + Math.sin(this.t * 1.4) * 0.16;
-    this.core.rotation.y += dt * (this.phase >= 4 ? 0.08 : 0.22 + this.phase * 0.04);
+    this.core.rotation.z += dt * (this.phase >= 4 ? 0.08 : 0.22 + this.phase * 0.04);
     this.innerCore.rotation.y -= dt * (this.phase >= 4 ? 0.12 : 0.55 + this.phase * 0.1);
-    this.innerCore.scale.setScalar(this.phase >= 4 ? 0.82 + Math.sin(this.t * 1.2) * 0.035 : 1 + Math.sin(this.t * 3.6) * 0.07 + this.chargeAmt * 0.22 + this.flash * 0.5);
+    this.innerCore.scale.setScalar(this.phase >= 4 ? 0.82 + Math.sin(this.t * 1.2) * 0.035 : Math.min(1.1, 1 + Math.sin(this.t * 3.6) * 0.025 + this.chargeAmt * 0.04 + this.flash * 0.035));
     for (let i = 0; i < this.cageStruts.length; i++) {
       const strut = this.cageStruts[i];
       strut.rotation.y = Math.sin(this.t * 0.85 + i) * (this.phase >= 4 ? 0.025 : 0.08);

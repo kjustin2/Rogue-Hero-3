@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { TempoZone } from "../core/events";
 import { Enemy, type EnemyKind } from "./enemies";
 import type { Ctx } from "./ctx";
+import { forgeWound } from "../render/woundForge";
 
 const WOUND_RED = 0xff2a4a;
 const WOUND_PALE = 0xff9aa8;
@@ -47,13 +48,9 @@ export class WoundBoss extends Enemy {
   /** Slot currently swallowed (-1 = none yet). */
   private stolenSlot = -1;
   private stealAnnounced = false;
-  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
-  private dimTimer = 0;
 
   private coreMat: THREE.MeshStandardMaterial;
   private eyeMat: THREE.MeshStandardMaterial;
-  private talonMat: THREE.MeshStandardMaterial;
-  private ringMat: THREE.MeshStandardMaterial;
   private eye: THREE.Mesh;
   private rings: THREE.Group;
   private talons: THREE.Object3D[] = [];
@@ -66,39 +63,54 @@ export class WoundBoss extends Enemy {
     this.radius = 1.8;
     this.wardColor = WOUND_RED;
 
-    this.coreMat = this.stdMat(0x1a060a, WOUND_RED, 1.1);
-    this.eyeMat = this.stdMat(0x0a0204, WOUND_EYE, 2.6);
-    this.talonMat = this.stdMat(0x140408, WOUND_PALE, 0.9);
-    this.ringMat = this.stdMat(0x10040a, WOUND_RED, 1.5);
+    const rig = forgeWound(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.bindCinematicParts([...rig.talons,rig.eye,rig.mantle], "mantle");
+    this.coreMat = rig.coreMat;
+    this.eyeMat = rig.eyeMat;
+    this.eye = rig.eye;
+    this.rings = rig.mantle;
+    this.talons = rig.talons;
+    this.phaseSpurs = rig.phaseSpurs;
+  }
 
-    // A low, crawling maw: a flattened dark mass with a single white-hot eye,
-    // ringed by inward-curving talons — the thing that was under the floor.
-    const body = this.addMesh(new THREE.IcosahedronGeometry(1.5, 0), this.coreMat, 0, 1.1);
-    body.scale.set(1.25, 0.62, 1.25);
-    this.eye = this.addMesh(new THREE.SphereGeometry(0.5, 12, 10), this.eyeMat, 0, 1.55, 0.7);
-    const talonGeo = new THREE.ConeGeometry(0.22, 1.9, 5);
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const talon = this.addMesh(talonGeo, this.talonMat, Math.sin(a) * 1.7, 0.9, Math.cos(a) * 1.7);
-      talon.rotation.set(Math.cos(a) * 0.55, a, -Math.sin(a) * 0.55);
-      this.talons.push(talon);
+  protected animateDeath(dt: number, progress: number): boolean {
+    const close = Math.min(1, progress / .55);
+    this.root.position.y -= close * close * .24;
+    this.settleDeathPart(this.root, dt, .04, this.root.rotation.y, 0);
+    for (let i = 0; i < this.talons.length; i++) {
+      this.settleDeathPart(this.talons[i], dt, -.38, i * Math.PI / 4 + Math.PI / 8, 0);
     }
-    // Torn rings orbiting low — the wound's edges, never quite closing.
-    this.rings = new THREE.Group();
-    this.rings.position.y = 1.2;
-    this.root.add(this.rings);
-    const r1 = this.addMesh(new THREE.TorusGeometry(2.2, 0.09, 6, 40, Math.PI * 1.55), this.ringMat, 0, 0, 0, this.rings);
-    r1.rotation.x = Math.PI / 2.2;
-    const r2 = this.addMesh(new THREE.TorusGeometry(1.6, 0.06, 6, 36, Math.PI * 1.3), this.ringMat, 0, 0.3, 0, this.rings);
-    r2.rotation.set(Math.PI / 1.9, 0.8, 0.4);
-    // Phase spurs: hidden crimson spikes that erupt as it escalates.
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + 0.3;
-      const spur = this.addMesh(new THREE.ConeGeometry(0.16, 1.4, 4), this.ringMat, Math.sin(a) * 1.1, 2.0, Math.cos(a) * 1.1);
-      spur.rotation.set(-0.4 + Math.cos(a) * 0.3, a, Math.sin(a) * 0.3);
-      spur.visible = false;
-      this.phaseSpurs.push(spur);
+    this.eye.scale.y = Math.max(.015, 1 - close);
+    this.rings.scale.y = 1 - close * .12;
+    return true;
+  }
+
+  protected animateCinematic(action: string, time: number, dt: number): boolean {
+    const emerging=action==="rise"||action==="manifest";
+    const unfold=Math.min(1,time/.8),k=Math.min(1,dt*11);
+    for(let i=0;i<this.talons.length;i++) {
+      const leg=this.talons[i],front=Math.cos(i*Math.PI/4+Math.PI/8)>.3;
+      const reach=emerging ? (1-unfold)*.4 : front?Math.sin(Math.min(1,time/1.0)*Math.PI)*.6:.04;
+      leg.rotation.x += (-reach-leg.rotation.x)*k;
+      leg.rotation.y += (i*Math.PI/4+Math.PI/8+(front?.13:-.09)*unfold-leg.rotation.y)*k;
     }
+    this.eye.scale.y=.15+Math.min(1,time/.48)*.85;
+    this.eyeMat.emissiveIntensity=.5+unfold*.28;
+    this.coreMat.emissiveIntensity=.24+unfold*.23;
+    this.drivePose(dt,{rear:emerging?0:-.035,lunge:emerging?(1-unfold)*.07:.02});
+    return true;
+  }
+
+  interruptAttack(): void {
+    super.interruptAttack();
+    this.rakes = []; this.rains = []; this.volleyAt = this.crashAt = -1;
+  }
+
+  protected onGuardBroken(): void {
+    this.state = "recover";
+    this.timer = 1.35;
+    this.bossTempo = Math.max(0, this.bossTempo - 30);
+    this.returnStolen();
   }
 
   protected deathColor(): number { return WOUND_RED; }
@@ -112,6 +124,7 @@ export class WoundBoss extends Enemy {
     if (!killed && targetPhase > this.phase) {
       const from = this.phase;
       this.phase = targetPhase;
+      this.interruptAttack();
       this.state = "phaseShift";
       this.timer = 1.2;
       this.speed = 3.2 + this.phase * 0.5;
@@ -139,9 +152,6 @@ export class WoundBoss extends Enemy {
       this.ctx.cam.pulseFov(0.8);
       this.ctx.stage.punch(0.4);
       this.ctx.sfx.bossRoar();
-      // The room holds its breath a beat, then snaps back to full light.
-      this.ctx.arena.cutsceneDim = 1;
-      this.dimTimer = 0.6;
       // The floor tears wider — a shove off the wound as it splits.
       const player = this.ctx.player;
       const dx = player.pos.x - this.pos.x;
@@ -155,14 +165,12 @@ export class WoundBoss extends Enemy {
   freeze(duration: number): void { super.freeze(duration * 0.35); }
 
   die(): void {
-    // Safety net: a killing blow landing inside the phase-shift dim window must not
-    // leave the arena stuck dark — tick() stops running the instant alive flips false.
-    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
+    if (!this.alive) return;
     this.rakes = [];
     this.rains = [];
     this.returnStolen();
-    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
+    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
   }
 
   dispose(): void {
@@ -227,7 +235,7 @@ export class WoundBoss extends Enemy {
     const fan = this.phase >= 2 ? 3 : 2;
     for (let i = 0; i < fan; i++) {
       const angle = base + (i - (fan - 1) / 2) * 0.42;
-      this.ctx.tele.line(this.pos.x, this.pos.z, angle, RAKE_LEN, RAKE_W, 0.65, WOUND_RED);
+      this.warnLine(this.pos.x, this.pos.z, angle, RAKE_LEN, RAKE_W, 0.65, WOUND_RED);
       this.rakes.push({ x: this.pos.x, z: this.pos.z, angle, timer: 0.65 });
     }
     this.ctx.sfx.beamCharge();
@@ -266,19 +274,19 @@ export class WoundBoss extends Enemy {
         const rr = i === 0 ? 0 : this.ctx.rng.range(1.5, 5);
         const x = p.pos.x + Math.sin(a) * rr;
         const z = p.pos.z + Math.cos(a) * rr;
-        this.ctx.tele.circle(x, z, 2.1, 0.95, WOUND_RED);
+        this.warnCircle(x, z, 2.1, 0.95, WOUND_RED);
         this.rains.push({ x, z, timer: 0.95 });
       }
     } else if (tags.includes("frost") || tags.includes("force") || tags.includes("guard")) {
       // Corrupted nova (frost/force school): a crash-style burst centered on itself.
       this.timer = 0.85;
       this.crashAt = 0.85;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 6.2, 0.85, WOUND_PALE);
+      this.warnCircle(this.pos.x, this.pos.z, 6.2, 0.85, WOUND_PALE);
     } else {
       // Corrupted volley (bolt school — and its default before any theft).
       this.timer = 0.6;
       this.volleyAt = 0.6;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 2.6, 0.6, WOUND_RED);
+      this.warnCircle(this.pos.x, this.pos.z, 2.6, 0.6, WOUND_RED);
     }
     this.ctx.sfx.beamCharge();
   }
@@ -320,20 +328,19 @@ export class WoundBoss extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     this.spawnClock += dt;
-    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
-    if (this.dimTimer > 0) {
-      this.dimTimer -= dt;
-      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
-    }
 
-    // Living idle: the eye tracks, talons flex, rings grind, glow rides its tempo.
+    // Heat opens the mantle; paired claws lift and plant around the low body.
     const heat = this.bossTempo / 100;
-    this.coreMat.emissiveIntensity = 0.9 + heat * 1.4 + Math.sin(this.t * 3.2) * 0.25;
-    this.eyeMat.emissiveIntensity = 2.2 + heat * 1.6;
-    this.rings.rotation.y += dt * (0.8 + heat * 1.6);
-    this.eye.position.y = 1.55 + Math.sin(this.t * 2.1) * 0.08;
+    this.coreMat.emissiveIntensity = 0.2 + heat * 0.45 + Math.sin(this.t * 3.2) * 0.08;
+    this.eyeMat.emissiveIntensity = 0.55 + heat * 0.35;
+    this.rings.rotation.y = Math.sin(this.t * 1.6) * 0.018;
+    this.rings.scale.y = 1 + heat * 0.06;
+    this.eye.position.y = 1.38 + Math.sin(this.t * 2.1) * 0.015;
     for (let i = 0; i < this.talons.length; i++) {
-      this.talons[i].rotation.x += Math.sin(this.t * 2.6 + i) * dt * 0.25;
+      const walk = this.state === "idle" ? 1 : 0.22;
+      const cycle = this.t * (4 + heat * 2) + (i % 2) * Math.PI + Math.floor(i / 2) * 0.36;
+      this.talons[i].rotation.x = Math.max(0, Math.sin(cycle)) * 0.13 * walk;
+      this.talons[i].rotation.y = (i / 8) * Math.PI * 2 + Math.PI / 8 + Math.cos(cycle) * 0.045 * walk;
     }
 
     // Its tempo: pressing you heats it, disengaging bleeds it. Cold = sluggish.
@@ -359,7 +366,7 @@ export class WoundBoss extends Enemy {
     if (this.bossTempo >= 100 && this.state !== "crashTell" && this.state !== "phaseShift" && this.state !== "guard" && this.state !== "castTell" && this.state !== "rakeTell") {
       this.state = "crashTell";
       this.timer = 0.9;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 7.2, 0.9, 0xffffff);
+      this.warnCircle(this.pos.x, this.pos.z, 7.2, 0.9, 0xffffff);
       this.ctx.sfx.beamCharge();
     }
 
@@ -426,10 +433,10 @@ export class WoundBoss extends Enemy {
   private pickAttack(): void {
     this.attackPick++;
     if (this.attackPick % 4 === 3) {
-      this.setInvuln(1.2);
+      this.raiseGuard();
       this.state = "guard";
-      this.timer = 0.6;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 4.4, 0.6, WOUND_PALE);
+      this.timer = 0.85;
+      this.warnCircle(this.pos.x, this.pos.z, 4.4, 0.85, WOUND_PALE);
       this.ctx.sfx.beamCharge();
       return;
     }

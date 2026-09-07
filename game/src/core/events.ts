@@ -3,7 +3,7 @@
  * a typo'd emit is a type error, not a silent no-op (the v1 codebase's biggest pitfall).
  */
 export interface EventMap {
-  ENEMY_HIT: { x: number; y: number; z: number; dmg: number; heavy: boolean; killed: boolean };
+  ENEMY_HIT: { x: number; y: number; z: number; dmg: number; heavy: boolean; killed: boolean; sword: boolean };
   IMPACT_CUE: import("../presentation/types").ImpactCue;
   KILL: { x: number; z: number; kind: string };
   COMBO_HIT: { count: number };
@@ -12,12 +12,6 @@ export interface EventMap {
   PLAYER_DIED: Record<string, never>;
   DODGE: Record<string, never>;
   PERFECT_DODGE: { x: number; z: number };
-  /** Player first moved a meaningful distance — makes the tutorial's move step
-   *  observable to the coverage bus (it otherwise advanced silently). */
-  MOVE: Record<string, never>;
-  /** A Training Grounds step began — the tutorial-correctness oracle reads the
-   *  verb it teaches from the bus instead of the source. */
-  TUTORIAL_STEP: { index: number; verb: string; taught: string };
   CARD_CAST: { id: string };
   CARD_PRIME: { slot: number; id: string; color: string };
   CARD_FAIL: { slot: number };
@@ -59,9 +53,6 @@ type Handler<K extends keyof EventMap> = (payload: EventMap[K]) => void;
 export class EventBus {
   private handlers = new Map<keyof EventMap, Set<Handler<keyof EventMap>>>();
 
-  /** Per-event emit counts since boot — the QA coverage matrix reads these to see
-   *  which systems a test run actually exercised (an event at 0 = untested content). */
-  readonly counts: Partial<Record<keyof EventMap, number>> = {};
 
   on<K extends keyof EventMap>(name: K, fn: Handler<K>): () => void {
     let set = this.handlers.get(name);
@@ -74,7 +65,6 @@ export class EventBus {
   }
 
   emit<K extends keyof EventMap>(name: K, payload: EventMap[K]): void {
-    this.counts[name] = (this.counts[name] ?? 0) + 1;
     const set = this.handlers.get(name);
     if (!set) return;
     for (const fn of set) (fn as Handler<K>)(payload);

@@ -1,10 +1,12 @@
-import { CARDS, type CardDef } from "./cards";
-import { RELICS, type RelicDef } from "./relics";
+import { CARDS, cardById, type CardDef } from "./cards";
+import { RELICS, type RelicDef, type RelicRunState } from "./relics";
+import type { TempoState } from "./tempo";
 import { HEROES, type HeroDef } from "./heroes";
 import { blessingById, type BlessingDef } from "./blessings";
 import { COSMETICS, DEFAULT_COSMETICS, type CosmeticDef } from "./cosmetics";
 import { MAX_DEPTH } from "./difficulty";
-import type { RunStats } from "./ctx";
+import { freshStats, type RunStats } from "./ctx";
+import { isRunPlan, type RunPlan } from "./mapgen";
 
 export interface RunRecord {
   outcome: "victory" | "death" | "abandon";
@@ -23,7 +25,7 @@ interface ProfileData {
   perfectDodges: number;
   crashes: number;
   bossesKilled: number;
-  /** Highest act whose boss has died (0–3). */
+  /** Highest act whose boss has died (0–5). */
   actsCleared: number;
   /** Highest act ever reached. */
   furthestAct: number;
@@ -47,22 +49,27 @@ interface ProfileData {
   history: RunRecord[];
 }
 
-/** Mid-run checkpoint, written when each node is entered. v2 = forked-map runs. */
+/** Complete boundary checkpoint, written after rewards and before the next fork. */
 export interface RunSave {
   v: 2;
-  /** Map regenerates deterministically from seed+depth; position locates the node. */
+  /** Legacy saves regenerate from seed+depth; current saves preserve their route. */
   seed: number;
+  plan?: RunPlan;
   depth: number;
   position: number;
   path: number[];
   hero: string;
   hp: number;
-  /** Saved so run-scoped max-HP gains (Vigor blessing, Warden's Heart) survive a resume. */
+  /** Both vitality gains and shrine sacrifices survive a resume. */
   maxHp?: number;
   slots: (string | null)[];
   /** Which slots hold a honed (upgraded) card. */
   upgraded?: boolean[];
   relics: string[];
+  rngState?: number;
+  castCount?: number;
+  relicState?: RelicRunState;
+  tempo?: TempoState;
   stats: RunStats;
 }
 
@@ -74,7 +81,39 @@ export function loadRunSave(): RunSave | null {
     if (raw) {
       const s = JSON.parse(raw) as RunSave;
       // v1 (linear-room) saves are no longer compatible — silently dropped.
-      if (s.v === 2 && typeof s.seed === "number" && typeof s.position === "number") return s;
+      if (s.v === 2 && Number.isFinite(s.seed) && Number.isInteger(s.position) && s.position >= 0
+        && Number.isInteger(s.depth) && s.depth >= 0 && s.depth <= MAX_DEPTH && Number.isFinite(s.hp)
+        && Array.isArray(s.slots) && Array.isArray(s.path) && Array.isArray(s.relics) && s.stats && typeof s.stats === "object") {
+        const seen = new Set<string>();
+        s.hero = "blade";
+        s.slots = Array.from({ length: 3 }, (_, index) => {
+          const id = s.slots[index];
+          if (!id) return null;
+          try {
+            const card = cardById(id);
+            if (seen.has(card.id)) return null;
+            seen.add(card.id);
+            return card.id;
+          } catch { return null; }
+        });
+        s.path = s.path.slice(0,64).map(i=>Number.isInteger(i) && i>=0 && i<3 ? i : 0);
+        s.upgraded = Array.from({length:3},(_,i)=>!!s.slots[i] && s.upgraded?.[i]===true);
+        s.relics = [...new Set(s.relics.filter(id=>typeof id==="string" && RELICS.some(r=>r.id===id)))];
+        const stats = freshStats();
+        for (const key of Object.keys(stats) as (keyof RunStats)[]) {
+          const value = s.stats[key];
+          if (Number.isFinite(value) && value >= 0) stats[key] = value;
+        }
+        stats.depth = s.depth;
+        s.stats = stats;
+        if (!Number.isInteger(s.rngState) || s.rngState! < 0 || s.rngState! > 0xffffffff) delete s.rngState;
+        if (!Number.isInteger(s.castCount) || s.castCount! < 0) delete s.castCount;
+        if (!s.relicState || typeof s.relicState !== "object") delete s.relicState;
+        if (!s.tempo || typeof s.tempo !== "object") delete s.tempo;
+        if (!Number.isFinite(s.maxHp) || (s.maxHp ?? 0) <= 0) delete s.maxHp;
+        if (!isRunPlan(s.plan,s.seed,s.depth)) delete s.plan;
+        return s;
+      }
     }
   } catch { /* corrupt — ignore */ }
   return null;
@@ -94,12 +133,14 @@ export function clearRunSave(): void {
 
 const KEY = "rh3v2-profile";
 
-/** The base game: all 8 original cards + 5 relics + The Blade, free from the start. */
+/** Abilities are discovered within runs; permanent progression unlocks relics and blessings. */
 const STARTER_UNLOCKS = [
-  "card:dash-strike", "card:arc-bolt", "card:cleave", "card:frost-nova",
-  "card:phase-step", "card:mine-field", "card:aegis", "card:chain-lightning",
+  ...CARDS.map(card => `card:${card.id}`),
   "relic:bloodthirst", "relic:runaway-engine", "relic:metronome",
   "relic:kinetic-core", "relic:co-aggro-pact",
+  "relic:frost-chord", "relic:shatterglass", "relic:chain-amulet",
+  "relic:ember-codex", "relic:bulwark-idol",
+  "relic:keepers-thread", "relic:widows-needle",
   "hero:blade",
 ];
 
@@ -129,78 +170,29 @@ export interface Milestone {
   check: (p: ProfileData, run: RunStats | null) => boolean;
 }
 
-// Progression is deliberately gradual — the grind-based gates below are spaced out
-// so new cards, relics, and blessings unspool slowly over many runs. Story-paced
-// act-clear unlocks are left as-is so each act still earns its reward.
+// Every specialty has an initial supporting relic. Further rewards arrive through
+// readable feats and a few early runs, with deep wins reserved for cosmetic mastery.
 export const MILESTONES: Milestone[] = [
-  { id: "slayer-25", desc: "Slay 120 enemies", unlocks: ["card:sunder"], check: (p) => p.kills >= 120 },
-  { id: "act1-clear", desc: "Defeat the Pit Warden", unlocks: ["card:meteor-call", "card:bleeding-edge"], check: (p) => p.actsCleared >= 1 },
-  { id: "slayer-150", desc: "Slay 450 enemies", unlocks: ["relic:frost-chord"], check: (p) => p.kills >= 450 },
-  { id: "dodge-master", desc: "26 perfect dodges in one run", unlocks: ["relic:adrenal-surge"], check: (_p, run) => !!run && run.perfectDodges >= 26 },
+  { id: "dodge-master", desc: "6 perfect dodges in one run", unlocks: ["relic:adrenal-surge"], check: (_p, run) => !!run && run.perfectDodges >= 6 },
   { id: "untouchable", desc: "Clear Act I taking 60 damage or less", unlocks: ["relic:ironclad"], check: (p, run) => p.actsCleared >= 1 && !!run && run.actReached >= 2 && run.damageTaken <= 60 },
-  { id: "streak-8", desc: "Reach a 15-kill streak", unlocks: ["card:gravity-well"], check: (p, run) => p.bestStreak >= 15 || (!!run && run.bestStreak >= 15) },
-  { id: "act2-clear", desc: "Defeat the Spire Caster", unlocks: ["card:storm-conduit", "relic:berserker-sigil"], check: (p) => p.actsCleared >= 2 },
-  { id: "crash-20", desc: "Crash your tempo 95 times", unlocks: ["card:charged-lance"], check: (p) => p.crashes >= 95 },
-  { id: "slayer-400", desc: "Slay 1100 enemies", unlocks: ["relic:bulwark-idol"], check: (p) => p.kills >= 1100 },
-  { id: "first-win", desc: "Seal the Rift — win a full run", unlocks: ["card:ember-wave", "relic:chain-amulet"], check: (p) => p.wins >= 1 },
-  // --- Heroes (each unlocks its signature, hero-locked card alongside it)
-  { id: "hero-bulwark", desc: "Defeat the Pit Warden", unlocks: ["hero:bulwark", "card:shield-bash"], check: (p) => p.actsCleared >= 1 },
-  { id: "hero-sparkmage", desc: "Defeat the Spire Caster", unlocks: ["hero:sparkmage", "card:singularity"], check: (p) => p.actsCleared >= 2 },
-  // --- Expansion II content
-  { id: "streak-12", desc: "Reach a 22-kill streak", unlocks: ["card:blade-cyclone"], check: (p, run) => p.bestStreak >= 22 || (!!run && run.bestStreak >= 22) },
-  { id: "dodge-50", desc: "210 lifetime perfect dodges", unlocks: ["card:riposte"], check: (p) => p.perfectDodges >= 210 },
-  { id: "crash-35", desc: "Crash your tempo 150 times", unlocks: ["card:tempo-theft"], check: (p) => p.crashes >= 150 },
-  { id: "second-seal", desc: "Seal the Rift three times", unlocks: ["card:starfall"], check: (p) => p.wins >= 3 },
-  { id: "veteran-5", desc: "Brave the Rift 14 times", unlocks: ["relic:second-wind"], check: (p) => p.runs >= 14 },
-  { id: "slayer-40-run", desc: "Slay 90 enemies in one run", unlocks: ["relic:thorn-plate"], check: (_p, run) => !!run && run.kills >= 90 },
-  { id: "rich-1500", desc: "Earn 4000 lifetime shards", unlocks: ["relic:lucky-coin"], check: (p) => p.shardsEarned >= 4000 },
-  { id: "crash-50", desc: "Crash your tempo 135 times", unlocks: ["relic:resonant-bell"], check: (p) => p.crashes >= 135 },
-  { id: "slayer-800", desc: "Slay 2150 enemies", unlocks: ["relic:glass-cannon"], check: (p) => p.kills >= 2150 },
-  // --- Expansion III content
-  { id: "slayer-300", desc: "Slay 850 enemies", unlocks: ["hero:reaver", "card:rend-boomerang"], check: (p) => p.kills >= 850 },
-  { id: "dodge-75", desc: "200 lifetime perfect dodges", unlocks: ["hero:tempest", "card:tempest-storm"], check: (p) => p.perfectDodges >= 200 },
-  { id: "third-seal", desc: "Seal the Rift five times", unlocks: ["card:spectral-volley"], check: (p) => p.wins >= 5 },
-  { id: "veteran-10", desc: "Brave the Rift 34 times", unlocks: ["card:glacial-lance"], check: (p) => p.runs >= 34 },
-  { id: "veteran-15", desc: "Brave the Rift 50 times", unlocks: ["card:seismic-slam"], check: (p) => p.runs >= 50 },
-  { id: "streak-15", desc: "Reach a 28-kill streak", unlocks: ["card:warcry"], check: (p, run) => p.bestStreak >= 28 || (!!run && run.bestStreak >= 28) },
-  { id: "slayer-1200", desc: "Slay 4400 enemies", unlocks: ["card:soul-harvest"], check: (p) => p.kills >= 4400 },
-  { id: "slayer-600b", desc: "Slay 1600 enemies", unlocks: ["relic:molten-heart"], check: (p) => p.kills >= 1600 },
-  { id: "crash-75", desc: "Crash your tempo 200 times", unlocks: ["relic:siphon-sigil"], check: (p) => p.crashes >= 200 },
-  { id: "dodge-100", desc: "260 lifetime perfect dodges", unlocks: ["relic:tempo-capacitor"], check: (p) => p.perfectDodges >= 260 },
-  { id: "boss-6", desc: "Slay 14 wardens", unlocks: ["relic:executioner"], check: (p) => p.bossesKilled >= 14 },
-  { id: "rich-4000", desc: "Earn 10500 lifetime shards", unlocks: ["relic:rampart"], check: (p) => p.shardsEarned >= 10500 },
-  // --- Expansion IV content (Act V + new cards)
-  { id: "slayer-60", desc: "Slay 320 enemies", unlocks: ["card:seeker-swarm"], check: (p) => p.kills >= 320 },
-  { id: "act3-clear", desc: "Defeat the Colossus", unlocks: ["card:flame-channel"], check: (p) => p.actsCleared >= 3 },
-  { id: "veteran-3", desc: "Brave the Rift 12 times", unlocks: ["card:decoy-totem"], check: (p) => p.runs >= 12 },
-  { id: "rich-800", desc: "Earn 3600 lifetime shards", unlocks: ["card:leech-orb"], check: (p) => p.shardsEarned >= 3600 },
-  { id: "streak-10", desc: "Reach a 18-kill streak", unlocks: ["card:tempo-edge"], check: (p, run) => p.bestStreak >= 18 || (!!run && run.bestStreak >= 18) },
-  // --- Expansion V: status-combo relics + tiers
-  { id: "slayer-500", desc: "Slay 1350 enemies", unlocks: ["relic:shatterglass"], check: (p) => p.kills >= 1350 },
-  { id: "crash-60", desc: "Crash your tempo 160 times", unlocks: ["relic:hex-brand"], check: (p) => p.crashes >= 160 },
-  { id: "slayer-700", desc: "Slay 1900 enemies", unlocks: ["relic:ember-codex"], check: (p) => p.kills >= 1900 },
-  { id: "fourth-seal", desc: "Seal the Rift seven times", unlocks: ["relic:overcharger"], check: (p) => p.wins >= 7 },
-  { id: "streak-20", desc: "Reach a 26-kill streak", unlocks: ["relic:tempo-engine"], check: (p, run) => p.bestStreak >= 26 || (!!run && run.bestStreak >= 26) },
-  { id: "veteran-20", desc: "Brave the Rift 48 times", unlocks: ["relic:featherbone"], check: (p) => p.runs >= 48 },
-  { id: "hero-revenant", desc: "Slay 2600 enemies", unlocks: ["hero:revenant", "card:grave-harvest"], check: (p) => p.kills >= 2600 },
-  // --- Expansion V cards: gated behind sustained play so they unspool slowly.
-  { id: "slayer-220", desc: "Slay 600 enemies", unlocks: ["card:thunderclap"], check: (p) => p.kills >= 600 },
-  { id: "dodge-130", desc: "320 lifetime perfect dodges", unlocks: ["card:frost-lattice"], check: (p) => p.perfectDodges >= 320 },
-  { id: "veteran-22", desc: "Brave the Rift 44 times", unlocks: ["card:bulwark-breaker"], check: (p) => p.runs >= 44 },
-  // --- Expansion VI cards
-  { id: "slayer-950", desc: "Slay 950 enemies", unlocks: ["card:rift-hook"], check: (p) => p.kills >= 950 },
-  { id: "veteran-25", desc: "Brave the Rift 25 times", unlocks: ["card:blade-spirit"], check: (p) => p.runs >= 25 },
-  { id: "slayer-3400", desc: "Slay 3400 enemies", unlocks: ["card:hemorrhage"], check: (p) => p.kills >= 3400 },
-  // --- Expansion VII: each hero's 2nd SIGNATURE card, earned by living that hero's identity.
-  { id: "sig-blade", desc: "Crash your tempo 110 times", unlocks: ["card:tempo-surge"], check: (p) => p.crashes >= 110 },
-  { id: "sig-bulwark", desc: "Slay 700 enemies", unlocks: ["card:hammer-drop"], check: (p) => p.kills >= 700 },
-  { id: "sig-sparkmage", desc: "Reach a 24-kill streak", unlocks: ["card:arc-overload"], check: (p, run) => p.bestStreak >= 24 || (!!run && run.bestStreak >= 24) },
-  { id: "sig-reaver", desc: "Slay 1500 enemies", unlocks: ["card:feral-leap"], check: (p) => p.kills >= 1500 },
-  { id: "sig-tempest", desc: "260 lifetime perfect dodges", unlocks: ["card:gale-burst"], check: (p) => p.perfectDodges >= 260 },
-  { id: "sig-revenant", desc: "Slay 2000 enemies", unlocks: ["card:soul-drain"], check: (p) => p.kills >= 2000 },
+  { id: "act2-clear", desc: "Defeat the Glass Regent", unlocks: ["relic:berserker-sigil"], check: (p) => p.actsCleared >= 2 },
+  { id: "veteran-5", desc: "Brave the Rift 3 times", unlocks: ["relic:second-wind"], check: (p) => p.runs >= 3 },
+  { id: "slayer-40-run", desc: "Slay 35 enemies in one run", unlocks: ["relic:thorn-plate"], check: (_p, run) => !!run && run.kills >= 35 },
+  { id: "rich-1500", desc: "Earn 600 lifetime shards", unlocks: ["relic:lucky-coin"], check: (p) => p.shardsEarned >= 600 },
+  { id: "crash-50", desc: "Crash your tempo 18 times", unlocks: ["relic:resonant-bell"], check: (p) => p.crashes >= 18 },
+  { id: "slayer-800", desc: "Slay 250 enemies", unlocks: ["relic:glass-cannon"], check: (p) => p.kills >= 250 },
+  { id: "slayer-600b", desc: "Slay 500 enemies", unlocks: ["relic:molten-heart"], check: (p) => p.kills >= 500 },
+  { id: "crash-75", desc: "Crash your tempo 40 times", unlocks: ["relic:siphon-sigil"], check: (p) => p.crashes >= 40 },
+  { id: "dodge-100", desc: "30 lifetime perfect dodges", unlocks: ["relic:tempo-capacitor"], check: (p) => p.perfectDodges >= 30 },
+  { id: "boss-6", desc: "Slay 5 wardens", unlocks: ["relic:executioner"], check: (p) => p.bossesKilled >= 5 },
+  { id: "rich-4000", desc: "Earn 1500 lifetime shards", unlocks: ["relic:rampart"], check: (p) => p.shardsEarned >= 1500 },
+  { id: "crash-60", desc: "Crash your tempo 28 times", unlocks: ["relic:hex-brand"], check: (p) => p.crashes >= 28 },
+  { id: "fourth-seal", desc: "Seal the Rift twice", unlocks: ["relic:overcharger"], check: (p) => p.wins >= 2 },
+  { id: "streak-20", desc: "Reach an 8-kill streak", unlocks: ["relic:tempo-engine"], check: (p, run) => p.bestStreak >= 8 || (!!run && run.bestStreak >= 8) },
+  { id: "veteran-20", desc: "Brave the Rift 6 times", unlocks: ["relic:featherbone"], check: (p) => p.runs >= 6 },
   // --- Run-start blessings: locked at first, earned slowly through play.
   { id: "bless-vigor", desc: "Brave the Rift 5 times", unlocks: ["blessing:vigor"], check: (p) => p.runs >= 5 },
-  { id: "bless-arsenal", desc: "Defeat the Spire Caster", unlocks: ["blessing:arsenal"], check: (p) => p.actsCleared >= 2 },
+  { id: "bless-arsenal", desc: "Defeat the Glass Regent", unlocks: ["blessing:arsenal"], check: (p) => p.actsCleared >= 2 },
   { id: "bless-fortune", desc: "Earn 2000 lifetime shards", unlocks: ["blessing:fortune"], check: (p) => p.shardsEarned >= 2000 },
   // --- Hero mastery: each hero's first win + a depth-5 win earn exclusive cosmetics.
   ...HEROES.flatMap((h): Milestone[] => [
@@ -269,7 +261,8 @@ export class Profile {
   }
 
   isUnlocked(key: string): boolean {
-    return this.data.unlocks.includes(key);
+    if (key.startsWith("card:")) return CARDS.some(c => `card:${c.id}` === key);
+    return STARTER_UNLOCKS.includes(key) || this.data.unlocks.includes(key);
   }
 
   /** Milestone condition text for a locked item, for the progress grid. */

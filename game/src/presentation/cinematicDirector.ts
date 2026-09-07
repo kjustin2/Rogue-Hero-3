@@ -5,72 +5,47 @@ export interface CinematicHooks {
   finish(sequence: CinematicSequence, skipped: boolean): void;
 }
 
-/** Deterministic, dt-driven cinematic timeline. No wall-clock timers and skip
- * always applies the sequence finalizer exactly once. */
+/** One game-time timeline, with an atomic finalizer shared by finish and skip. */
 export class CinematicDirector {
   private sequence: CinematicSequence | null = null;
   private t = 0;
   private next = 0;
-  private endAt = 0;
-
   constructor(private readonly hooks: CinematicHooks) {}
 
   play(sequence: CinematicSequence): void {
-    if (this.sequence) this.skip();
-    this.sequence = sequence;
-    this.t = 0;
-    this.next = 0;
-    this.endAt = sequence.duration;
+    if (this.sequence) this.complete(true);
+    this.sequence = { ...sequence, beats: [...sequence.beats].sort((a, b) => a.at - b.at) };
+    this.t = this.next = 0;
     this.flushDue();
   }
 
   update(dt: number): void {
-    if (!this.sequence) return;
-    this.t = Math.min(this.endAt, this.t + Math.max(0, dt));
-    this.flushDue();
-    if (this.t >= this.endAt) this.complete(false);
-  }
-
-  skip(): void {
-    if (!this.sequence) return;
     const seq = this.sequence;
-    if (seq.skipTo !== undefined && this.t < seq.skipTo) {
-      this.t = seq.skipTo;
-      this.flushDue();
-      this.endAt = Math.min(seq.duration, seq.skipTo + (seq.skipDuration ?? 0.6));
-      return;
-    }
-    while (this.next < seq.beats.length) this.hooks.run(seq.beats[this.next++]);
-    this.complete(true);
+    if (!seq) return;
+    this.t = Math.min(seq.duration, this.t + Math.max(0, dt));
+    this.flushDue();
+    if (this.sequence === seq && this.t >= seq.duration) this.complete(false);
   }
 
-  cancel(): void {
-    this.sequence = null;
-    this.t = 0;
-    this.next = 0;
-    this.endAt = 0;
-  }
-
+  // The finalizer establishes a playable scene. Replaying every skipped beat
+  // would fire landing effects, sounds and camera cuts on the same frame.
+  skip(): void { this.complete(true); }
+  cancel(): void { this.sequence = null; this.t = this.next = 0; }
   state(): { active: boolean; id: string | null; time: number; duration: number } {
-    return { active: !!this.sequence, id: this.sequence?.id ?? null, time: this.t, duration: this.endAt };
+    return { active: !!this.sequence, id: this.sequence?.id ?? null, time: this.t, duration: this.sequence?.duration ?? 0 };
   }
-
   private flushDue(): void {
     const seq = this.sequence;
     if (!seq) return;
-    while (this.next < seq.beats.length && seq.beats[this.next].at <= this.t) {
+    while (this.sequence === seq && this.next < seq.beats.length && seq.beats[this.next].at <= this.t) {
       this.hooks.run(seq.beats[this.next++]);
     }
   }
-
   private complete(skipped: boolean): void {
     const seq = this.sequence;
     if (!seq) return;
-    this.sequence = null;
-    this.t = 0;
-    this.next = 0;
-    this.endAt = 0;
-    seq.onFinish?.();
+    this.cancel();
     this.hooks.finish(seq, skipped);
+    seq.onFinish?.();
   }
 }

@@ -1,12 +1,18 @@
+import { pursuitTarget } from "./navigation";
+import { Unravel } from "./unravel";
+import { forgeBomber, forgeSpitter, forgeSwarmer } from "../render/fieldForge";
+import { forgeHusk } from "../render/huskForge";
 import * as THREE from "three";
+import { forgeGuardian } from "../render/guardianForge";
+import { beveledBox } from "../render/surfaces";
 import { ARENA_RADIUS } from "../render/arena";
 import { applyRim } from "../render/materialFx";
 import { ParticleShape } from "../render/particles";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { dampAngle, TAU } from "../core/math";
 import type { Ctx } from "./ctx";
-import type { ActionSegment, ActorVisualState, AttackFamily } from "../presentation/types";
-import { ENEMY_ATTACK_FAMILY } from "../presentation/profiles";
+import type { AttackFamily, CinematicBeat, ImpactElement } from "../presentation/types";
+import type { FootContact } from "../render/contactShadow";
 
 export type EnemyKind =
   | "husk" | "spitter" | "swarmer" | "bomber" | "sentinel"
@@ -29,13 +35,6 @@ interface FlashMat {
   baseIntensity: number;
 }
 
-type RoleSilhouette = "charger" | "caster" | "swarm" | "bomber" | "shield" | "flier" | "void" | "splitter";
-
-interface RoleSilhouetteRecord {
-  kind: RoleSilhouette;
-  group: THREE.Group;
-}
-
 export interface DamageOpts {
   kbX?: number;
   kbZ?: number;
@@ -46,6 +45,10 @@ export interface DamageOpts {
   noDetonate?: boolean;
   /** Presentation identity only; never changes damage or collision. */
   attackFamily?: AttackFamily;
+  element?: ImpactElement;
+  impactColor?: number;
+  /** Repeated ticks keep local feedback without repeatedly kicking the camera. */
+  sustained?: boolean;
 }
 
 // Shared assets for the ground-contact glow under every enemy (one soft radial
@@ -78,6 +81,7 @@ function groundGlowAssets(): { tex: THREE.CanvasTexture; geo: THREE.PlaneGeometr
  * a per-type `tick` brain. All attacks must telegraph — that's the contract.
  */
 export abstract class Enemy {
+  readonly footContacts: FootContact[] = [];
   readonly id = NEXT_ID++;
   abstract readonly kind: EnemyKind;
   readonly pos = new THREE.Vector3();
@@ -86,6 +90,8 @@ export abstract class Enemy {
   maxHp = 30;
   speed = 3;
   alive = true;
+  readonly unravel = new Unravel();
+  private seam: THREE.Group | null = null;
   frozen = 0;
   /** Vulnerable status: takes extra damage while >0 (status-combo enabler). */
   vulnTime = 0;
@@ -94,8 +100,38 @@ export abstract class Enemy {
   affixes: string[] = [];
   protected affixSpeedMult = 1;
   private affixTimer = 0;
-  contactDmg = 0;
-  protected contactCd = 0;
+  /** Planted attacks and bosses hold their ground when crowds press into them. */
+  get anchored(): boolean { return this.kind === "boss"; }
+  private readonly warningClock = { time: 0, revision: 0, alive: true };
+  private meleeUntil = 0;
+  private meleeRevision = 0;
+  private wallSlamWindow = 0;
+
+  get committingMelee(): boolean {
+    return this.alive&&this.meleeRevision===this.warningClock.revision&&this.warningClock.time<this.meleeUntil;
+  }
+
+  /** Frontline attacks share two openings. Their leases use the attack clock,
+   * so freezing an attacker cannot admit a replacement into the same warning. */
+  protected commitMelee(duration: number): boolean {
+    if(!this.ctx.enemies.claimMeleeStart())return false;
+    this.meleeUntil=this.warningClock.time+duration;this.meleeRevision=this.warningClock.revision;return true;
+  }
+
+  protected warnCircle(x: number, z: number, radius: number, duration: number, color = 0xff3344): void {
+    this.ctx.tele.circle(x, z, radius, duration, color, this.warningClock);
+  }
+
+  protected warnLine(x: number, z: number, angle: number, length: number, width: number, duration: number, color = 0xff3344): void {
+    this.ctx.tele.line(x, z, angle, length, width, duration, color, this.warningClock);
+  }
+
+  protected warnRing(x: number, z: number, inner: number, outer: number, duration: number, color = 0xff3344): void {
+    this.ctx.tele.ring(x, z, inner, outer, duration, color, this.warningClock);
+  }
+
+  /** An interrupted attack must release its warning, even if the pool is reused. */
+  protected cancelWarnings(): void { this.warningClock.revision++; }
 
   // --- Breakable shields (Bastion front-wall, Mirror bubble). Shield HP lives in
   // the SAME final-damage units as body HP, so every player multiplier already
@@ -112,10 +148,6 @@ export abstract class Enemy {
   private shieldBg: THREE.Sprite | null = null;
   private shieldFill: THREE.Sprite | null = null;
   private affixCrown: THREE.Group | null = null;
-  private roleSilhouettes: RoleSilhouetteRecord[] = [];
-  private intentPose = 0;
-  private attackSegment: ActionSegment = "loop";
-  private attackSegmentPhase = 0;
   // Dramatic boss flourish — additive pose the base folds into the root transform.
   // All default-neutral so non-bosses are unaffected. Bosses drive these via
   // drivePose()/setBossScale()/eruptReveal() to give attacks, movement, and phase
@@ -133,13 +165,13 @@ export abstract class Enemy {
   private reactT = 0;
   private reactDur = 0.16;
   private impactHold = 0;
-  private readonly deathDuration = 0.58;
+  private deathDuration = 0.58;
   private deathT = this.deathDuration;
+  private readonly deathScale = new THREE.Vector3(1, 1, 1);
   private reactPitch = 0;
   private reactRoll = 0;
   private reactYaw = 0;
   private reactLift = 0;
-  private lastAttackFamily: AttackFamily | null = null;
   private cinematicYOffset = 0;
   private cinematicTargetY = 0;
   private readonly flashWhite = new THREE.Color(0xffffff);
@@ -161,8 +193,8 @@ export abstract class Enemy {
   private gaitPrevZ = NaN;
   protected t = 0; // seeded AI sine-timer phase — set in the ctor (a base-class field
   // initializer runs before `ctx` is assigned, so ctx.rng isn't available here yet)
-  /** While >0 the enemy deflects ALL damage — a telegraphed boss ward window. */
-  protected invulnTime = 0;
+  private combatGuard = false;
+  private cinematicProtection = false;
   private deflectCd = 0;
   private wardRing: THREE.Mesh | null = null;
   private groundGlow: THREE.Mesh | null = null;
@@ -233,7 +265,7 @@ export abstract class Enemy {
     });
     const m = new THREE.Mesh(geo, mat);
     // Bosses get a wider, more menacing pool than rank-and-file enemies.
-    const s = this.kind === "boss" ? Math.max(6, this.radius * 4.6) : Math.max(1.5, this.radius * 3.4);
+    const s = this.kind === "boss" ? Math.max(3.8, this.radius * 3.1) : Math.max(1.2, this.radius * 2.6);
     m.scale.set(s, s, s);
     m.renderOrder = -1;
     m.userData.solidity = "fx";
@@ -241,19 +273,10 @@ export abstract class Enemy {
     this.groundGlow = m;
   }
 
-  /** Force first-time visual sub-objects (the ground glow) into the scene so their
-   *  shader programs compile during warm-up, not as a mid-fight hitch on first spawn. */
-  warmVisuals(): void {
-    this.ensureGroundGlow();
-    // Show the HP-bar sprites through the warm frame — the map-less sprite program
-    // is distinct from the textured one, and otherwise compiles on the first enemy hit.
-    this.hpBg.visible = this.hpFill.visible = true;
-  }
-
   /** Dynamic shadow maps are reserved for the boss and a tiny foreground cast.
    * Every other enemy retains its inexpensive contact shadow. */
   setShadowCasting(on: boolean): void {
-    this.root.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = on; });
+    this.root.traverse((o) => { if (o instanceof THREE.Mesh) o.castShadow = on && o.userData.castShadow !== false; });
   }
 
   protected registerFlash(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
@@ -263,13 +286,21 @@ export abstract class Enemy {
 
   protected stdMat(color: number, emissive = 0x000000, intensity = 0): THREE.MeshStandardMaterial {
     const mat = new THREE.MeshStandardMaterial({
-      color, emissive, emissiveIntensity: intensity, roughness: 0.6, metalness: 0.2, flatShading: true,
+      color, emissive, emissiveIntensity: intensity * 0.8, roughness: 0.48, metalness: 0.3,
     });
-    applyRim(mat); // fresnel edge-light on every enemy body (IDEAS-GRAPHICS #2)
+    applyRim(mat, undefined, 2.8, 0.16);
     return this.registerFlash(mat);
   }
 
   protected addMesh(geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0, parent: THREE.Object3D = this.root): THREE.Mesh {
+    if (geo instanceof THREE.BoxGeometry) {
+      const { width, height, depth } = geo.parameters;
+      if (Math.min(width, height, depth) >= 0.09) {
+        const rounded = beveledBox(width, height, depth);
+        geo.dispose();
+        geo = rounded;
+      }
+    }
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
     m.castShadow = true;
@@ -286,7 +317,7 @@ export abstract class Enemy {
   private mergeStaticGroupMeshes(parent: THREE.Object3D, exclude: readonly THREE.Object3D[] = []): void {
     const byMaterial = new Map<THREE.Material, THREE.Mesh[]>();
     for (const child of parent.children) {
-      if (!(child instanceof THREE.Mesh) || exclude.includes(child) || Array.isArray(child.material)) continue;
+      if (!(child instanceof THREE.Mesh) || child instanceof THREE.InstancedMesh || child.children.length > 0 || exclude.includes(child) || Array.isArray(child.material)) continue;
       const list = byMaterial.get(child.material) ?? [];
       list.push(child);
       byMaterial.set(child.material, list);
@@ -312,296 +343,6 @@ export abstract class Enemy {
         parent.remove(mesh);
         mesh.geometry.dispose();
       }
-    }
-  }
-
-  /** A leg that STEPS: a hip-pivot group at the top of the leg, with the leg box
-   *  hanging below it, so a rotation.x reads as a stride. `centerY` is the old
-   *  box-center Y (drop-in for addMesh legs). Assign the result to legL/legR. */
-  protected addLeg(w: number, h: number, d: number, mat: THREE.Material, x: number, centerY: number, z: number): THREE.Group {
-    const g = new THREE.Group();
-    g.position.set(x, centerY + h / 2, z); // pivot at the hip
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    leg.position.y = -h / 2; // hang the leg below the hip pivot
-    leg.castShadow = true;
-    g.add(leg);
-    this.root.add(g);
-    return g;
-  }
-
-  protected addRoleSilhouette(kind: RoleSilhouette, color: number): void {
-    const g = new THREE.Group();
-    g.name = `role-${kind}`;
-    this.root.add(g);
-    this.roleSilhouettes.push({ kind, group: g });
-    const mat = this.stdMat(0x0b0d14, color, 0.75);
-    const bright = this.stdMat(0x11131f, color, 1.35);
-    const accent = this.stdMat(0x06080f, color, 1.8);
-
-    // A single floating "soul" core crowns the body as the animated tell. Kept
-    // small and role-tinted so it complements the bespoke body instead of masking
-    // it. (The old shared mannequin — faceplate/chest/pauldrons/boots, identical on
-    // EVERY unit — was the homogenizer; the per-creature signature below replaces
-    // it with flavor specific to what each creature actually is.)
-    const core = this.addMesh(new THREE.OctahedronGeometry(Math.max(0.05, this.radius * 0.11)), accent, 0, this.radius < 0.5 ? 0.62 : 0.95, this.radius + 0.08, g);
-    core.scale.y = 0.5;
-    core.rotation.y = Math.PI / 4;
-    // A faint role-tinted contact ring settles every unit onto the floor.
-    const floor = this.addMesh(new THREE.TorusGeometry(Math.max(0.3, this.radius * 0.78), 0.016, 5, 24), mat, 0, 0.06, 0, g);
-    floor.rotation.x = Math.PI / 2;
-
-    if (kind === "charger") {
-      for (const sx of [-1, 1]) {
-        const horn = this.addMesh(new THREE.ConeGeometry(0.08, 0.62, 4), bright, sx * (this.radius + 0.16), 1.18, 0.5, g);
-        horn.rotation.set(Math.PI / 2, 0, sx * 0.22);
-      }
-      this.addMesh(new THREE.BoxGeometry(this.radius * 1.1, 0.08, 0.5), mat, 0, 0.18, 0.46, g);
-    } else if (kind === "caster") {
-      const halo = this.addMesh(new THREE.TorusGeometry(this.radius + 0.18, 0.025, 6, 28), bright, 0, 1.72, 0, g);
-      halo.rotation.x = Math.PI / 2;
-      for (let i = 0; i < 3; i++) {
-        const a = (i / 3) * TAU;
-        const shard = this.addMesh(new THREE.OctahedronGeometry(0.065), bright, Math.cos(a) * (this.radius + 0.28), 1.72, Math.sin(a) * (this.radius + 0.28), g);
-        shard.rotation.set(a, a * 1.4, 0);
-      }
-    } else if (kind === "swarm") {
-      for (let i = 0; i < 5; i++) {
-        const a = (i / 5) * TAU;
-        const barb = this.addMesh(new THREE.ConeGeometry(0.035, 0.25, 4), bright, Math.cos(a) * 0.24, 0.62, Math.sin(a) * 0.24, g);
-        barb.rotation.set(0.5, 0, -a);
-      }
-    } else if (kind === "bomber") {
-      const ring = this.addMesh(new THREE.TorusGeometry(this.radius + 0.2, 0.035, 6, 24), bright, 0, 1.42, 0, g);
-      ring.rotation.x = Math.PI / 2;
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * TAU + Math.PI / 4;
-        this.addMesh(new THREE.BoxGeometry(0.08, 0.08, 0.28), bright, Math.cos(a) * (this.radius + 0.2), 1.42, Math.sin(a) * (this.radius + 0.2), g).rotation.y = a;
-      }
-    } else if (kind === "shield") {
-      this.addMesh(new THREE.BoxGeometry(this.radius * 2.3, 0.12, 0.12), bright, 0, 1.92, 0.52, g);
-      for (const sx of [-1, 1]) {
-        const fin = this.addMesh(new THREE.BoxGeometry(0.1, 0.65, 0.32), mat, sx * (this.radius + 0.22), 1.12, 0.44, g);
-        fin.rotation.z = sx * 0.22;
-      }
-    } else if (kind === "flier") {
-      for (const sx of [-1, 1]) {
-        const wing = this.addMesh(new THREE.BoxGeometry(0.68, 0.04, 0.22), bright, sx * (this.radius + 0.3), 0.1, -0.12, g);
-        wing.rotation.z = sx * -0.32;
-      }
-      this.addMesh(new THREE.ConeGeometry(0.07, 0.45, 4), bright, 0, 0.1, -0.55, g).rotation.x = -Math.PI / 2;
-    } else if (kind === "void") {
-      for (let i = 0; i < 2; i++) {
-        const ring = this.addMesh(new THREE.TorusGeometry(this.radius + 0.16 + i * 0.13, 0.022, 6, 36), bright, 0, 0.85, 0, g);
-        ring.rotation.set(Math.PI / 2 + i * 0.7, i * 1.1, 0);
-      }
-    } else {
-      const split = this.addMesh(new THREE.BoxGeometry(0.08, 0.9, this.radius * 1.15), bright, 0, 0.7, 0.08, g);
-      split.rotation.z = 0.12;
-      for (const sx of [-1, 1]) {
-        this.addMesh(new THREE.TorusGeometry(0.26, 0.025, 5, 16), bright, sx * 0.33, 0.62, 0.28, g).rotation.x = Math.PI / 2;
-      }
-    }
-
-    this.mergeStaticGroupMeshes(g);
-    this.addCreatureSignature(color);
-  }
-
-  /**
-   * The per-creature signature: a small, static, body-attached detail that makes
-   * each unit unmistakably *itself* at gameplay distance — the layer that gives
-   * flavor specific to what the creature actually is, on top of the role read.
-   * Tiny on purpose (1–4 primitives); the bespoke body carries the rest.
-   */
-  protected addCreatureSignature(color: number): void {
-    const g = new THREE.Group();
-    g.name = "signature";
-    this.root.add(g);
-    const r = this.radius;
-    // Cold forged steel — for impaled blades and assassin daggers.
-    const steel = (): THREE.MeshStandardMaterial => this.stdMat(0x252b33, 0x8a9bb0, 0.45);
-    // The creature's own accent, at chosen brightness — for glows/runes/lenses.
-    const glow = (ei = 2.0): THREE.MeshStandardMaterial => this.stdMat(0x04060a, color, ei);
-
-    switch (this.kind) {
-      case "husk": {
-        // A broken blade still impaling the risen corpse — snapped off, never removed.
-        // Bright cold steel so it reads as metal against the red body at distance.
-        const blade = this.stdMat(0x39424e, 0xb4c4d6, 1.0);
-        const shaft = this.addMesh(new THREE.BoxGeometry(0.09, 0.09, 1.5), blade, 0.06, 1.04, -0.05, g);
-        shaft.rotation.set(0.55, 0.2, 0);
-        this.addMesh(new THREE.BoxGeometry(0.36, 0.07, 0.07), blade, 0.2, 0.76, -0.5, g).rotation.y = 0.2;
-        const tip = this.addMesh(new THREE.ConeGeometry(0.06, 0.26, 4), blade, -0.08, 1.34, 0.64, g);
-        tip.rotation.set(-1.0, 0, 0);
-        // A smouldering wound glow where it pierces the chest.
-        this.addMesh(new THREE.SphereGeometry(0.1, 6, 5), glow(2.2), 0.05, 0.98, 0.34, g);
-        break;
-      }
-      case "spitter": {
-        // A floating targeting reticle hangs before the casting orb.
-        const rm = glow(2.2);
-        const reticle = this.addMesh(new THREE.TorusGeometry(0.15, 0.014, 4, 18), rm, 0, 1.27, 0.78, g);
-        reticle.rotation.x = Math.PI / 2.1;
-        for (const a of [0, Math.PI / 2]) {
-          this.addMesh(new THREE.BoxGeometry(0.2, 0.012, 0.012), rm, 0, 1.27, 0.78, g).rotation.z = a;
-        }
-        break;
-      }
-      case "swarmer": {
-        // A single furious cyclops eye, ringed in glare.
-        const eye = glow(2.6);
-        const halo = this.addMesh(new THREE.TorusGeometry(0.17, 0.02, 4, 16), eye, 0, 0.42, 0.26, g);
-        halo.rotation.x = Math.PI / 2;
-        break;
-      }
-      case "bomber": {
-        // Hazard chevrons banding the casing — read it as a live munition.
-        const warn = glow(1.6);
-        for (let i = 0; i < 3; i++) {
-          const a = (i / 3) * TAU + 0.4;
-          const chev = this.addMesh(new THREE.BoxGeometry(0.26, 0.05, 0.05), warn, Math.cos(a) * (r + 0.02), 0.7, Math.sin(a) * (r + 0.02), g);
-          chev.rotation.set(0, -a, 0.5);
-        }
-        break;
-      }
-      case "sentinel": {
-        // The defining beam-lens: a focusing aperture ringed at the muzzle with
-        // targeting prongs, so the artillery reads as artillery (not a "shield").
-        // Barrel points +z from x≈0.55; the muzzle sits near z≈0.95.
-        const lens = glow(2.6);
-        const housing = steel();
-        // Aperture ring around the barrel (default torus lies in XY → faces +z).
-        this.addMesh(new THREE.TorusGeometry(0.17, 0.04, 6, 20), housing, 0.55, 1.3, 0.82, g);
-        // Glowing lens disc (CircleGeometry faces +z by default).
-        this.addMesh(new THREE.CircleGeometry(0.14, 16), lens, 0.55, 1.3, 0.84, g);
-        for (const sy of [-1, 1]) {
-          const prong = this.addMesh(new THREE.ConeGeometry(0.04, 0.42, 4), housing, 0.55, 1.3 + sy * 0.2, 0.78, g);
-          prong.rotation.x = Math.PI / 2; // point the prong forward (+z)
-        }
-        break;
-      }
-      case "wisp": {
-        // A sharp refractive star burning inside the glass mote.
-        const prism = glow(3.2);
-        const star = this.addMesh(new THREE.OctahedronGeometry(0.2, 0), prism, 0, 0, 0, g);
-        star.scale.set(0.5, 1.4, 0.5);
-        const star2 = this.addMesh(new THREE.OctahedronGeometry(0.2, 0), prism, 0, 0, 0, g);
-        star2.scale.set(1.4, 0.5, 0.5);
-        break;
-      }
-      case "leaper": {
-        // A barbed tail arching over the back — the predator silhouette that
-        // breaks the "recolored husk" read and says quadruped pouncer.
-        const chitin = this.stdMat(0x1a0d22, color, 0.5);
-        const seg = [
-          [0, 0.7, -0.4, -0.4], [0, 1.0, -0.55, -0.2], [0, 1.2, -0.4, 0.2], [0, 1.25, -0.05, 0.7],
-        ] as const;
-        for (const [x, y, z, pitch] of seg) {
-          const s = this.addMesh(new THREE.ConeGeometry(0.09, 0.3, 4), chitin, x, y, z, g);
-          s.rotation.x = pitch;
-        }
-        const sting = this.addMesh(new THREE.ConeGeometry(0.07, 0.34, 4), glow(2.2), 0, 1.22, 0.18, g);
-        sting.rotation.x = 1.6;
-        break;
-      }
-      case "tether": {
-        // A trident of focus crystals fanning forward — one per locked lane.
-        const cry = glow(2.0);
-        for (const dx of [-0.3, 0, 0.3]) {
-          const c = this.addMesh(new THREE.OctahedronGeometry(0.08), cry, dx, 1.45, 0.45, g);
-          c.rotation.set(0.5, dx, 0);
-        }
-        break;
-      }
-      case "mirror": {
-        // A polished mirror pane set in the chest — the thing it raises against you.
-        const frame = this.stdMat(0x1a1f28, color, 1.0);
-        const pane = this.stdMat(0xcfe8ff, color, 0.9);
-        this.addMesh(new THREE.BoxGeometry(0.5, 0.66, 0.04), frame, 0, 1.18, 0.5, g);
-        this.addMesh(new THREE.BoxGeometry(0.38, 0.54, 0.03), pane, 0, 1.18, 0.53, g);
-        break;
-      }
-      case "caster": {
-        // A brazier-crown of floating embers above the hood — the forge-mage tell.
-        const ember = glow(2.6);
-        for (let i = 0; i < 3; i++) {
-          const a = (i / 3) * TAU;
-          this.addMesh(new THREE.SphereGeometry(0.06, 6, 5), ember, Math.cos(a) * 0.26, 2.05, Math.sin(a) * 0.26, g);
-        }
-        const flame = this.addMesh(new THREE.ConeGeometry(0.1, 0.3, 5), ember, 0, 2.18, 0, g);
-        flame.scale.y = 1.3;
-        break;
-      }
-      case "shade": {
-        // Crossed daggers floating as an assassin's mark above the cowl.
-        const dag = steel();
-        for (const s of [-1, 1]) {
-          const d = this.addMesh(new THREE.ConeGeometry(0.05, 0.5, 4), dag, 0, 1.95, 0, g);
-          d.rotation.set(Math.PI / 2, 0, s * 0.6);
-          d.position.x = s * 0.04;
-        }
-        break;
-      }
-      case "bastion": {
-        // A heraldic war-sigil branded on the great shield.
-        const sig = glow(1.6);
-        const gem = this.addMesh(new THREE.OctahedronGeometry(0.16), sig, 0, 1.0, 0.72, g);
-        gem.scale.z = 0.4;
-        // Ring framing the sigil sits flat on the shield face (default torus faces +z).
-        const halo = this.addMesh(new THREE.TorusGeometry(0.3, 0.03, 5, 6), sig, 0, 1.0, 0.7, g);
-        halo.rotation.z = Math.PI / 6;
-        break;
-      }
-      case "brute": {
-        // A glowing forge-brand seared across the breastplate.
-        const brand = glow(1.8);
-        this.addMesh(new THREE.BoxGeometry(0.12, 0.6, 0.05), brand, 0, 1.0, 0.62, g);
-        this.addMesh(new THREE.BoxGeometry(0.5, 0.12, 0.05), brand, 0, 1.1, 0.62, g);
-        break;
-      }
-      case "harrier": {
-        // Twin afterburner cones flaring off the tail — pure strafer.
-        const burn = glow(2.6);
-        for (const sx of [-0.16, 0.16]) {
-          const b = this.addMesh(new THREE.ConeGeometry(0.07, 0.34, 5), burn, sx, 0, -0.56, g);
-          b.rotation.x = Math.PI / 2;
-        }
-        break;
-      }
-      case "splitter": {
-        // Twin glowing nuclei straining at the dividing seam — about to split.
-        const nuc = glow(2.2);
-        this.addMesh(new THREE.IcosahedronGeometry(0.1, 0), nuc, -0.24, 0.62, 0.34, g);
-        this.addMesh(new THREE.IcosahedronGeometry(0.1, 0), nuc, 0.26, 0.66, 0.32, g);
-        break;
-      }
-      case "voidling": {
-        // A bright ring around the hungry maw — distinguishes it from the wraith Shade.
-        const maw = glow(2.4);
-        const ring = this.addMesh(new THREE.TorusGeometry(0.2, 0.022, 5, 14), maw, 0, 0.4, 0.16, g);
-        ring.rotation.x = 0.5;
-        break;
-      }
-      case "warper": {
-        // A notched portal-glyph disc hovering before it — the blink rune.
-        const rune = glow(2.0);
-        const disc = this.addMesh(new THREE.TorusGeometry(0.22, 0.025, 3, 6), rune, 0, 1.5, 0.46, g);
-        disc.rotation.x = Math.PI / 2.2;
-        const inner = this.addMesh(new THREE.TorusGeometry(0.12, 0.02, 3, 3), rune, 0, 1.5, 0.47, g);
-        inner.rotation.x = Math.PI / 2.2;
-        break;
-      }
-    }
-    this.mergeStaticGroupMeshes(g);
-  }
-
-  /** Subclasses refresh this while winding up, bracing, fusing, or committing. */
-  protected setIntentPose(amount: number): void {
-    this.intentPose = Math.max(this.intentPose, amount);
-    if (!this.lastAttackFamily) this.lastAttackFamily = ENEMY_ATTACK_FAMILY[this.kind] ?? "enemy-contact";
-    if (this.attackSegment === "loop") {
-      const phase = Math.max(0, Math.min(1, amount));
-      this.attackSegment = phase < 0.72 ? "anticipation" : "active";
-      this.attackSegmentPhase = phase < 0.72 ? phase / 0.72 : (phase - 0.72) / 0.28;
     }
   }
 
@@ -676,8 +417,19 @@ export abstract class Enemy {
       this.lastBodyDamage = 0;
       return false;
     }
-    // Warded: the boss is briefly invulnerable — deflect the hit entirely.
-    if (this.invulnTime > 0) {
+    // A committed combat guard can be shattered. Cinematic protection cannot.
+    if (this.guardBreakable && (opts.attackFamily === "charged-heavy" || opts.attackFamily === "crash")) {
+      this.interruptAttack();
+      this.onGuardBroken();
+      this.applyVulnerable(1.35, 1.35);
+      this.ctx.tempo.gain(8);
+      this.ctx.floaters.spawn(this.pos.x, this.barHeight(), this.pos.z, "GUARD BREAK", "shieldbreak");
+      this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: this.radius + 1.4, color: 0xe8c68e, duration: 0.28 });
+      this.ctx.fx.burst({ x: this.pos.x, y: 1.4, z: this.pos.z, count: 14, color: [0xe8c68e, this.wardColor], speed: [3, 8], up: 0.5, size: [0.07, 0.22], life: [0.2, 0.45], gravity: -6, drag: 3, shape: ParticleShape.shard });
+      this.ctx.cam.addTrauma(0.2);
+      this.ctx.sfx.shieldHit();
+    }
+    if (this.warded) {
       this.lastBodyDamage = 0;
       this.deflect();
       return false;
@@ -691,6 +443,7 @@ export abstract class Enemy {
     this.hitFlash = 1;
     this.hitReaction(opts);
     const kbStrength = (opts.kb ?? 0) * (opts.heavy ? 1.4 : 1) * (1 - kbResist);
+    if (this.kind !== "boss" && opts.heavy && kbStrength >= 8) this.wallSlamWindow = 0.45;
     if (kbStrength > 0) {
       const len = Math.hypot(opts.kbX ?? 0, opts.kbZ ?? 0) || 1;
       this.kb.x += ((opts.kbX ?? 0) / len) * kbStrength;
@@ -747,7 +500,7 @@ export abstract class Enemy {
   }
 
   freeze(duration: number): void {
-    this.frozen = Math.max(this.frozen, duration);
+    this.frozen = Math.max(this.frozen, this.kind === "boss" ? Math.min(0.7, duration * 0.25) : duration);
   }
 
   /** Mark this enemy Vulnerable — it takes `mult`× damage for `seconds`. */
@@ -763,13 +516,20 @@ export abstract class Enemy {
   }
 
   // ---------------------------------------------------------------- ward / invuln (bosses)
-  /** Enter a telegraphed invulnerable window — hits are deflected for `seconds`. */
-  protected setInvuln(seconds: number): void {
-    this.invulnTime = Math.max(this.invulnTime, seconds);
-  }
+  /** Combat protection belongs to the attack, so freeze cannot outlast its ward. */
+  protected raiseGuard(): void { this.combatGuard = true; }
+  get guardBreakable(): boolean { return this.combatGuard && !this.cinematicProtection; }
   get warded(): boolean {
-    return this.invulnTime > 0;
+    return this.combatGuard || this.cinematicProtection;
   }
+  holdCinematic(): void { this.cinematicProtection = true; }
+
+  /** Boss subclasses clear their queued attacks here when a phase or guard breaks. */
+  interruptAttack(): void {
+    this.cancelWarnings();
+    this.combatGuard = false;
+  }
+  protected onGuardBroken(): void {}
 
   /** Hold an enemy's brain still after materialization without showing freeze/stagger FX. */
   setSpawnGrace(seconds: number): void {
@@ -779,13 +539,6 @@ export abstract class Enemy {
   /** Cinematic handoff: the reveal itself has already supplied the safety window. */
   releaseSpawnGrace(): void {
     this.spawnGrace = 0;
-  }
-
-  /** Phase-title handoff: movement returns while the boss remains safely warded
-   * and its brain stays parked until the presentation finishes. */
-  holdPhaseRecovery(seconds: number): void {
-    this.spawnGrace = Math.max(this.spawnGrace, seconds);
-    this.setInvuln(seconds);
   }
 
   /** Feedback when a hit lands on a warded boss: a clink spark + throttled "WARDED" tag. */
@@ -804,7 +557,7 @@ export abstract class Enemy {
 
   /** A glowing ward bubble that follows the boss while it's invulnerable. */
   private updateWard(dt: number): void {
-    if (this.invulnTime <= 0 && !this.wardRing) return;
+    if (!this.warded && !this.wardRing) return;
     if (!this.wardRing) {
       const geo = new THREE.TorusGeometry(1, 0.06, 8, 32);
       geo.rotateX(-Math.PI / 2);
@@ -814,14 +567,14 @@ export abstract class Enemy {
       this.root.add(this.wardRing);
     }
     const mat = this.wardRing.material as THREE.MeshBasicMaterial;
-    if (this.invulnTime > 0) {
+    if (this.warded) {
       this.wardRing.visible = true;
       const s = this.radius * 1.9;
       this.wardRing.scale.set(s, s, s);
       this.wardRing.position.y = 1.4 + Math.sin(this.t * 5) * 0.15;
       this.wardRing.rotation.y += dt * 2;
-      mat.color.setHex(this.wardColor);
-      mat.opacity = 0.72;
+      mat.color.setHex(this.guardBreakable ? 0xe8c68e : this.wardColor);
+      mat.opacity = 0.55;
     } else {
       this.wardRing.visible = false;
     }
@@ -832,9 +585,10 @@ export abstract class Enemy {
    * Bosses fire this (usually under a ward) when their guard telegraph completes.
    */
   protected wardShock(radius: number, dmg: number, color: number): void {
+    this.combatGuard = false;
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius, color, duration: 0.5 });
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: radius * 0.5, color: 0xffffff, duration: 0.32 });
-    this.ctx.fx.burst({ x: this.pos.x, y: 0.6, z: this.pos.z, count: 30, color: [color, 0xffffff], speed: [4, 13], up: 0.8, size: [0.4, 1.1], life: [0.3, 0.8], gravity: -4, drag: 2.2 });
+    this.ctx.fx.burst({ x: this.pos.x, y: 0.6, z: this.pos.z, count: 16, color: [color, 0xe8dcc5], speed: [4, 11], up: 0.7, size: [0.08, 0.25], life: [0.2, 0.55], gravity: -5, drag: 2.2, shape: ParticleShape.shard });
     this.ctx.cam.addTrauma(0.4);
     this.ctx.stage.punch(0.3);
     const p = this.ctx.player;
@@ -897,19 +651,9 @@ export abstract class Enemy {
     }
   }
 
-  /** Volatile affix: a damaging burst when the elite dies. */
+  /** The remains keep a full warning window; killing an elite never causes an instant hit. */
   private volatileBurst(): void {
-    const R = 3.4;
-    this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R, color: 0xff7a3a, duration: 0.45 });
-    this.ctx.fx.burst({
-      x: this.pos.x, y: 1, z: this.pos.z,
-      count: 30, color: [0xff7a3a, 0xffcc66, 0xffffff], speed: [4, 13], up: 0.7, size: [0.4, 1.0], life: [0.3, 0.7], gravity: -4, drag: 2.5,
-    });
-    this.ctx.cam.addTrauma(0.22);
-    const p = this.ctx.player;
-    if (p.alive && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < R + p.radius) {
-      this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z);
-    }
+    this.ctx.enemies.warnDeathBurst(this.pos.x, this.pos.z, `enemy:${this.id}`, this.kind);
   }
 
   /** Damage-free knockback along (x, z) — pulls when pointed inward. Bosses shrug it off. */
@@ -921,14 +665,20 @@ export abstract class Enemy {
   }
 
   die(): void {
+    if (this.seam) this.seam.visible = false;
     if (!this.alive) return;
+    this.deathDuration = this.kind === "boss" ? 2.6 : 0.58;
+    this.deathT = this.deathDuration;
+    this.deathScale.copy(this.root.scale);
     this.alive = false;
+    this.warningClock.alive = false;
+    if (this.wardRing) this.wardRing.visible = false;
     if (this.affixes.includes("volatile")) this.volatileBurst();
     this.onDeath();
     this.ctx.events.emit("KILL", { x: this.pos.x, z: this.pos.z, kind: this.kind });
     const c = this.deathColor();
     this.ctx.fx.directionalBurst({
-      x: this.pos.x, y: 0.55, z: this.pos.z, count: this.kind === "boss" ? 34 : 18,
+      x: this.pos.x, y: 0.55, z: this.pos.z, count: this.kind === "boss" ? 12 : 18,
       color: [c, 0xffffff, 0x241116], dirX: Math.sin(this.heading), dirY: 0.45, dirZ: Math.cos(this.heading),
       spread: 1.35, speed: [2.5, 9], size: [0.18, 0.58], life: [0.35, 0.9], gravity: -7, drag: 3,
       shape: [ParticleShape.shard, ParticleShape.streak],
@@ -942,11 +692,21 @@ export abstract class Enemy {
   updateDeath(dt: number): boolean {
     this.deathT = Math.max(0, this.deathT - dt);
     const k = 1 - this.deathT / this.deathDuration;
-    this.root.position.set(this.pos.x, this.pos.y - k * 0.18, this.pos.z);
-    this.root.rotation.x = -k * 0.42;
-    this.root.rotation.z = Math.sin(this.id * 2.17) * k * 0.18;
-    const squash = Math.max(0.02, 1 - k);
-    this.root.scale.set(1 + k * 0.12, squash, 1 + k * 0.12);
+    const fall = Math.min(1, k / 0.72);
+    const settle = fall * fall * (3 - 2 * fall);
+    const dissolve = Math.max(0, (k - 0.72) / 0.28);
+    this.root.position.set(this.pos.x, this.pos.y - dissolve * 0.2, this.pos.z);
+    // Dead actors no longer run the normal flash update. Clear frozen/white hit
+    // materials here, then let their actual joints perform the final action.
+    for (const f of this.flashMats) {
+      f.mat.emissive.copy(f.baseEmissive);
+      f.mat.emissiveIntensity = f.baseIntensity * (1 - k) ** 2;
+    }
+    if (!this.animateDeath(dt, k)) {
+      this.root.rotation.x = -settle * 1.48;
+      this.root.rotation.z = Math.sin(this.id * 2.17) * settle * 0.2;
+    }
+    this.root.scale.copy(this.deathScale).multiplyScalar(Math.max(0.02, 1 - dissolve));
     if (this.groundGlow) (this.groundGlow.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.24;
     if (this.deathT > 0) return false;
     this.dispose();
@@ -955,11 +715,22 @@ export abstract class Enemy {
 
   protected onDeath(): void {}
 
+  /** Override for rig-specific collapse; the base owns lifetime and disposal. */
+  protected animateDeath(_dt: number, _progress: number): boolean { return false; }
+
+  protected settleDeathPart(part: THREE.Object3D, dt: number, x: number, y: number, z: number): void {
+    const k = 1 - Math.exp(-dt * 7);
+    part.rotation.x += (x - part.rotation.x) * k;
+    part.rotation.y += (y - part.rotation.y) * k;
+    part.rotation.z += (z - part.rotation.z) * k;
+  }
+
   protected deathColor(): number {
     return 0xff6644;
   }
 
   dispose(): void {
+    this.warningClock.alive = false;
     this.ctx.stage.scene.remove(this.root);
     if (this.groundGlow) {
       this.ctx.stage.scene.remove(this.groundGlow);
@@ -990,154 +761,160 @@ export abstract class Enemy {
     return false;
   }
 
-  /** Allocation-free presentation state for deterministic scenario probes. */
-  visualState(out: ActorVisualState): ActorVisualState {
-    const reacting = this.reactT > 0 || this.impactHold > 0;
-    const intent = Math.max(0, Math.min(1, this.intentPose));
-    out.actorId = `enemy:${this.id}`;
-    out.actorKind = this.kind;
-    out.action = !this.alive ? "death" : reacting ? (this.reactDur >= 0.23 ? "stagger" : "hit") : intent > 0.05 ? "attack1" : this.gaitAmt > 0.08 ? "move" : "idle";
-    out.phase = reacting ? 1 - Math.max(this.reactT, this.impactHold) / Math.max(0.001, this.reactDur) : intent;
-    out.segment = reacting ? "recovery" : intent > 0.05 ? this.attackSegment : "loop";
-    out.segmentPhase = reacting ? Math.max(0, Math.min(1, out.phase)) : intent > 0.05 ? this.attackSegmentPhase : 0;
-    out.attackFamily = this.lastAttackFamily;
-    out.speed = this.gaitAmt;
-    out.moveX = 0;
-    out.moveZ = this.gaitAmt;
-    out.facing = this.heading;
-    out.reaction = reacting ? 1 : 0;
-    out.frozen = this.frozen > 0;
-    out.alive = this.alive;
-    return out;
+  private cinematicParts: { node: THREE.Object3D; rest: THREE.Euler }[] = [];
+  private cinematicStyle: "arms" | "orbit" | "mantle" = "arms";
+  private cinematicAction = "";
+  private cinematicTime = 0;
+  private cinematicRest: { node: THREE.Object3D; position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 }[] = [];
+
+  /** A boss can author its own performance using its actual joints. */
+  protected animateCinematic(_action: string, _time: number, _dt: number): boolean { return false; }
+  protected restoreCinematicPose(): void {}
+
+  protected bindCinematicParts(parts: THREE.Object3D[], style: "arms" | "orbit" | "mantle" = "arms"): void {
+    this.cinematicParts = parts.map(node => ({ node, rest: node.rotation.clone() }));
+    this.cinematicStyle = style;
   }
 
-  protected setAttackPresentation(family: AttackFamily, phase: number, segment?: ActionSegment): void {
-    this.lastAttackFamily = family;
-    this.attackSegment = segment ?? (phase < 0.62 ? "anticipation" : "active");
-    this.attackSegmentPhase = Math.max(0, Math.min(1, segment ? phase : phase < 0.62 ? phase / 0.62 : (phase - 0.62) / 0.38));
-    this.setIntentPose(phase);
-  }
-
-  /** Presentation-only boss performance. Authoritative position and AI state are
-   * untouched; the cue is folded into the rendered root pose. */
-  performCinematic(action: "drop" | "land" | "drag" | "roar" | "phase" | "last-stand"): void {
-    this.lastAttackFamily = "boss";
+  /** Pose the actual articulated rig, independently of the frozen combat brain. */
+  performCinematic(action: Exclude<Extract<CinematicBeat,{type:"boss-action"}>["action"],"gate">): void {
+    if (!this.cinematicAction) this.cinematicRest = this.cinematicParts.map(({node})=>({node,position:node.position.clone(),rotation:node.rotation.clone(),scale:node.scale.clone()}));
+    this.root.visible = true;
+    this.cinematicAction = action;
+    this.cinematicTime = 0;
     if (action === "drop") {
       this.cinematicYOffset = 7;
-      this.cinematicTargetY = 7;
-      this.poseRear = -0.18; this.poseLunge = 0; this.poseSwell = 0.08;
-    } else if (action === "land") {
       this.cinematicTargetY = 0;
-      this.poseRear = 0.18; this.poseLunge = 0.2; this.poseSwell = 0.13;
+    } else if (action === "land") {
+      this.cinematicYOffset = this.cinematicTargetY = 0;
       this.arrivalPop();
-    } else if (action === "drag") {
-      this.poseRear = 0; this.poseLunge = 0.28; this.poseSwell = 0.05;
-    } else if (action === "roar") {
-      this.poseRear = 0.24; this.poseLunge = 0; this.poseRise = 0.18; this.poseSwell = 0.1;
-    } else if (action === "last-stand") {
-      this.poseRear = 0.3; this.poseLunge = 0; this.poseRise = 0.12; this.poseSwell = 0.18;
-    } else {
-      this.poseRear = 0.18; this.poseLunge = 0; this.poseRise = 0.08; this.poseSwell = 0.12;
     }
   }
 
-  update(dt: number): void {
+  private updateCinematicPose(dt: number): void {
+    if (!this.cinematicAction) return;
+    this.cinematicTime += dt;
+    if (this.animateCinematic(this.cinematicAction, this.cinematicTime, dt)) return;
+    const k = Math.min(1, this.cinematicTime / 0.7);
+    const ease = k * k * (3 - 2 * k);
+    const landing = this.cinematicAction === "land";
+    const drag = this.cinematicAction === "drag";
+    const falling = this.cinematicAction === "drop";
+    const open = landing ? 0.25 * (1 - ease) : falling ? 0.35 : drag ? 0.35 + 0.25 * ease : ease;
+    this.poseRear = landing ? 0.2 * (1 - ease) : -0.06 * open;
+    this.poseLunge = drag ? 0.12 : 0;
+    this.poseRise = 0;
+    this.poseSwell = 0;
+    this.cinematicParts.forEach(({ node, rest }, i) => {
+      const side = i % 2 ? 1 : -1;
+      if (this.cinematicStyle === "arms") {
+        const roar = this.cinematicAction === "roar" || this.cinematicAction === "last-stand";
+        node.rotation.set(rest.x - open * (drag && i % 2 ? 0.3 : roar ? 1.15 : 2.05), rest.y + side * open * 0.18, rest.z + side * open * (roar ? 0.9 : 0.38));
+      } else if (this.cinematicStyle === "orbit") {
+        node.rotation.set(rest.x + side * open * 0.38, rest.y + this.cinematicTime * (0.18 + i * 0.035), rest.z + open * 0.22);
+      } else {
+        node.rotation.set(rest.x - open * 0.24, rest.y, rest.z + side * open * 0.26);
+      }
+    });
+  }
+
+  finishCinematic(): void {
+    this.cinematicProtection = false;
+    this.root.visible = true;
+    this.cinematicAction = "";
+    for (const pose of this.cinematicRest) {
+      pose.node.position.copy(pose.position);pose.node.rotation.copy(pose.rotation);pose.node.scale.copy(pose.scale);
+    }
+    this.cinematicRest.length=0;
+    this.restoreCinematicPose();
+    this.cinematicYOffset = this.cinematicTargetY = 0;
+    this.poseRear = this.poseLunge = this.poseRise = this.poseSwell = 0;
+    this.releaseSpawnGrace();
+  }
+
+  update(dt: number, simulate = true): void {
     if (!this.alive) return;
-    this.t += dt;
+    if (simulate) this.t += dt;
     this.cinematicYOffset += (this.cinematicTargetY - this.cinematicYOffset) * Math.min(1, dt * (this.cinematicTargetY === 0 ? 13 : 8));
-    if (this.impactHold > 0) this.impactHold = Math.max(0, this.impactHold - dt);
-    else this.reactT = Math.max(0, this.reactT - dt);
-    this.contactCd -= dt;
-    if (this.vulnTime > 0) this.vulnTime -= dt;
-    if (this.invulnTime > 0) this.invulnTime -= dt;
-    if (this.deflectCd > 0) this.deflectCd -= dt;
-    if (this.invulnTime > 0 || this.wardRing) this.updateWard(dt);
-    if (this.affixes.length) this.updateAffix(dt);
-    if (this.affixCrown) {
-      this.affixCrown.rotation.y += dt * 1.7;
-      this.affixCrown.position.y = Math.sin(this.t * 3) * 0.045;
-    }
-
-    this.stagger = Math.max(0, this.stagger - dt);
-    if (this.frozen > 0) {
-      this.frozen -= dt;
-      for (const f of this.flashMats) {
-        f.mat.emissive.set(0x5599ff);
-        f.mat.emissiveIntensity = 1.0;
+    if (simulate) {
+      this.unravel.update(dt);
+      if (this.impactHold > 0) this.impactHold = Math.max(0, this.impactHold - dt);
+      else this.reactT = Math.max(0, this.reactT - dt);
+      if (this.vulnTime > 0) this.vulnTime -= dt;
+      if (this.deflectCd > 0) this.deflectCd -= dt;
+      if (this.warded || this.wardRing) this.updateWard(dt);
+      if (this.affixes.length) this.updateAffix(dt);
+      if (this.affixCrown) {
+        this.affixCrown.rotation.y += dt * 1.7;
+        this.affixCrown.position.y = Math.sin(this.t * 3) * 0.045;
       }
-    } else {
-      // Purely dt-accumulated — a wall-clock (performance.now) backstop made the
-      // AI-start frame nondeterministic under the frame-stepper (the golden-trace
-      // caught it as a frame-0 divergence). The frame loop clamps dt (≤0.05), so
-      // dt alone can't strand an enemy in grace.
-      if (this.spawnGrace > 0) this.spawnGrace = Math.max(0, this.spawnGrace - dt);
-      // Spawn grace/stagger interrupt the brain (no blue tint) but the body still flashes/settles.
-      if (this.stagger <= 0 && this.spawnGrace <= 0) this.tick(dt);
-      // Hit flash: spike emissive to white, settle back
-      this.hitFlash = Math.max(0, this.hitFlash - dt * 7);
-      const vulnGlow = this.vulnTime > 0 ? 0.36 : 0;
-      for (const f of this.flashMats) {
-        this.emissiveScratch.copy(f.baseEmissive);
-        if (vulnGlow > 0) this.emissiveScratch.lerp(this.vulnColor, vulnGlow);
-        // Keep the actor's material identity through a hit. The pooled ImpactCue
-        // already owns the tiny white contact core; whitening every enemy material
-        // at once turned readable directional reactions into a featureless cutout.
-        const localFlash = this.hitFlash * 0.58;
-        f.mat.emissive.copy(this.emissiveScratch).lerp(this.flashWhite, localFlash);
-        f.mat.emissiveIntensity = f.baseIntensity + this.hitFlash * 1.35;
+
+      this.stagger = Math.max(0, this.stagger - dt);
+      if (this.frozen > 0) {
+        this.frozen -= dt;
+        for (const f of this.flashMats) {
+          f.mat.emissive.set(0x5599ff);
+          f.mat.emissiveIntensity = 1.0;
+        }
+      } else {
+        // Let each enemy author its charge glow before adding the hit reaction.
+        // Restoring the resting palette after tick erased the visible wind-up.
+        for (const f of this.flashMats) {
+          f.mat.emissive.copy(f.baseEmissive);
+          f.mat.emissiveIntensity = f.baseIntensity;
+        }
+        // Arrival grace follows game time, including pauses.
+        if (this.spawnGrace > 0) this.spawnGrace = Math.max(0, this.spawnGrace - dt);
+        // Spawn grace/stagger interrupt the brain (no blue tint) but the body still flashes/settles.
+        if (this.stagger <= 0 && this.spawnGrace <= 0) {
+          this.warningClock.time += dt;
+          this.tick(dt);
+        }
+        // Hit flash: spike emissive to white, settle back
+        this.hitFlash = Math.max(0, this.hitFlash - dt * 7);
+        const vulnGlow = this.vulnTime > 0 ? 0.36 : 0;
+        for (const f of this.flashMats) {
+          this.emissiveScratch.copy(f.mat.emissive);
+          if (vulnGlow > 0) this.emissiveScratch.lerp(this.vulnColor, vulnGlow);
+          // Keep the actor's material identity through a hit. The pooled ImpactCue
+          // already owns the tiny white contact core; whitening every enemy material
+          // at once turned readable directional reactions into a featureless cutout.
+          const localFlash = this.hitFlash * 0.58;
+          f.mat.emissive.copy(this.emissiveScratch).lerp(this.flashWhite, localFlash);
+          f.mat.emissiveIntensity = Math.min(2.4, f.mat.emissiveIntensity + this.hitFlash * 0.9);
+        }
       }
-    }
 
-    const intent = this.intentPose;
-    for (const r of this.roleSilhouettes) {
-      const g = r.group;
-      const beat = Math.sin(this.t * 5.2 + this.id * 0.7);
-      g.position.y = beat * 0.018 + intent * 0.065;
-      g.rotation.x = 0;
-      g.rotation.z = 0;
-      g.scale.setScalar(1);
-      if (r.kind === "charger") {
-        g.rotation.x = -intent * 0.36;
-        g.position.z = intent * 0.18;
-        g.scale.set(1 + intent * 0.06, 1 - intent * 0.08, 1 + intent * 0.18);
-      } else if (r.kind === "caster") {
-        g.rotation.y += dt * (0.8 + intent * 3.2);
-        g.scale.setScalar(1 + intent * 0.16 + Math.max(0, beat) * 0.025);
-      } else if (r.kind === "bomber") {
-        const swell = 1 + intent * 0.18 + Math.max(0, beat) * intent * 0.05;
-        g.scale.set(swell, 1 + intent * 0.1, swell);
-      } else if (r.kind === "shield") {
-        g.position.z = intent * 0.12;
-        g.scale.set(1 + intent * 0.14, 1 + intent * 0.04, 1 + intent * 0.08);
-      } else if (r.kind === "flier") {
-        g.position.y += Math.sin(this.t * 7 + this.id) * 0.055 + intent * 0.08;
-        g.rotation.z = Math.sin(this.t * 4.5) * 0.08;
-      } else if (r.kind === "void") {
-        g.rotation.y += dt * (0.45 + intent * 1.8);
-        g.scale.setScalar(1 + intent * 0.12);
-      } else if (r.kind === "swarm") {
-        g.rotation.y += dt * 2.4;
-        g.scale.setScalar(1 + Math.max(0, beat) * 0.08);
+      // Knockback decay
+      this.wallSlamWindow = Math.max(0, this.wallSlamWindow - dt);
+      const impactSpeed = this.kb.length();
+      this.pos.x += this.kb.x * dt;
+      this.pos.z += this.kb.y * dt;
+      this.kb.multiplyScalar(Math.exp(-6 * dt));
+      const unblockedX = this.pos.x, unblockedZ = this.pos.z;
+
+      // Bounds
+      const r = Math.hypot(this.pos.x, this.pos.z);
+      const maxR = ARENA_RADIUS - this.radius;
+      if (r > maxR) {
+        this.pos.x *= maxR / r;
+        this.pos.z *= maxR / r;
       }
-    }
-    this.intentPose = Math.max(0, this.intentPose - dt * 5.5);
-    if (this.intentPose <= 0) { this.lastAttackFamily = null; this.attackSegment = "loop"; this.attackSegmentPhase = 0; }
+      // Pillars block everything smaller than a boss (airborne leaps excluded)
+      if (this.kind !== "boss" && this.pos.y < 1) {
+        this.ctx.arena.resolveObstacles(this.pos, this.radius);
+      }
+      if (this.wallSlamWindow > 0 && impactSpeed > 3 && Math.hypot(this.pos.x-unblockedX,this.pos.z-unblockedZ) > 0.015) {
+        this.wallSlamWindow = 0;
+        this.kb.set(0,0);
+        this.stagger = Math.max(this.stagger,0.45);
+        this.ctx.combat.dealDamage(this,10,{noDetonate:true});
+        this.ctx.floaters.spawn(this.pos.x,2.1,this.pos.z,"WALL BREAK","crit");
+        this.ctx.fx.burst({x:this.pos.x,y:0.75,z:this.pos.z,count:9,color:[0xc3b08c,0x827c70],speed:[2,6],up:0.6,size:[0.07,0.2],life:[0.18,0.4],gravity:-7,drag:3,shape:ParticleShape.shard});
+        this.ctx.cam.addTrauma(0.12);
+        if (!this.alive) return;
+      }
 
-    // Knockback decay
-    this.pos.x += this.kb.x * dt;
-    this.pos.z += this.kb.y * dt;
-    this.kb.multiplyScalar(Math.exp(-6 * dt));
-
-    // Bounds
-    const r = Math.hypot(this.pos.x, this.pos.z);
-    const maxR = ARENA_RADIUS - this.radius * 0.5;
-    if (r > maxR) {
-      this.pos.x *= maxR / r;
-      this.pos.z *= maxR / r;
-    }
-    // Pillars block everything smaller than a boss (airborne leaps excluded)
-    if (this.kind !== "boss" && this.pos.y < 1) {
-      this.ctx.arena.resolveObstacles(this.pos, this.radius);
     }
 
     // Stepping gait: advance the walk phase by ACTUAL ground distance moved so the
@@ -1165,6 +942,7 @@ export abstract class Enemy {
       if (this.eruptT === 0) this.eruptList.length = 0;
     }
 
+    this.updateCinematicPose(dt);
     const reactK = this.impactHold > 0 ? 0.5 : this.reactDur > 0 ? this.reactT / this.reactDur : 0;
     const reactEase = Math.sin(Math.max(0, Math.min(1, reactK)) * Math.PI);
     this.root.position.set(this.pos.x, this.pos.y + this.cinematicYOffset + this.reactLift * reactEase + this.poseRise, this.pos.z);
@@ -1185,11 +963,10 @@ export abstract class Enemy {
     // Ground-contact glow tracks the body on the floor (grounds it, lifts it off the dark).
     this.ensureGroundGlow();
     if (this.groundGlow) {
-      const isBoss = this.kind === "boss";
       this.groundGlow.position.set(this.pos.x, 0.03, this.pos.z);
       const gm = this.groundGlow.material as THREE.MeshBasicMaterial;
-      const glowBase = isBoss ? 0.42 : 0.26;
-      gm.opacity = (this.frozen > 0 ? 0.12 : glowBase) + this.hitFlash * 0.3;
+      const glowBase = 0.045;
+      gm.opacity = (this.frozen > 0 ? 0.06 : glowBase) + this.hitFlash * 0.14;
     }
 
     // Ambient boss presence: a slow drift of embers rising off the body, in its
@@ -1208,6 +985,26 @@ export abstract class Enemy {
           life: [0.7, 1.4], gravity: 0.25, drag: 1.1, jitter: 0.6,
         });
       }
+    }
+
+    // A split ivory diamond is a gameplay opening, distinct from red attack warnings.
+    if (this.unravel.exposed > 0 && !this.seam) {
+      this.seam = new THREE.Group();
+      for (const side of [-1, 1]) {
+        const mat = new THREE.MeshBasicMaterial({ color: 0xffe0a3, transparent: true, depthWrite: false, depthTest: false });
+        const slash = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.48, 0.045), mat);
+        slash.position.x = side * 0.13;
+        slash.rotation.z = side * -0.42;
+        slash.renderOrder = 40;
+        this.seam.add(slash);
+      }
+      this.root.add(this.seam);
+    }
+    if (this.seam) {
+      this.seam.visible = this.unravel.exposed > 0;
+      this.seam.position.set(0, this.barHeight() + 0.48, 0);
+      this.seam.quaternion.copy(this.root.quaternion).invert().multiply(this.ctx.stage.camera.quaternion);
+      this.seam.scale.setScalar(0.8 + Math.min(1, this.unravel.exposed) * 0.2);
     }
 
     // HP bar — bosses use the dedicated top-of-screen bar, so suppress the overhead one.
@@ -1250,9 +1047,14 @@ export abstract class Enemy {
     const d = Math.hypot(dx, dz);
     if (d > 0.05) {
       const sp = this.speed * speedScale * this.affixSpeedMult * (this.kind === "boss" ? 1 : this.ctx.difficulty.enemySpeedMult);
-      this.pos.x += (dx / d) * sp * dt;
-      this.pos.z += (dz / d) * sp * dt;
-      this.heading = dampAngle(this.heading, Math.atan2(dx, dz), 8, dt);
+      const target = pursuitTarget(this.pos.x, this.pos.z, tx, tz, this.radius, this.ctx.arena.obstacles, this.id % 2 ? 1 : -1);
+      this.ctx.arena.boundary?.resolve(target,this.radius+.1);
+      const sx = target.x - this.pos.x, sz = target.z - this.pos.z;
+      const steerDistance = Math.hypot(sx, sz) || 1;
+      const step = Math.min(d, sp * dt);
+      this.pos.x += (sx / steerDistance) * step;
+      this.pos.z += (sz / steerDistance) * step;
+      this.heading = dampAngle(this.heading, Math.atan2(sx, sz), 8, dt);
     }
     return d;
   }
@@ -1267,15 +1069,6 @@ export abstract class Enemy {
     return Math.hypot(p.x - this.pos.x, p.z - this.pos.z);
   }
 
-  protected tryContactDamage(range = 0.45): void {
-    if (this.contactDmg <= 0 || this.contactCd > 0) return;
-    const p = this.ctx.player;
-    if (this.distToPlayer() < this.radius + p.radius + range) {
-      if (this.ctx.combat.damagePlayer(this.contactDmg, this.pos.x, this.pos.z) !== "dodged") {
-        this.contactCd = 0.9;
-      }
-    }
-  }
 }
 
 // ---------------------------------------------------------------- Husk
@@ -1286,6 +1079,8 @@ export class Husk extends Enemy {
   private timer = 0;
   private lungeDir = new THREE.Vector2();
   private struck = false;
+  private lungeLeft = 0;
+  override get anchored(): boolean { return this.state === "windup" || this.state === "lunge"; }
   private eyeMat: THREE.MeshStandardMaterial;
 
   constructor(ctx: Ctx, x: number, z: number) {
@@ -1293,50 +1088,8 @@ export class Husk extends Enemy {
     this.hp = this.maxHp = 30;
     this.speed = 3.4;
     this.radius = 0.55;
-    this.addRoleSilhouette("charger", 0xff5533);
-
-    const bodyMat = this.stdMat(0x4a1f24, 0x771111, 0.25);
-    const boneMat = this.stdMat(0x8a7766);
-    this.eyeMat = this.stdMat(0x000000, 0xff4422, 2.5);
-
-    const torso = this.addMesh(new THREE.BoxGeometry(0.8, 0.7, 0.7), bodyMat, 0, 0.75);
-    torso.rotation.x = 0.35;
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.4, 0.45), bodyMat, 0, 1.15, 0.35); // head
-    this.addMesh(new THREE.BoxGeometry(0.1, 0.08, 0.06), this.eyeMat, -0.12, 1.2, 0.59);
-    this.addMesh(new THREE.BoxGeometry(0.1, 0.08, 0.06), this.eyeMat, 0.12, 1.2, 0.59);
-    // Gaping bone jaw with a row of teeth
-    this.addMesh(new THREE.BoxGeometry(0.42, 0.12, 0.3), boneMat, 0, 1.0, 0.42);
-    for (let i = 0; i < 4; i++) {
-      const tooth = this.addMesh(new THREE.ConeGeometry(0.035, 0.13, 4), boneMat, (i - 1.5) * 0.1, 1.04, 0.55);
-      tooth.rotation.x = Math.PI;
-    }
-    // Exposed collar-bone ribs across the chest
-    this.addMesh(new THREE.BoxGeometry(0.6, 0.07, 0.07), boneMat, 0, 0.92, 0.34);
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.07, 0.07), boneMat, 0, 0.78, 0.36);
-    // Bone spikes along the back
-    for (let i = 0; i < 3; i++) {
-      const sp = this.addMesh(new THREE.ConeGeometry(0.09, 0.4 - i * 0.07, 4), boneMat, 0, 1.05 - i * 0.2, -0.25 - i * 0.16);
-      sp.rotation.x = -0.5;
-    }
-    this.legL = this.addLeg(0.22, 0.5, 0.25, bodyMat, -0.25, 0.25, 0);
-    this.legR = this.addLeg(0.22, 0.5, 0.25, bodyMat, 0.25, 0.25, 0);
-    // Jagged bone shards bursting from the shoulders
-    const shl = this.addMesh(new THREE.ConeGeometry(0.08, 0.32, 4), boneMat, -0.4, 1.05, 0);
-    shl.rotation.z = 0.8;
-    const shr = this.addMesh(new THREE.ConeGeometry(0.08, 0.32, 4), boneMat, 0.4, 1.05, 0);
-    shr.rotation.z = -0.8;
-    // Gaunt skeletal arms reaching forward — the grasping dead. Asymmetric heights
-    // give the risen corpse a lurching, broken posture (not a tidy soldier).
-    for (const [sx, sh] of [[-1, 0.0], [1, -0.12]] as const) {
-      const upper = this.addMesh(new THREE.BoxGeometry(0.15, 0.15, 0.42), bodyMat, sx * 0.42, 0.92 + sh, 0.18);
-      upper.rotation.set(0.5, sx * 0.2, 0);
-      this.addMesh(new THREE.BoxGeometry(0.12, 0.12, 0.46), boneMat, sx * 0.5, 0.74 + sh, 0.52);
-      for (let i = 0; i < 3; i++) { // clawing fingers
-        const claw = this.addMesh(new THREE.ConeGeometry(0.028, 0.17, 4), boneMat, sx * 0.5 + (i - 1) * 0.07, 0.7 + sh, 0.76);
-        claw.rotation.x = Math.PI / 2;
-      }
-    }
-    this.mergeStaticRootMeshes();
+    const rig = forgeHusk(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.eyeMat = rig.eyeMat; this.legL = rig.legL; this.legR = rig.legR;
   }
 
   protected deathColor(): number {
@@ -1346,7 +1099,7 @@ export class Husk extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
-    this.pos.y = Math.abs(Math.sin(this.t * 5)) * 0.07 * (this.state === "chase" ? 1 : 0);
+    this.pos.y = 0;
     this.drivePose(dt,
       this.state === "windup" ? { rear: 0.18, rise: -0.04, swell: 0.04 }
         : this.state === "lunge" ? { lunge: 0.31, rise: 0.03 }
@@ -1356,7 +1109,7 @@ export class Husk extends Enemy {
     switch (this.state) {
       case "chase": {
         const d = this.seek(p.pos.x, p.pos.z, dt);
-        if (d < 2.4) {
+        if (d < 2.4 && this.commitMelee(.82)) {
           this.state = "windup";
           this.timer = 0.45;
           this.struck = false;
@@ -1364,43 +1117,52 @@ export class Husk extends Enemy {
           const dz = p.pos.z - this.pos.z;
           const len = Math.hypot(dx, dz) || 1;
           this.lungeDir.set(dx / len, dz / len);
-          // Covers the lunge's moving strike zone (~1.75 around the husk over ~2.2m travel)
-          this.ctx.tele.circle(this.pos.x + this.lungeDir.x * 1.5, this.pos.z + this.lungeDir.y * 1.5, 1.7, 0.45);
-          this.eyeMat.emissiveIntensity = 5;
+          this.warnLine(this.pos.x, this.pos.z, Math.atan2(this.lungeDir.x, this.lungeDir.y), 3.25, 2, 0.45);
+          this.eyeMat.emissiveIntensity = 1.7;
         }
         break;
       }
       case "windup":
-        this.setAttackPresentation("husk-lunge", 1 - Math.max(0, this.timer) / 0.45, "anticipation");
-        this.root.scale.set(1.08, 0.86, 1.18);
-        this.facePlayer(dt);
+        this.kb.set(0, 0);
+        this.heading = Math.atan2(this.lungeDir.x, this.lungeDir.y);
         if (this.timer <= 0) {
-          this.root.scale.set(1, 1, 1);
           this.state = "lunge";
           this.timer = 0.22;
-          this.kb.x += this.lungeDir.x * 13;
-          this.kb.y += this.lungeDir.y * 13;
+          this.lungeLeft = 2.25;
           this.ctx.sfx.enemyLunge();
         }
         break;
-      case "lunge":
-        this.setAttackPresentation("husk-lunge", 1 - Math.max(0, this.timer) / 0.22, "active");
-        this.root.scale.set(0.96, 1.04, 1.16);
-        if (!this.struck && this.distToPlayer() < this.radius + p.radius + 0.7) {
-          this.struck = true;
-          this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z, {
-            sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "husk-lunge",
-          });
+      case "lunge": {
+        this.kb.set(0, 0);
+        const distance = Math.min(this.lungeLeft, dt * 12);
+        const steps = Math.max(1, Math.ceil(distance / 0.2)), step = distance / steps;
+        for (let i = 0; i < steps; i++) {
+          const oldX = this.pos.x, oldZ = this.pos.z;
+          this.pos.x += this.lungeDir.x * step; this.pos.z += this.lungeDir.y * step;
+          const radius = Math.hypot(this.pos.x, this.pos.z), limit = ARENA_RADIUS - this.radius;
+          if (radius > limit) { this.pos.x *= limit / radius; this.pos.z *= limit / radius; }
+          this.ctx.arena.resolveObstacles(this.pos, this.radius);
+          const dx = this.pos.x - oldX, dz = this.pos.z - oldZ, lengthSq = dx * dx + dz * dz;
+          const along = lengthSq > 0 ? Math.max(0, Math.min(1, ((p.pos.x - oldX) * dx + (p.pos.z - oldZ) * dz) / lengthSq)) : 0;
+          const hitDistance = Math.hypot(p.pos.x - oldX - dx * along, p.pos.z - oldZ - dz * along);
+          if (!this.struck && hitDistance < this.radius + p.radius + 0.45
+            && !this.ctx.arena.blocksSegment(this.pos.x, this.pos.z, p.pos.x, p.pos.z)) {
+            this.struck = true;
+            this.ctx.combat.damagePlayer(12, this.pos.x, this.pos.z, {
+              sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "husk-lunge",
+            });
+          }
+          this.lungeLeft -= step;
+          if (dx * this.lungeDir.x + dz * this.lungeDir.y < step * 0.8) { this.lungeLeft = 0; break; }
         }
-        if (this.timer <= 0) {
+        if (this.timer <= 0 || this.lungeLeft <= 0.001) {
           this.state = "recover";
           this.timer = 0.75;
-          this.eyeMat.emissiveIntensity = 2.5;
+          this.eyeMat.emissiveIntensity = 1.1;
         }
         break;
+      }
       case "recover":
-        this.setAttackPresentation("husk-lunge", 1 - Math.max(0, this.timer) / 0.75, "recovery");
-        this.root.scale.set(1, 1, 1);
         if (this.timer <= 0) this.state = "chase";
         break;
     }
@@ -1424,31 +1186,8 @@ export class Spitter extends Enemy {
     this.hp = this.maxHp = 22;
     this.speed = 2.6;
     this.radius = 0.5;
-    this.addRoleSilhouette("caster", 0xff6a54);
-
-    const robeMat = this.stdMat(0x1c2a4a, 0x223a88, 0.3);
-    const trimMat = this.stdMat(0x2e447a, 0x3366cc, 0.7);
-    const eyeMat = this.stdMat(0x000000, 0xff6a54, 2.6);
-    this.orbMat = this.stdMat(0x321318, 0xff5f48, 2.2);
-    this.addMesh(new THREE.ConeGeometry(0.5, 1.5, 6), robeMat, 0, 0.75);
-    // Hem ring + a glowing seam up the robe
-    const hem = this.addMesh(new THREE.TorusGeometry(0.46, 0.05, 6, 12), trimMat, 0, 0.18);
-    hem.rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.BoxGeometry(0.07, 1.0, 0.07), trimMat, 0, 0.85, 0.45);
-    // Cowl: cone hood with a recessed face and twin socket eyes
-    const hood = this.addMesh(new THREE.ConeGeometry(0.3, 0.5, 6), robeMat, 0, 1.65);
-    hood.rotation.x = 0.18;
-    this.addMesh(new THREE.SphereGeometry(0.2, 8, 6), robeMat, 0, 1.55, 0.04);
-    this.addMesh(new THREE.SphereGeometry(0.045, 6, 5), eyeMat, -0.08, 1.58, 0.18);
-    this.addMesh(new THREE.SphereGeometry(0.045, 6, 5), eyeMat, 0.08, 1.58, 0.18);
-    // Outstretched casting arm cradling the orb
-    const arm = this.addMesh(new THREE.CylinderGeometry(0.06, 0.05, 0.55, 5), robeMat, 0.12, 1.3, 0.4);
-    arm.rotation.set(Math.PI / 2.4, 0, -0.3);
-    this.orb = this.addMesh(new THREE.SphereGeometry(0.16, 10, 8), this.orbMat, 0, 1.25, 0.55);
-    // Faint orbiting shard around the orb
-    const shard = this.addMesh(new THREE.OctahedronGeometry(0.06), trimMat, 0.22, 1.25, 0.55);
-    shard.rotation.set(0.5, 0.5, 0);
-    this.mergeStaticRootMeshes([this.orb]);
+    const rig = forgeSpitter(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.orb = rig.orb; this.orbMat = rig.orbMat;
   }
 
   protected deathColor(): number {
@@ -1466,7 +1205,6 @@ export class Spitter extends Enemy {
 
     // Kite band 8–12, strafe inside it
     if (this.windup < 0) {
-      if (this.recoil > 0) this.setAttackPresentation("spitter-bolt", 1 - this.recoil / 0.18, "recovery");
       if (d < 7.5) this.seek(this.pos.x * 2 - p.pos.x, this.pos.z * 2 - p.pos.z, dt, 0.9);
       else if (d > 12) this.seek(p.pos.x, p.pos.z, dt);
       else {
@@ -1483,10 +1221,9 @@ export class Spitter extends Enemy {
         // Lock the shot angle NOW and draw the lane so the player can read + dodge it
         // (fairness contract — every enemy attack telegraphs), like Wisp/Tether do.
         this.lockedAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 16, 0.5, 0.38, 0xff6a54);
+        this.warnLine(this.pos.x, this.pos.z, this.lockedAngle, 16, 0.5, 0.38, 0xff6a54);
       }
     } else {
-      this.setAttackPresentation("spitter-bolt", 1 - Math.max(0, this.windup) / 0.38, "anticipation");
       this.windup -= dt;
       this.orbMat.emissiveIntensity = 2.2 + (0.38 - this.windup) * 9;
       this.orb.scale.setScalar(1 + (0.38 - this.windup) * 1.6);
@@ -1511,33 +1248,17 @@ export class Spitter extends Enemy {
 export class Swarmer extends Enemy {
   readonly kind: EnemyKind = "swarmer";
   private phase = this.ctx.rng.next() * TAU;
+  private skitterLegs: THREE.Group[] = [];
+  private biteTime = -1;
+  private biteCooldown = 0;
+  override get anchored(): boolean { return this.biteTime >= 0; }
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 12;
     this.speed = 5.4;
     this.radius = 0.35;
-    this.contactDmg = 6;
-    this.addRoleSilhouette("swarm", 0xff7733);
-
-    const bodyMat = this.stdMat(0x3a1410, 0xff5511, 0.8);
-    const coreMat = this.stdMat(0x1a0805, 0xff8822, 2.4);
-    const spikeMat = this.stdMat(0x221111);
-    this.addMesh(new THREE.IcosahedronGeometry(0.32, 0), bodyMat, 0, 0.4);
-    // A single furious ember eye glaring forward
-    this.addMesh(new THREE.SphereGeometry(0.12, 8, 6), coreMat, 0, 0.42, 0.26);
-    // Snapping mandibles below the eye
-    const jl = this.addMesh(new THREE.ConeGeometry(0.05, 0.22, 4), spikeMat, -0.08, 0.3, 0.28);
-    jl.rotation.set(1.3, 0, 0.3);
-    const jr = this.addMesh(new THREE.ConeGeometry(0.05, 0.22, 4), spikeMat, 0.08, 0.3, 0.28);
-    jr.rotation.set(1.3, 0, -0.3);
-    // Crown of back spikes, spread wider for a bristling silhouette
-    for (let i = 0; i < 4; i++) {
-      const sp = this.addMesh(new THREE.ConeGeometry(0.05, 0.3, 4), spikeMat, 0, 0.6, -0.05);
-      sp.rotation.z = (i - 1.5) * 0.45;
-      sp.position.x = (i - 1.5) * 0.13;
-    }
-    this.mergeStaticRootMeshes();
+    this.skitterLegs = forgeSwarmer(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
   }
 
   protected deathColor(): number {
@@ -1557,49 +1278,49 @@ export class Swarmer extends Enemy {
     const jit = Math.sin(this.t * 6 + this.phase) * 0.8;
     const tx = p.pos.x + (-dz / d) * jit;
     const tz = p.pos.z + (dx / d) * jit;
-    this.seek(tx, tz, dt);
-    this.pos.y = Math.abs(Math.sin(this.t * 9 + this.phase)) * 0.12;
-    this.tryContactDamage();
+    this.biteCooldown = Math.max(0, this.biteCooldown - dt);
+    if (this.biteTime >= 0) {
+      this.kb.set(0, 0);
+      this.biteTime -= dt;
+      if (this.biteTime <= 0) {
+        this.biteTime = -1;
+        this.biteCooldown = .95;
+        this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: .85, color: 0xd99669, duration: .16 });
+        if (this.distToPlayer() < .85 + p.radius && !this.ctx.arena.blocksSegment(this.pos.x, this.pos.z, p.pos.x, p.pos.z)) {
+          this.ctx.combat.damagePlayer(6, this.pos.x, this.pos.z, { sourceId: `enemy:${this.id}`, sourceKind: this.kind, attackFamily: "swarmer-bite" });
+        }
+      }
+    } else if (d < 1.3 && this.biteCooldown <= 0 && this.commitMelee(.5)) {
+      this.biteTime = .36;
+      this.warnCircle(this.pos.x, this.pos.z, .85, .36, 0xff7755);
+      this.facePlayer(dt * 4);
+    } else if (d > 1.15) this.seek(tx, tz, dt, this.biteCooldown > .65 ? .4 : 1);
+    this.pos.y = 0;
+    this.drivePose(dt, this.biteTime >= 0 ? { rear: .27, rise: .05 } : this.biteCooldown > .72 ? { lunge: .2 } : {}, 18);
+    for (let i=0;i<this.skitterLegs.length;i++) {
+      const side=i<3?-1:1,phase=this.t*(this.biteTime>=0?3:18)+(i%3)*2.1+(side>0?Math.PI:0);
+      this.skitterLegs[i].rotation.y=Math.sin(phase)*.24;
+      this.skitterLegs[i].rotation.z=side*Math.max(0,Math.cos(phase))*.25;
+    }
   }
 }
 
 // ---------------------------------------------------------------- Bomber
-/** Sprints in, lights a fuse, erases a chunk of arena. Kill it early — it detonates either way. */
+/** Sprints in, plants a charge, then detonates. Kill it during the fuse to disarm it. */
 export class Bomber extends Enemy {
   readonly kind: EnemyKind = "bomber";
   private fuse = -1;
   private coreMat: THREE.MeshStandardMaterial;
   private exploded = false;
+  override get anchored(): boolean { return this.fuse >= 0; }
 
   constructor(ctx: Ctx, x: number, z: number) {
     super(ctx, x, z);
     this.hp = this.maxHp = 18;
     this.speed = 4.3;
     this.radius = 0.5;
-    this.addRoleSilhouette("bomber", 0xff8a22);
-
-    const shellMat = this.stdMat(0x33231a, 0x331100, 0.2);
-    const ironMat = this.stdMat(0x4a3a2a, 0x442200, 0.3);
-    this.coreMat = this.stdMat(0x441100, 0xff6600, 1.6);
-    this.addMesh(new THREE.SphereGeometry(0.5, 10, 8), shellMat, 0, 0.55);
-    // Riveted iron bands girdling the casing
-    const band = this.addMesh(new THREE.TorusGeometry(0.5, 0.06, 6, 14), ironMat, 0, 0.55);
-    band.rotation.x = Math.PI / 2;
-    const band2 = this.addMesh(new THREE.TorusGeometry(0.4, 0.05, 6, 14), ironMat, 0, 0.55);
-    band2.rotation.set(Math.PI / 2, 0, 0);
-    band2.rotation.z = Math.PI / 2;
-    // Rivets around the equator
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      this.addMesh(new THREE.SphereGeometry(0.05, 5, 4), ironMat, Math.cos(a) * 0.5, 0.55, Math.sin(a) * 0.5);
-    }
-    // Molten core swelling through a cracked top plate
-    this.addMesh(new THREE.SphereGeometry(0.3, 8, 6), this.coreMat, 0, 0.85, 0.15);
-    // Fuse: an iron collar + tapering fuse cone capped with a sputtering ember
-    this.addMesh(new THREE.CylinderGeometry(0.12, 0.14, 0.12, 6), ironMat, 0, 1.02, 0.15);
-    this.addMesh(new THREE.ConeGeometry(0.08, 0.3, 4), this.coreMat, 0, 1.2, 0.15);
-    this.addMesh(new THREE.SphereGeometry(0.07, 6, 5), this.coreMat, 0, 1.38, 0.15);
-    this.mergeStaticRootMeshes();
+    const rig = forgeBomber(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.coreMat = rig.coreMat; this.legL = rig.legL; this.legR = rig.legR;
   }
 
   protected deathColor(): number {
@@ -1607,8 +1328,10 @@ export class Bomber extends Enemy {
   }
 
   protected onDeath(): void {
-    // A lit fuse always pays off
-    if (this.fuse >= 0) this.explode();
+    if (this.fuse >= 0 && !this.exploded) {
+      this.ctx.floaters.spawn(this.pos.x, 1.4, this.pos.z, "DISARMED", "tempo");
+      this.ctx.tempo.gain(4);
+    }
   }
 
   private explode(): void {
@@ -1618,8 +1341,8 @@ export class Bomber extends Enemy {
     this.ctx.events.emit("EXPLOSION", { x: this.pos.x, z: this.pos.z, radius: R });
     this.ctx.fx.burst({
       x: this.pos.x, y: 0.7, z: this.pos.z,
-      count: 45, color: [0xff8800, 0xffcc44, 0xff4400],
-      speed: [4, 14], up: 0.8, size: [0.6, 1.4], life: [0.35, 0.9], gravity: -7, drag: 2.2,
+      count: 26, color: [0xff9a55, 0xdfb175, 0x80634c],
+      speed: [4, 12], up: 0.8, size: [0.15, 0.5], life: [0.22, 0.6], gravity: -7, drag: 2.2,
     });
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R, color: 0xff8800, duration: 0.5 });
     this.ctx.cam.addTrauma(0.4);
@@ -1639,21 +1362,21 @@ export class Bomber extends Enemy {
     const p = this.ctx.player;
     if (this.fuse < 0) {
       const d = this.seek(p.pos.x, p.pos.z, dt);
-      this.pos.y = Math.abs(Math.sin(this.t * 7)) * 0.1;
-      if (d < 3.0) {
+      this.pos.y = 0;
+      if (d < 3.0 && this.commitMelee(1.05)) {
         this.fuse = 0.95;
-        this.ctx.tele.circle(this.pos.x, this.pos.z, 3.6, 0.95, 0xff8822);
+        this.warnCircle(this.pos.x, this.pos.z, 3.6, 0.95, 0xff8822);
         this.ctx.sfx.fuse();
       }
     } else {
       this.fuse -= dt;
-      this.seek(p.pos.x, p.pos.z, dt, 0.3);
+      // Plant the lit charge: its explosion must match the warning drawn at ignition.
+      this.kb.set(0, 0);
       const k = 1 - Math.max(0, this.fuse) / 0.95;
-      this.setIntentPose(k);
       // Charge brightness climbs monotonically. The former frequency ramp reached
       // strobe territory and made this actor appear to share the world's flicker.
-      this.coreMat.emissiveIntensity = 1.6 + k * 8;
-      this.root.scale.setScalar(1 + k * 0.25);
+      this.coreMat.emissiveIntensity = 1.3 + k;
+      this.drivePose(dt, { rear: 0.08 * k, rise: -0.035 * k }, 12);
       if (this.fuse <= 0) {
         this.explode();
         this.die();
@@ -1680,30 +1403,10 @@ export class Sentinel extends Enemy {
     this.hp = this.maxHp = 60;
     this.speed = 1.7;
     this.radius = 0.7;
-    this.addRoleSilhouette("shield", 0xff5f48);
-
-    const armorMat = this.stdMat(0x2a2a3a, 0x222244, 0.3);
-    const trimMat = this.stdMat(0x5a3434, 0xb83f35, 0.7);
-    this.tipMat = this.stdMat(0x2c1010, 0xff5f48, 2.0);
-
-    this.addMesh(new THREE.CylinderGeometry(0.55, 0.75, 1.5, 6), armorMat, 0, 0.75);
-    // Trim must protrude well past the tapered body (r≈0.62 at this height)
-    // or the coincident walls shimmer.
-    this.addMesh(new THREE.CylinderGeometry(0.72, 0.72, 0.18, 6), trimMat, 0, 1.0);
-    // Glowing core slit between the armor bands
-    this.addMesh(new THREE.CylinderGeometry(0.64, 0.64, 0.1, 6), this.tipMat, 0, 0.55);
-    // Hexagonal sensor head with a recessed eye
-    this.addMesh(new THREE.SphereGeometry(0.3, 8, 6), armorMat, 0, 1.75);
-    this.addMesh(new THREE.SphereGeometry(0.1, 8, 6), this.tipMat, 0, 1.78, 0.26);
-    // Cooling vent fins flanking the chassis
-    for (const sx of [-0.62, 0.62]) {
-      const fin = this.addMesh(new THREE.BoxGeometry(0.12, 0.7, 0.5), armorMat, sx, 0.75, -0.1);
-      fin.rotation.z = sx < 0 ? 0.2 : -0.2;
-    }
-    // Lance, braced by a glowing collar at the breech
-    this.addMesh(new THREE.CylinderGeometry(0.06, 0.06, 1.6, 6), trimMat, 0.55, 1.3, 0).rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.CylinderGeometry(0.13, 0.13, 0.18, 6), trimMat, 0.55, 1.3, 0.2).rotation.x = Math.PI / 2;
-    this.addMesh(new THREE.ConeGeometry(0.12, 0.4, 6), this.tipMat, 0.55, 1.3, 0.95).rotation.x = Math.PI / 2;
+    const rig = forgeGuardian(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity), "sentinel");
+    this.tipMat = rig.eyeMat;
+    this.legL = rig.legL;
+    this.legR = rig.legR;
 
     this.beamMat = new THREE.MeshBasicMaterial({
       color: 0xff5f48, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
@@ -1735,8 +1438,9 @@ export class Sentinel extends Enemy {
     // Cancel any in-progress aim — thawing into an instant un-telegraphed
     // beam would read as unfair.
     if (this.aiming >= 0) {
+      this.cancelWarnings();
       this.aiming = -1;
-      this.tipMat.emissiveIntensity = 2;
+      this.tipMat.emissiveIntensity = 1.1;
       this.cycle = Math.max(this.cycle, 1.5);
     }
   }
@@ -1750,7 +1454,6 @@ export class Sentinel extends Enemy {
     this.drivePose(dt, this.recoil > 0 ? { rear: 0.22, rise: 0.03 } : this.aiming >= 0 ? { rear: 0.08, swell: 0.045 } : {}, 12);
 
     if (this.aiming < 0) {
-      if (this.recoil > 0) this.setAttackPresentation("sentinel-lance", 1 - this.recoil / 0.2, "recovery");
       this.facePlayer(dt);
       const d = this.distToPlayer();
       if (d > 11) this.seek(p.pos.x, p.pos.z, dt);
@@ -1763,8 +1466,6 @@ export class Sentinel extends Enemy {
     } else {
       const prev = this.aiming;
       this.aiming -= dt;
-      if (this.aiming > 0.45) this.setAttackPresentation("sentinel-lance", 1 - (this.aiming - 0.45) / 0.8, "anticipation");
-      else this.setAttackPresentation("sentinel-lance", 1 - Math.max(0, this.aiming) / 0.45, "active");
       // Track until lock at 0.45s remaining, then the line is committed — dodge it
       if (this.aiming > 0.45) {
         this.facePlayer(dt * 0.6);
@@ -1772,13 +1473,13 @@ export class Sentinel extends Enemy {
       }
       if (prev > 0.45 && this.aiming <= 0.45) {
         // Width matches the real hit window: 0.55 beam half-width + player radius
-        this.ctx.tele.line(this.pos.x, this.pos.z, this.lockedAngle, 17, 2.0, 0.45, 0xff5f48);
+        this.warnLine(this.pos.x, this.pos.z, this.lockedAngle, 17, 2.0, 0.45, 0xff5f48);
         this.ctx.sfx.beamCharge();
       }
-      this.tipMat.emissiveIntensity = 2 + (1.25 - this.aiming) * 6;
+      this.tipMat.emissiveIntensity = 1.1 + (1.25 - this.aiming) * 1.2;
       if (this.aiming <= 0) {
         this.aiming = -1;
-        this.tipMat.emissiveIntensity = 2;
+        this.tipMat.emissiveIntensity = 1.1;
         this.fireBeam();
         this.recoil = 0.2;
       }
@@ -1850,9 +1551,17 @@ export function makeEnemy(kind: Exclude<EnemyKind, "boss">, ctx: Ctx, x: number,
 }
 
 export class EnemyManager {
+  private meleeGap = 0;
+
+  claimMeleeStart(): boolean {
+    if(this.meleeGap>0)return false;
+    let active=0;for(const e of this.living())if(e.committingMelee&&++active>=2)return false;
+    this.meleeGap=.14;return true;
+  }
   private enemies: Enemy[] = [];
   private dying: Enemy[] = [];
   private pending: PendingSpawn[] = [];
+  private deathBursts: { x: number; z: number; sourceId: string; sourceKind: string; time: number; revision: number; alive: boolean }[] = [];
   private streakCount = 0;
   private streakTimer = 0;
   // living() is called many times per frame (combat sweeps, ~40 card loops, boss
@@ -1863,7 +1572,15 @@ export class EnemyManager {
   // dealDamage no-ops on !alive and shove/steer toward a corpse is harmless.
   private livingCache: Enemy[] = [];
   private livingDirty = true;
-  private precompiledKinds = new Set<Exclude<EnemyKind, "boss">>();
+
+  /** Resolution scenes advance corpses without running AI or new attacks. */
+  updateRemains(dt: number): void {
+    let write = 0;
+    for (const enemy of this.dying) {
+      if (!enemy.updateDeath(dt)) this.dying[write++] = enemy;
+    }
+    this.dying.length = write;
+  }
 
   constructor(private ctx: Ctx) {
     ctx.events.on("KILL", () => {
@@ -1883,6 +1600,40 @@ export class EnemyManager {
     ctx.events.on("TEMPO_ZONE", ({ zone, prev }) => {
       if (zone === "critical" && prev !== "critical") this.flinchNearby();
     });
+  }
+
+  /** Separate from the dying actor: its geometry may be reclaimed before detonation. */
+  warnDeathBurst(x: number, z: number, sourceId: string, sourceKind: string): void {
+    const burst = { x, z, sourceId, sourceKind, time: 0, revision: 0, alive: true };
+    this.deathBursts.push(burst);
+    this.ctx.tele.circle(x, z, 3.4, .65, 0xff8e59, burst);
+    this.ctx.sfx.fuse();
+  }
+
+  get lingeringDanger(): boolean { return this.deathBursts.length > 0; }
+
+  private clearDeathBursts(): void {
+    for (const burst of this.deathBursts) burst.alive = false;
+    this.deathBursts.length = 0;
+  }
+
+  private updateDeathBursts(dt: number): void {
+    for (let i = this.deathBursts.length - 1; i >= 0; i--) {
+      const burst = this.deathBursts[i];
+      burst.time += dt;
+      if (burst.time < .65) continue;
+      burst.alive = false;
+      this.deathBursts.splice(i, 1);
+      const { x, z } = burst;
+      this.ctx.fx.ring(x, z, { radius: 3.4, color: 0xff8e59, duration: .3 });
+      this.ctx.fx.burst({ x, y: .5, z, count: 18, color: [0xff8e59, 0xb29472], speed: [3, 9], up: .8, size: [.09, .28], life: [.2, .5], gravity: -7, drag: 3, shape: ParticleShape.shard });
+      this.ctx.cam.addTrauma(.16);
+      this.ctx.sfx.explosion();
+      const p = this.ctx.player;
+      if (p.alive && Math.hypot(p.pos.x - x, p.pos.z - z) < 3.4 + p.radius && !this.ctx.arena.blocksSegment(x, z, p.pos.x, p.pos.z)) {
+        this.ctx.combat.damagePlayer(12, x, z, { sourceId: burst.sourceId, sourceKind: burst.sourceKind });
+      }
+    }
   }
 
   /** A lunge down the player's facing makes foes in the lane scatter sideways. */
@@ -1935,43 +1686,12 @@ export class EnemyManager {
     this.livingDirty = true;
   }
 
-  /**
-   * Boot warm-up: build one of every roster enemy off-screen so the renderer
-   * compiles their shader variants NOW (during load) instead of on first spawn
-   * mid-fight — a real-GPU first-use compile shows up as a frame hitch. The
-   * dummies stay in the scene forever, parked 1000 units out (frustum-culled,
-   * zero draw cost, never ticked — they're not in `enemies`): disposing them
-   * would release the just-compiled GL programs (three refcounts programs per
-   * material), and the first real spawn would pay the compile again.
-   */
-  async precompile(kinds: readonly Exclude<EnemyKind, "boss">[] = [...REGISTRY.keys()]): Promise<void> {
-    const dummies: Enemy[] = [];
-    for (const kind of kinds) {
-      if (this.precompiledKinds.has(kind) || !REGISTRY.has(kind)) continue;
-      try {
-        dummies.push(makeEnemy(kind, this.ctx, 0, -1000));
-        this.precompiledKinds.add(kind);
-      } catch { /* skip a bad ctor */ }
-    }
-    if (!dummies.length) return;
-    const p = this.ctx.player.pos; // always centered in frame, whatever the camera mode
-    for (const e of dummies) {
-      e.warmVisuals(); // ground glow into the scene before the compile
-      // Must sit inside the frustum for the composer warm frame — the composer-target
-      // program variant (srgb-linear) only compiles for objects actually drawn.
-      e.root.position.set(p.x, 0.6, p.z);
-      e.root.scale.setScalar(0.02);
-    }
-    await this.ctx.stage.warmUpAsync(); // wait for real-GPU parallel shader linking
-    for (const e of dummies) e.root.position.set(0, 0, -1000); // park off-arena, culled forever
-  }
-
   living(): Enemy[] {
     if (this.livingDirty) {
       // Refill in place (no new array, no per-call closure) — living() is the hottest
       // accessor in the game (combat/AI/projectiles/HUD/contact-shadows all call it) and
       // update() marks it dirty every frame, so `.filter()` here was the single biggest
-      // per-frame GC source in heavy combat (the soak's gc/stall spikes).
+      // per-frame allocation source in heavy combat.
       this.livingCache.length = 0;
       for (const e of this.enemies) if (e.alive) this.livingCache.push(e);
       this.livingDirty = false;
@@ -1998,6 +1718,8 @@ export class EnemyManager {
   }
 
   clear(): void {
+    this.meleeGap=0;
+    this.clearDeathBursts();
     for (const e of this.enemies) if (e.alive) e.dispose();
     for (const e of this.dying) e.dispose();
     this.enemies = [];
@@ -2012,13 +1734,18 @@ export class EnemyManager {
   /** Remove all lesser enemies and cancel lesser pending spawns, preserving the boss. */
   clearNonBosses(): void {
     for (const e of this.enemies) {
-      if (e.alive && e.kind !== "boss") e.takeDamage(99999);
+      if (e.alive && e.kind !== "boss") e.die();
     }
-    this.pending = this.pending.filter((p) => p.kind === "boss");
+    // "boss" is also the queue's placeholder for custom elites/champions.
+    // Real bosses are added directly; no pending spawn survives a boss defeat.
+    this.pending.length = 0;
+    this.clearDeathBursts();
     this.livingDirty = true;
   }
 
   update(dt: number): void {
+    this.meleeGap=Math.max(0,this.meleeGap-dt);
+    this.updateDeathBursts(dt);
     this.livingDirty = true; // refresh once/frame — clears out last frame's dead
     this.streakTimer -= dt;
     if (this.streakTimer <= 0) this.streakCount = 0;
@@ -2050,12 +1777,7 @@ export class EnemyManager {
     }
 
     for (const e of this.enemies) e.update(dt);
-    let dyingWrite = 0;
-    for (let i = 0; i < this.dying.length; i++) {
-      const e = this.dying[i];
-      if (!e.updateDeath(dt)) this.dying[dyingWrite++] = e;
-    }
-    this.dying.length = dyingWrite;
+    this.updateRemains(dt);
     let write = 0;
     for (let read = 0; read < this.enemies.length; read++) {
       const e = this.enemies[read];
@@ -2069,20 +1791,33 @@ export class EnemyManager {
       for (let j = i + 1; j < list.length; j++) {
         const a = list[i];
         const b = list[j];
-        const dx = b.pos.x - a.pos.x;
-        const dz = b.pos.z - a.pos.z;
+        let dx = b.pos.x - a.pos.x;
+        let dz = b.pos.z - a.pos.z;
         const min = a.radius + b.radius;
         // Squared-distance early-out: most pairs don't overlap, so skip the sqrt
         // entirely and only take it on the rare actual-overlap case below.
-        const d2 = dx * dx + dz * dz;
-        if (d2 <= 1e-6 || d2 >= min * min) continue;
+        let d2 = dx * dx + dz * dz;
+        if (d2 >= min * min || (a.anchored && b.anchored)) continue;
+        if (d2 <= 1e-6) {
+          const angle = ((a.id * 31 + b.id * 17) % 360) * Math.PI / 180;
+          dx = Math.sin(angle) * 0.001; dz = Math.cos(angle) * 0.001; d2 = 0.000001;
+        }
         const d = Math.sqrt(d2);
-        const push = ((min - d) / d) * 0.5;
-        a.pos.x -= dx * push;
-        a.pos.z -= dz * push;
-        b.pos.x += dx * push;
-        b.pos.z += dz * push;
+        const push = (min - d) / d;
+        const aShare = a.anchored ? 0 : b.anchored ? 1 : 0.5;
+        const bShare = b.anchored ? 0 : a.anchored ? 1 : 0.5;
+        a.pos.x -= dx * push * aShare;
+        a.pos.z -= dz * push * aShare;
+        b.pos.x += dx * push * bShare;
+        b.pos.z += dz * push * bShare;
       }
+    }
+    // Separation happens after each brain: finish within the same physical bounds.
+    for (const e of list) {
+      if (e.kind !== "boss" && e.pos.y < 1) this.ctx.arena.resolveObstacles(e.pos, e.radius);
+      const distance = Math.hypot(e.pos.x, e.pos.z), limit = ARENA_RADIUS - e.radius;
+      if (distance > limit) { e.pos.x *= limit / distance; e.pos.z *= limit / distance; }
+      e.root.position.x = e.pos.x; e.root.position.z = e.pos.z;
     }
   }
 }

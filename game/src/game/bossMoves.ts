@@ -1,4 +1,4 @@
-export type BossRecoveryClass = "short" | "standard" | "long";
+export type BossRecoveryClass = "standard" | "long";
 export type PitWardenMove = "dash" | "guard" | "leap" | "fissure" | "fan";
 
 export interface BossMoveDefinition<M extends string> {
@@ -7,7 +7,6 @@ export interface BossMoveDefinition<M extends string> {
   recovery: BossRecoveryClass;
   minDistance?: number;
   maxDistance?: number;
-  presentation: string;
 }
 
 export interface BossPhaseMoveProfile<M extends string> {
@@ -18,28 +17,29 @@ export interface BossPhaseMoveProfile<M extends string> {
 
 export const PIT_WARDEN_MOVE_PROFILE: readonly BossPhaseMoveProfile<PitWardenMove>[] = [
   { phase: 1, repeatProtection: true, moves: [
-    { id: "dash", weight: 3, recovery: "standard", presentation: "two committed chained charges" },
-    { id: "guard", weight: 1, recovery: "long", maxDistance: 7.5, presentation: "armored brace into close quake" },
+    { id: "dash", weight: 3, recovery: "standard" },
+    { id: "guard", weight: 1, recovery: "long", maxDistance: 7.5 },
+    { id: "leap", weight: 1.15, recovery: "long", minDistance: 4 },
+    { id: "fan", weight: 0.8, recovery: "standard", minDistance: 7 },
   ] },
   { phase: 2, repeatProtection: true, moves: [
-    { id: "dash", weight: 2.4, recovery: "standard", presentation: "two committed chained charges" },
-    { id: "guard", weight: 1, recovery: "long", maxDistance: 7.5, presentation: "armored brace into close quake" },
-    { id: "leap", weight: 1.3, recovery: "long", minDistance: 3.5, presentation: "high leap into marked slam" },
-    { id: "fissure", weight: 1.4, recovery: "long", maxDistance: 10.5, presentation: "four lanes with safe wedges" },
-    { id: "fan", weight: 1.25, recovery: "standard", minDistance: 6, presentation: "seven-bolt ranged ember fan" },
+    { id: "dash", weight: 2.4, recovery: "standard" },
+    { id: "guard", weight: 1, recovery: "long", maxDistance: 7.5 },
+    { id: "leap", weight: 1.3, recovery: "long", minDistance: 3.5 },
+    { id: "fissure", weight: 1.4, recovery: "long", maxDistance: 10.5 },
+    { id: "fan", weight: 1.25, recovery: "standard", minDistance: 6 },
   ] },
   { phase: 3, repeatProtection: true, moves: [
-    { id: "dash", weight: 2.2, recovery: "long", presentation: "three chained burning charges" },
-    { id: "guard", weight: 0.8, recovery: "long", maxDistance: 7.5, presentation: "armored brace into close quake" },
-    { id: "leap", weight: 1, recovery: "long", minDistance: 3, presentation: "high leap into marked slam" },
-    { id: "fissure", weight: 1.5, recovery: "long", maxDistance: 11.5, presentation: "six lanes with safe wedges" },
-    { id: "fan", weight: 1.35, recovery: "long", minDistance: 5, presentation: "nine-bolt ranged ember fan" },
+    { id: "dash", weight: 2.2, recovery: "long" },
+    { id: "guard", weight: 0.8, recovery: "long", maxDistance: 7.5 },
+    { id: "leap", weight: 1, recovery: "long", minDistance: 3 },
+    { id: "fissure", weight: 1.5, recovery: "long", maxDistance: 11.5 },
+    { id: "fan", weight: 1.35, recovery: "long", minDistance: 5 },
   ] },
 ] as const;
 
 export function bossRecoverySeconds(recovery: BossRecoveryClass): number {
-  if (recovery === "short") return 0.5;
-  if (recovery === "long") return 0.82;
+  if (recovery === "long") return 1.04;
   return 0.64;
 }
 

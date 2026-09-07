@@ -1,14 +1,5 @@
-import type * as THREE from "three";
-
-export type ActorAction =
-  | "idle" | "start" | "move" | "stop" | "pivot" | "dodge"
-  | "attack1" | "attack2" | "attack3" | "charged" | "parry"
-  | "hit" | "stagger" | "execution" | "victory" | "death";
-
-export type ActionSegment = "anticipation" | "active" | "recovery" | "loop";
 export type AttackFamily =
-  | "blade-opener" | "blade-return" | "blade-finisher" | "charged-heavy"
-  | "bulwark-cleave" | "sparkmage-conduit" | "reaver-hook" | "tempest-cyclone" | "revenant-reap"
+  | "blade-opener" | "blade-return" | "blade-finisher" | "charged-heavy" | "dash-strike"
   | "husk-lunge" | "spitter-bolt" | "sentinel-lance" | "swarmer-bite" | "bomber-burst" | "splitter-burst"
   | "wisp-bolt" | "leaper-pounce" | "tether-fan" | "mirror-slam" | "caster-mark"
   | "shade-backstab" | "bastion-strike" | "brute-charge" | "harrier-bolt" | "voidling-pulse" | "warper-beam"
@@ -55,27 +46,8 @@ export interface ActSetProfile {
   seed: number;
 }
 
-/** Read-only presentation state. Simulation remains authoritative for position,
- * facing, collision, damage, and attack timing. */
-export interface ActorVisualState {
-  actorId: string;
-  actorKind: string;
-  action: ActorAction;
-  phase: number;
-  segment: ActionSegment;
-  segmentPhase: number;
-  attackFamily: AttackFamily | null;
-  speed: number;
-  moveX: number;
-  moveZ: number;
-  facing: number;
-  reaction: number;
-  frozen: boolean;
-  alive: boolean;
-}
-
 export type ImpactStrength = "light" | "heavy" | "critical" | "execute";
-export type ImpactElement = "steel" | "rift" | "fire" | "frost" | "lightning" | "void";
+export type ImpactElement = "steel" | "rift" | "fire" | "frost" | "lightning" | "void" | "blood";
 
 /** One resolved hit, consumed by VFX, camera, audio and UI. */
 export interface ImpactCue {
@@ -95,6 +67,7 @@ export interface ImpactCue {
   element: ImpactElement;
   shielded: boolean;
   killed: boolean;
+  sustained?: boolean;
 }
 
 export type PresentationPriority = "ambient" | "action" | "critical" | "telegraph";
@@ -114,24 +87,11 @@ export type CinematicBeat =
   | { at: number; type: "letterbox"; on: boolean }
   | { at: number; type: "hud"; hidden: boolean }
   | { at: number; type: "environment"; dim: number }
-  | { at: number; type: "control-handoff"; recovery: number }
   | { at: number; type: "sound"; cue: "riser" | "roar" | "sting" };
 
 export interface CinematicSequence {
   id: string;
   duration: number;
   beats: CinematicBeat[];
-  /** Optional identity beat used by reveal-preserving skip. */
-  skipTo?: number;
-  /** Seconds retained after the identity beat before control returns. */
-  skipDuration?: number;
   onFinish?: () => void;
-}
-
-export interface ActorAssetDescriptor {
-  id: string;
-  url: string;
-  fallback: "procedural";
-  scale?: number;
-  offset?: THREE.Vector3Tuple;
 }

@@ -9,13 +9,13 @@ import type { Input } from "../core/input";
  * mouse simply drops the ring.
  *
  * Focus is tracked manually (not native DOM focus) so it works on the menus'
- * clickable <div>s (cards, hero tiles, map nodes) without retrofitting tabindex.
+ * clickable map nodes alongside native buttons.
  */
 // A [data-nav] wrapper is ONE nav target, so its inner .card is excluded --
 // otherwise the rest screen offered the same choice twice and the ring framed
 // only the card, leaving the upgrade text it describes outside the highlight.
 const NAV_SEL =
-  'button:not([disabled]), .hero-card, .card:not([data-nav] .card), .mapnode, .shop-item, [data-nav]';
+  'button:not([disabled]):not([data-nav] button), .card:not([data-nav] .card), .mapnode, .shop-item, [data-nav]';
 const REPEAT_DELAY = 0.4; // first hold-to-repeat delay (s)
 const REPEAT_RATE = 0.14; // subsequent repeats (s)
 
@@ -96,6 +96,8 @@ export class MenuNav {
     this.current = el;
     if (el) {
       el.classList.add("nav-focus");
+      if (!el.hasAttribute("tabindex") && el.tagName !== "BUTTON") el.tabIndex = -1;
+      el.focus({ preventScroll: true });
       el.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
   }
@@ -106,7 +108,6 @@ export class MenuNav {
     const primary = items.find(
       (e) =>
         e.classList.contains("btn--primary") ||
-        e.classList.contains("hero-card") ||
         e.classList.contains("card") ||
         e.classList.contains("mapnode")
     );

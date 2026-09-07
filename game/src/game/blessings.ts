@@ -2,7 +2,7 @@
  * Run-start blessings — an optional gift chosen after the hero, before the
  * descent. Locked on a fresh profile; each is earned through play via a
  * milestone in `profile.ts` (`blessing:<id>` unlock keys). Shared here so both
- * the hero-select UI and the profile/milestone resolver read one definition.
+ * the run setup UI and the profile/milestone resolver read one definition.
  */
 export interface BlessingDef {
   id: string;

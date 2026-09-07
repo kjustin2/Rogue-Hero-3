@@ -7,8 +7,8 @@ import * as THREE from "three";
  * finally has believable colored specular + ambient to reflect instead of reading
  * as matte plastic.
  *
- * The bake is a one-shot (not per-frame): rebaked only on act-theme boundaries.
- * Skipped entirely on the `low` tier (env sampling is a real per-fragment cost).
+ * The stage bakes this once at boot. Stable reflections avoid a lighting jump
+ * while moving between a menu, a chamber and its cinematic camera.
  * The env scene is six large inward-facing emissive planes — a sky-tinted ceiling,
  * a dark ground, a warm key wall, a cool rim wall, and two ember side walls — which
  * PMREM turns into soft directional ambient with a couple of bright specular lobes.
@@ -30,15 +30,15 @@ export class EnvironmentBaker {
     const geo = new THREE.PlaneGeometry(1, 1);
     // 6 inward-facing panels of a 20-unit box; index maps to a semantic role below.
     const faces: [THREE.Euler, THREE.Vector3][] = [
-      [new THREE.Euler(-Math.PI / 2, 0, 0), new THREE.Vector3(0, 10, 0)],   // 0 ceiling (sky)
-      [new THREE.Euler(Math.PI / 2, 0, 0), new THREE.Vector3(0, -10, 0)],   // 1 floor (ground)
+      [new THREE.Euler(Math.PI / 2, 0, 0), new THREE.Vector3(0, 10, 0)],    // ceiling faces inward
+      [new THREE.Euler(-Math.PI / 2, 0, 0), new THREE.Vector3(0, -10, 0)], // floor faces inward
       [new THREE.Euler(0, Math.PI, 0), new THREE.Vector3(0, 0, 10)],        // 2 key wall (warm)
       [new THREE.Euler(0, 0, 0), new THREE.Vector3(0, 0, -10)],             // 3 rim wall (cool)
       [new THREE.Euler(0, -Math.PI / 2, 0), new THREE.Vector3(10, 0, 0)],   // 4 ember side
       [new THREE.Euler(0, Math.PI / 2, 0), new THREE.Vector3(-10, 0, 0)],   // 5 ember side
     ];
     for (const [rot, pos] of faces) {
-      const m = new THREE.MeshBasicMaterial({ side: THREE.BackSide, fog: false });
+      const m = new THREE.MeshBasicMaterial({ side: THREE.FrontSide, fog: false });
       const mesh = new THREE.Mesh(geo, m);
       mesh.rotation.copy(rot);
       mesh.position.copy(pos);
@@ -64,12 +64,8 @@ export class EnvironmentBaker {
     this.mats[4].color.copy(this.cEmber).multiplyScalar(0.3);
     this.mats[5].color.copy(this.cEmber).multiplyScalar(0.22);
     const prev = this.rt;
-    // Blur sigma 1.2 (was 0.5): a SHARP env from this tiny 6-plane box produced hard bright
-    // specular lobes, so on real GPUs a glossy surface (blade, crystals, metal set-dressing)
-    // reflecting it would SNAP/twinkle as the follow-camera swept the lobe across it — a
-    // view-dependent "blink when moving" that software rendering masks. A soft, low-frequency
-    // env changes smoothly under camera motion; it's still colored ambient IBL, just no lobes.
-    this.rt = this.pmrem.fromScene(this.scene, 1.2);
+    // Broad, soft highlights distinguish metal from stone as the camera moves.
+    this.rt = this.pmrem.fromScene(this.scene, 0.35);
     prev?.dispose();
     return this.rt.texture;
   }

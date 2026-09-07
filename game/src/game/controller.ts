@@ -4,14 +4,22 @@ import { clamp01, damp } from "../core/math";
 import type { Ctx } from "./ctx";
 import type { Enemy } from "./enemies";
 
-const DODGE_DURATION = 0.22;
-const DODGE_SPEED = 17;
-const DODGE_COOLDOWN = 0.5;
+const DODGE_DURATION = 0.18;
+const DODGE_SPEED = 21;
+const DASH_RECHARGE = 0.72;
+const DASH_STOCK = 2;
 const PERFECT_WINDOW = 0.11;
+
+/** Cards follow this actual movement lifecycle, including cancellation and the last step. */
+export interface MovementBurst {
+  readonly started: boolean;
+  readonly finished: boolean;
+  readonly cancelled: boolean;
+}
 
 /**
  * Input → hero movement. Snappy damped velocity, twin-stick facing (always
- * toward the cursor), and the dodge roll with i-frames + a perfect-dodge
+ * toward the cursor), and a two-charge dash with i-frames + a perfect-dodge
  * window at the start that pays out tempo when an attack whiffs through it.
  */
 export class Controller {
@@ -20,14 +28,18 @@ export class Controller {
   private animVel = new THREE.Vector2();
   private dodgeTimer = -1;
   private dodgeCooldown = 0;
+  private dashStock = DASH_STOCK;
+  private rechargeTimer = 0;
   private dodgeDir = new THREE.Vector2(0, 1);
   private ghostAcc = 0;
-  /** One perfect-dodge payout per roll. */
+  /** One perfect-dodge payout per dash. */
   private perfectConsumed = false;
-  /** External pushes (cards like Dash Strike drive movement through this). */
+  /** Attack immediately after a dash for a lunging follow-up. */
+  followUpWindow = 0;
+  private dodgeBuffer = 0;
+  /** External recoil and knockback. Card travel uses a bounded movement burst. */
   private impulse = new THREE.Vector2();
-  /** While >0, normal input movement is suppressed (dash cards). */
-  externalMoveTimer = 0;
+  private burst: { x: number; z: number; speed: number; remaining: number; started: boolean; finished: boolean; cancelled: boolean } | null = null;
 
   // --- Gamepad auto-aim / lock-on
   /** Auto-aim ON (Settings): face & target the focused enemy when the right stick is idle. */
@@ -46,6 +58,11 @@ export class Controller {
 
   get dodging(): boolean {
     return this.dodgeTimer >= 0 && this.dodgeTimer < DODGE_DURATION;
+  }
+
+  get dashCharges(): number { return this.dashStock; }
+  get dashRechargeProgress(): number {
+    return this.dashStock === DASH_STOCK ? 1 : clamp01(1 - this.rechargeTimer / DASH_RECHARGE);
   }
 
   /** External i-frame grants (Dash Strike etc.) — independent of the dodge roll. */
@@ -75,15 +92,34 @@ export class Controller {
     this.impulse.y += z;
   }
 
+  moveBurst(x: number, z: number, distance: number, duration: number): MovementBurst {
+    this.cancelBurst();
+    this.dodgeTimer = -1;
+    this.ctx.player.animDodge = null;
+    this.vel.set(0, 0); this.impulse.set(0, 0);
+    const length = Math.hypot(x, z) || 1;
+    this.burst = { x: x / length, z: z / length, speed: distance / duration, remaining: duration, started: false, finished: false, cancelled: false };
+    return this.burst;
+  }
+
+  private cancelBurst(): void {
+    if (this.burst) { this.burst.cancelled = this.burst.finished = true; this.burst = null; }
+  }
+
   /** Test/run-boundary transient reset. Does not alter player position or stats. */
   clearTransient(): void {
     this.vel.set(0, 0);
     this.impulse.set(0, 0);
+    this.animVel.set(0, 0);
     this.dodgeTimer = -1;
     this.dodgeCooldown = 0;
+    this.dashStock = DASH_STOCK;
+    this.rechargeTimer = 0;
     this.iframeTimer = 0;
-    this.externalMoveTimer = 0;
+    this.cancelBurst();
     this.target = null;
+    this.followUpWindow = 0;
+    this.dodgeBuffer = 0;
     this.ctx.player.animDodge = null;
   }
 
@@ -125,7 +161,7 @@ export class Controller {
         if (inputLen > 0.1) player.facing = Math.atan2(ix, iz);
         input.aimPoint.set(player.pos.x + Math.sin(player.facing) * 8, 0, player.pos.z + Math.cos(player.facing) * 8);
       }
-      this.updateReticle();
+      this.updateReticle(dt);
     } else {
       this.target = null;
       if (this.reticle) this.reticle.visible = false;
@@ -141,31 +177,49 @@ export class Controller {
     }
     this.ctx.cam.aimPoint.copy(input.aimPoint);
 
-    this.dodgeCooldown -= dt;
+    this.dodgeCooldown = Math.max(0, this.dodgeCooldown - dt);
+    if (this.dashStock < DASH_STOCK) {
+      this.rechargeTimer -= dt;
+      while (this.rechargeTimer <= 0 && this.dashStock < DASH_STOCK) {
+        this.dashStock++;
+        this.rechargeTimer = this.dashStock < DASH_STOCK ? this.rechargeTimer + DASH_RECHARGE : 0;
+      }
+    }
+    this.followUpWindow = Math.max(0, this.followUpWindow - dt);
+    this.dodgeBuffer = Math.max(0, this.dodgeBuffer - dt);
+    if (input.actionPressed("dodge")) this.dodgeBuffer = 0.12;
     this.iframeTimer = Math.max(0, this.iframeTimer - dt);
-    this.externalMoveTimer = Math.max(0, this.externalMoveTimer - dt);
 
     // Start dodge
-    if (input.actionPressed("dodge") && this.dodgeCooldown <= 0 && !this.dodging) {
+    if (this.dodgeBuffer > 0 && this.dashStock > 0 && this.dodgeCooldown <= 0 && !this.dodging) {
+      this.dodgeBuffer = 0;
       this.dodgeTimer = 0;
-      this.dodgeCooldown = DODGE_DURATION + DODGE_COOLDOWN;
+      this.dodgeCooldown = DODGE_DURATION + 0.055;
+      if (this.dashStock === DASH_STOCK) this.rechargeTimer = DASH_RECHARGE;
+      this.dashStock--;
+      this.cancelBurst();
       this.perfectConsumed = false;
       this.ghostAcc = 0;
-      if (inputLen > 0) this.dodgeDir.set(ix, iz);
+      if (inputLen > 0) this.dodgeDir.set(ix, iz).normalize();
       else this.dodgeDir.set(Math.sin(player.facing), Math.cos(player.facing));
       this.ctx.events.emit("DODGE", {});
+      this.ctx.combat.cancelSwing();
       this.ctx.fx.burst({
         x: player.pos.x, y: 0.3, z: player.pos.z,
-        count: 10, color: 0x66ddff,
-        speed: [1, 4], up: 0.6, size: [0.3, 0.6], life: [0.2, 0.45], gravity: -2, drag: 3,
+        count: 6, color: player.bladeColor,
+        speed: [1, 3], up: 0.25, size: [0.08, 0.2], life: [0.12, 0.28], gravity: -2, drag: 3,
       });
     }
 
     const speedMult = tempo.zone.speedMult;
+    const burst = this.burst;
+    const dashedThisFrame = this.dodging;
 
     if (this.dodging) {
+      const remaining = DODGE_DURATION - this.dodgeTimer;
       this.dodgeTimer += dt;
-      this.vel.set(this.dodgeDir.x, this.dodgeDir.y).multiplyScalar(DODGE_SPEED * (0.8 + speedMult * 0.2));
+      const portion = dt > 0 ? Math.min(1, remaining / dt) : 1;
+      this.vel.set(this.dodgeDir.x, this.dodgeDir.y).multiplyScalar(DODGE_SPEED * (0.8 + speedMult * 0.2) * portion);
       this.ghostAcc += dt;
       if (this.ghostAcc > 0.045) {
         this.ghostAcc = 0;
@@ -178,12 +232,20 @@ export class Controller {
       };
       if (this.dodgeTimer >= DODGE_DURATION) {
         this.dodgeTimer = -1;
+        this.followUpWindow = 0.34;
         player.animDodge = null;
       }
-    } else if (this.externalMoveTimer <= 0) {
+    } else if (burst) {
+      const portion = dt > 0 ? Math.min(1, burst.remaining / dt) : 0;
+      this.vel.set(burst.x, burst.z).multiplyScalar(burst.speed * portion);
+      burst.started = dt > 0 || burst.started;
+      burst.remaining = Math.max(0, burst.remaining - dt);
+      if (burst.remaining <= 0) burst.finished = true;
+    } else {
       const target = player.hero.speed * speedMult;
-      this.vel.x = damp(this.vel.x, ix * target, 11, dt);
-      this.vel.y = damp(this.vel.y, iz * target, 11, dt);
+      const response = inputLen > 0.05 ? 22 : 30;
+      this.vel.x = damp(this.vel.x, ix * target, response, dt);
+      this.vel.y = damp(this.vel.y, iz * target, response, dt);
     }
 
     // Apply impulse (decays quickly)
@@ -192,38 +254,42 @@ export class Controller {
     this.impulse.set(0, 0);
 
     const preX = player.pos.x, preZ = player.pos.z;
-    player.pos.x += this.vel.x * dt;
-    player.pos.z += this.vel.y * dt;
-
-    // Arena bounds (circle)
-    const r = Math.hypot(player.pos.x, player.pos.z);
     const maxR = ARENA_RADIUS - player.radius;
-    if (r > maxR) {
-      player.pos.x *= maxR / r;
-      player.pos.z *= maxR / r;
+    // Short swept steps keep high-speed cards and pushes from tunnelling through
+    // a pillar on a slow frame. Normal walking generally needs just one step.
+    const steps = Math.max(1, Math.ceil(this.vel.length() * dt / 0.25));
+    for (let i = 0; i < steps; i++) {
+      player.pos.x += this.vel.x * dt / steps;
+      player.pos.z += this.vel.y * dt / steps;
+      const r = Math.hypot(player.pos.x, player.pos.z);
+      if (r > maxR) { player.pos.x *= maxR / r; player.pos.z *= maxR / r; }
+      this.ctx.arena.resolveObstacles(player.pos, player.radius);
     }
-    this.ctx.arena.resolveObstacles(player.pos, player.radius);
+    if (burst?.finished) { this.burst = null; this.vel.set(0, 0); }
 
     // Player↔enemy soft separation: the player rides the SURFACE of a body, never
     // stands inside it (the "looks wrong when interacting with another character"
     // bug — bodies could freely interpenetrate). Push the player out to touching
     // distance (radii sum), which is still inside melee reach, so it doesn't hurt
     // combat. SKIPPED mid-dodge: the dash grants i-frames THROUGH enemies by design.
-    if (!this.dodging) {
+    if (!dashedThisFrame && !burst) {
       for (const e of this.ctx.enemies.living()) {
         // Boss exempt (matches shove()/clamp): a large boss radius would push the
         // player out of melee reach. Separation is for the regular-enemy case.
         if (e.hp <= 0 || e.kind === "boss") continue;
-        const dx = player.pos.x - e.pos.x;
-        const dz = player.pos.z - e.pos.z;
+        let dx = player.pos.x - e.pos.x;
+        let dz = player.pos.z - e.pos.z;
         const min = player.radius + e.radius;
         const d2 = dx * dx + dz * dz;
-        if (d2 <= 1e-6 || d2 >= min * min) continue;
-        const d = Math.sqrt(d2);
+        if (d2 >= min * min) continue;
+        if (d2 <= 1e-6) { dx = Math.sin(player.facing); dz = Math.cos(player.facing); }
+        const d = d2 <= 1e-6 ? 1 : Math.sqrt(d2);
+        if (d2 <= 1e-6) { player.pos.x += dx * min; player.pos.z += dz * min; continue; }
         const push = (min - d) / d;
         player.pos.x += dx * push;
         player.pos.z += dz * push;
       }
+      this.ctx.arena.resolveObstacles(player.pos, player.radius);
       // being shoved off an enemy must not eject the player past the arena rim.
       const r2 = Math.hypot(player.pos.x, player.pos.z);
       if (r2 > maxR) { player.pos.x *= maxR / r2; player.pos.z *= maxR / r2; }
@@ -296,7 +362,7 @@ export class Controller {
     if (best) this.target = best;
   }
 
-  private updateReticle(): void {
+  private updateReticle(dt: number): void {
     if (!this.reticle) {
       const geo = new THREE.RingGeometry(0.78, 0.96, 4, 1); // a diamond bracket
       geo.rotateX(-Math.PI / 2);
@@ -309,7 +375,7 @@ export class Controller {
     const t = this.target;
     if (t && t.alive) {
       this.reticle.visible = true;
-      this.reticleSpin += 0.9 * (1 / 60);
+      this.reticleSpin += 0.9 * dt;
       const s = (t.radius || 0.8) * 2.2;
       this.reticle.position.set(t.pos.x, 0.07, t.pos.z);
       this.reticle.rotation.y = this.reticleSpin;

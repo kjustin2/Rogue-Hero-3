@@ -19,14 +19,18 @@ export interface RelicDef {
   unlockHint?: string;
 }
 
+export interface RelicRunState { secondWindUsed: boolean; killCounter: number; }
+
 export const RELICS: RelicDef[] = [
-  // Starter-unlocked five — guarantees full drafts on a fresh profile
+  { id: "keepers-thread", name: "Keeper's Thread", desc: "Seams last 5s. Unravel refunds 0.75s on every ability. The Warden repaired burial shrouds with this.", icon: "⌁", color: "#dfc99f", rarity: "rare" },
+  { id: "widows-needle", name: "Widow's Needle", desc: "Unravel deals +100% instead of +50% damage, but seams last only 1.5s (overrides Thread). Her last stitch was a promise.", icon: "†", color: "#db9caa", rarity: "legendary", cursed: true },
+  // Core relics; the fresh profile also includes support for every ability specialty.
   { id: "bloodthirst", name: "Bloodthirst", desc: "Kills restore 2 HP.", icon: "🜁", color: "#ff7a8a", rarity: "common" },
   { id: "runaway-engine", name: "Runaway Engine", desc: "Tempo at 70+ never decays.", icon: "♺", color: "#ffa028", rarity: "rare" },
   { id: "metronome", name: "Metronome", desc: "Tempo drifts toward 50 half again as fast — recover cold quickly, lose heat quickly.", icon: "♩", color: "#9fd8ff", rarity: "common" },
   { id: "kinetic-core", name: "Kinetic Core", desc: "Dash Strike and Phase Step cool down 33% faster.", icon: "➢", color: "#5fe0ff", rarity: "common" },
   { id: "co-aggro-pact", name: "Co-Aggro Pact", desc: "Every 4th kill restores 3 HP and surges 10 tempo.", icon: "⁂", color: "#ffc266", rarity: "common" },
-  // Locked behind milestones
+  // Specialty supports and earned rewards
   { id: "frost-chord", name: "Frost Chord", desc: "Frozen enemies take 30% more damage.", icon: "❅", color: "#bfe8ff", rarity: "rare" },
   { id: "ironclad", name: "Ironclad", desc: "Below 30% HP you take 25% less damage.", icon: "⛊", color: "#c8d2e0", rarity: "rare" },
   { id: "chain-amulet", name: "Chain Amulet", desc: "Chain Lightning arcs to five targets.", icon: "⌁", color: "#ffe066", rarity: "rare" },
@@ -55,7 +59,7 @@ export const RELICS: RelicDef[] = [
   { id: "blood-pact", name: "Blood Pact", desc: "Deal 20% more damage — but every hit you take bleeds 10 extra tempo.", icon: "🜏", color: "#ff5a80", rarity: "rare", cursed: true, eventOnly: true },
   // --- Warden boons (auto-granted when you break a warden — you carry them in their memory)
   { id: "warden-heart", name: "Warden's Heart", desc: "The Pit Warden's gift: +16 max HP, mended in full.", icon: "♥", color: "#ff9a6a", rarity: "legendary", boon: true },
-  { id: "spire-spark", name: "Spire's Spark", desc: "The Spire Caster's gift: perfect dodges surge +6 tempo.", icon: "ϟ", color: "#aaffee", rarity: "legendary", boon: true },
+  { id: "spire-spark", name: "Spire's Spark", desc: "The Glass Regent's gift: perfect dodges surge +6 tempo.", icon: "ϟ", color: "#aaffee", rarity: "legendary", boon: true },
   { id: "colossus-might", name: "Colossus' Might", desc: "The Colossus' gift: deal 10% more damage.", icon: "⛰", color: "#ffaa44", rarity: "legendary", boon: true },
   { id: "tyrant-ward", name: "Tyrant's Ward", desc: "The Rift Tyrant's gift: begin each chamber with an 8-point shield.", icon: "♛", color: "#cbb6ff", rarity: "legendary", boon: true },
 ];
@@ -123,11 +127,13 @@ export class Relics {
   }
 
   /** Quietly restore a saved loadout (no pickup events/chimes). */
-  restore(ids: string[]): void {
+  restore(ids: string[], saved?: RelicRunState): void {
     this.owned = ids.map(relicById);
-    this.killCounter = 0;
-    this.secondWindUsed = false;
+    this.killCounter = Number.isInteger(saved?.killCounter) ? Math.max(0, saved!.killCounter) % 4 : 0;
+    this.secondWindUsed = saved?.secondWindUsed === true;
   }
+
+  snapshot(): RelicRunState { return { secondWindUsed: this.secondWindUsed, killCounter: this.killCounter }; }
 
   /** Second Wind: true exactly once per run, when held. */
   consumeSecondWind(): boolean {
@@ -145,8 +151,8 @@ export class Relics {
   /** Un-owned, unlocked relics — up to 3, drawn rarity-weighted (no duplicates) so a
    *  legendary is a rare, exciting offer rather than a coin-flip. May be fewer if the
    *  pool is thin. */
-  draftChoices(): RelicDef[] {
-    const pool = RELICS.filter((r) => !r.boon && !r.eventOnly && !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
+  draftChoices(exclude: readonly string[] = []): RelicDef[] {
+    const pool = this.availableDrafts().filter(relic => !exclude.includes(relic.id));
     const out: RelicDef[] = [];
     while (out.length < 3 && pool.length > 0) {
       let total = 0;
@@ -160,6 +166,10 @@ export class Relics {
       out.push(pool.splice(idx, 1)[0]);
     }
     return out;
+  }
+
+  availableDrafts(): RelicDef[] {
+    return RELICS.filter(r => !r.boon && !r.eventOnly && !this.has(r.id) && this.ctx.profile.isUnlocked(`relic:${r.id}`));
   }
 
   /** Carry away a fallen warden's boon (auto-granted, with its one-time effect). */

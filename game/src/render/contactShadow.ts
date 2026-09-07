@@ -1,27 +1,27 @@
 import * as THREE from "three";
 
+export interface FootContact { node: THREE.Object3D; offset: THREE.Vector3; radius: number; }
+export interface ShadowActor { x: number; z: number; radius: number; y?: number; feet?: readonly FootContact[]; }
+
 /**
  * Universal blob contact-shadows (IDEAS-GRAPHICS #3). A pool of soft radial-gradient
  * quads laid flat under every actor so nothing floats — the #1 amateur tell, and on
  * the low tier (real shadow map off) the ONLY grounding cue. NORMAL-blended (darkens
  * the floor, never washes it additive-white).
  *
- * One shared texture + material; the manager repositions pooled planes under the hero
- * and living enemies each frame (no per-entity wiring, no per-frame allocation).
+ * Shared geometry/texture and fixed pooled planes. Articulated actors also place
+ * small contact patches at their feet; airborne feet soften and fade naturally.
  */
 export class ContactShadows {
   private group = new THREE.Group();
-  private pool: THREE.Mesh[] = [];
-  private mat: THREE.MeshBasicMaterial;
+  private pool: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>[] = [];
   private geo = new THREE.PlaneGeometry(1, 1);
-  private disabled = false;
+  private point = new THREE.Vector3();
+  private worldScale = new THREE.Vector3();
 
-  /** Debug bisection toggle (effectsToggle panel). */
-  setVisible(on: boolean): void { this.disabled = !on; this.group.visible = on; }
-
-  constructor(scene: THREE.Scene, max = 48) {
+  constructor(scene: THREE.Scene, max = 64) {
     const tex = makeBlobTexture();
-    this.mat = new THREE.MeshBasicMaterial({
+    const material = new THREE.MeshBasicMaterial({
       map: tex,
       transparent: true,
       opacity: 0.55,
@@ -32,31 +32,39 @@ export class ContactShadows {
       polygonOffsetFactor: -2,
     });
     for (let i = 0; i < max; i++) {
-      const m = new THREE.Mesh(this.geo, this.mat);
+      const m = new THREE.Mesh(this.geo, material.clone());
       m.rotation.x = -Math.PI / 2;
       m.renderOrder = -2; // stable stack: decals(-3) < contact(-2) < enemy glow(-1) — no flicker
       m.visible = false;
       this.group.add(m);
       this.pool.push(m);
     }
+    material.dispose();
     this.group.matrixAutoUpdate = false;
     this.group.userData.solidity = "fx";
     scene.add(this.group);
   }
 
-  /** Place one blob per actor: {x,z,radius}. Extra pool entries hide. */
-  update(actors: { x: number; z: number; radius: number; y?: number }[]): void {
-    if (this.disabled) return;
-    for (let i = 0; i < this.pool.length; i++) {
-      const m = this.pool[i];
-      const a = actors[i];
-      if (!a) { if (m.visible) m.visible = false; continue; }
-      m.visible = true;
-      const s = Math.max(0.6, a.radius * 2.6);
-      m.position.set(a.x, (a.y ?? 0) + 0.03, a.z);
-      m.scale.set(s, s, 1);
-      m.updateMatrix();
+  update(actors: readonly ShadowActor[]): void {
+    let index=0;
+    for (const a of actors) {
+      const height=Math.max(0,a.y??0), s=Math.max(.6,a.radius*2.6)+height*.12;
+      this.place(index++,a.x,a.z,s,a.feet?.length ? .28 : .55/(1+height*.18));
+      for (const foot of a.feet??[]) {
+        foot.node.updateWorldMatrix(true,false);
+        this.point.copy(foot.offset).applyMatrix4(foot.node.matrixWorld);
+        foot.node.getWorldScale(this.worldScale);
+        const elevation=Math.max(0,this.point.y), size=foot.radius*this.worldScale.x*3+elevation*.18;
+        this.place(index++,this.point.x,this.point.z,size,.78/(1+elevation*5));
+      }
     }
+    for(let i=index;i<this.pool.length;i++)this.pool[i].visible=false;
+  }
+
+  private place(index:number,x:number,z:number,size:number,opacity:number):void {
+    const mesh=this.pool[index];if(!mesh)return;
+    mesh.visible=true;mesh.position.set(x,.031,z);mesh.scale.set(size,size,1);
+    mesh.material.opacity=opacity;mesh.updateMatrix();
   }
 }
 

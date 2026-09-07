@@ -8,7 +8,7 @@ import { RiftEcho } from "./bossEcho";
 import { WoundBoss } from "./bossWound";
 import { makeEnemy, type Enemy, type EnemyKind } from "./enemies";
 import { rollAffixes, affixById } from "./affixes";
-import { generatePlan, type MapNode, type NodeKind, type RunPlan, type SpawnList } from "./mapgen";
+import { FIELD_ROLES, generatePlan, type MapNode, type NodeKind, type RunPlan, type SpawnList } from "./mapgen";
 import type { Ctx } from "./ctx";
 
 type FieldKind = Exclude<EnemyKind, "boss">;
@@ -28,9 +28,9 @@ interface BossEntry {
 
 export const BOSSES: Record<BossKind, BossEntry> = {
   warden: { name: "THE PIT WARDEN", title: "Keeper of the Ember Rift", phases: [0.7, 0.35], make: (c, x, z) => new PitWarden(c, x, z) },
-  spire: { name: "THE SPIRE CASTER", title: "Warden of the Glass Crown", phases: [0.7, 0.35], make: (c, x, z) => new SpireCaster(c, x, z) },
+  spire: { name: "THE GLASS REGENT", title: "Warden of the Shattered Spire", phases: [0.7, 0.35], make: (c, x, z) => new SpireCaster(c, x, z) },
   colossus: { name: "THE COLOSSUS", title: "Engine of the Core", phases: [0.7, 0.35], make: (c, x, z) => new Colossus(c, x, z) },
-  tyrant: { name: "THE RIFT TYRANT", title: "The Wound Made Flesh", phases: [0.66, 0.33], make: (c, x, z) => new RiftTyrant(c, x, z) },
+  tyrant: { name: "THE RIFT TYRANT", title: "The Rift’s Usurper", phases: [0.66, 0.33], make: (c, x, z) => new RiftTyrant(c, x, z) },
   unmaker: { name: "THE UNMAKER", title: "The Hollow Star", phases: [0.66, 0.33, 0.12], make: (c, x, z) => new Unmaker(c, x, z) },
   echo: { name: "THE RIFT ECHO", title: "Your Reflection, Sharpened", phases: [0.5], make: (c, x, z) => new RiftEcho(c, x, z) },
   wound: { name: "THE WOUND BENEATH", title: "What Hollowed the Star", phases: [0.66, 0.33], make: (c, x, z) => new WoundBoss(c, x, z) },
@@ -91,10 +91,17 @@ export class RunManager {
   /** Chosen option index per fork (for the map trail + save). */
   path: number[] = [];
   private waveIndex = 0;
+  private waveTime = 0;
+  /** Pending arrivals count so the room never falsely reads empty. */
+  get encounterStatus(): string {
+    const node = this.currentNode;
+    if (!node || node.bossKind || this.state !== "fighting") return "";
+    if (this.ctx.enemies.remaining === 0 && this.ctx.enemies.lingeringDanger) return "VOLATILE REMAINS · KEEP CLEAR";
+    return `WAVE ${this.waveIndex + 1} / ${node.waves.length} · ${this.ctx.enemies.remaining} REMAINING`;
+  }
   private prevAct = 0;
   /** Whether the Ascension true-final fight has been staged this run. */
   private woundFought = false;
-  private warmedBosses = new Set<BossKind>();
 
   constructor(private ctx: Ctx) {
     ctx.events.on("BOSS_DEFEATED", () => {
@@ -189,6 +196,7 @@ export class RunManager {
     if (!node) return;
     const { ctx } = this;
     this.waveIndex = 0;
+    this.waveTime = 0;
     this.state = "fighting";
 
     ctx.enemies.clear();
@@ -197,10 +205,12 @@ export class RunManager {
     ctx.caster.clear();
     ctx.fx.clear();
     ctx.vfx.clear();
+    ctx.floaters.clear();
     ctx.decals.clear(); // a fresh room must not inherit the last room's scorch/crack marks
 
     ctx.arena.applyTheme(THEMES[node.theme]);
     ctx.arena.setObstacles(node.obstacles ?? [], THEMES[node.theme].crystal);
+    ctx.arena.setChamber(node.encounter ?? null, node.act, node.bossKind);
     ctx.fx.ambientColor = THEMES[node.theme].ember;
     ctx.fx.ambientRate = node.bossKind ? 14 : 7;
     ctx.stats.actReached = Math.max(ctx.stats.actReached, node.act);
@@ -221,12 +231,14 @@ export class RunManager {
       const boss = BOSSES[node.bossKind];
       const bx = 0;
       const bz = -ARENA_RADIUS * 0.4;
+      // The actor must exist before its first authored entrance cue.
+      const actor = boss.make(ctx, bx, bz);
+      actor.hp = actor.maxHp = Math.round(actor.maxHp * ctx.difficulty.enemyHpMult * ctx.difficulty.bossHpMult);
+      actor.setSpawnGrace(30);
+      actor.root.visible = false;
+      actor.setShadowCasting(true);
+      ctx.enemies.add(actor);
       ctx.events.emit("BOSS_INTRO", { name: boss.name, title: boss.title, x: bx, z: bz, phases: boss.phases });
-      ctx.enemies.spawnCustom((c, x, z) => {
-        const e = boss.make(c, x, z);
-        e.setSpawnGrace(5.0);
-        return e;
-      }, bx, bz, 2.4);
       // Ascension boss variant: from Rift Depth 5, the boss arrives with an honor guard.
       if (ctx.difficulty.depth >= 5) {
         const guard: Record<number, FieldKind> = { 1: "spitter", 2: "wisp", 3: "caster", 4: "harrier", 5: "warper" };
@@ -251,19 +263,64 @@ export class RunManager {
   private spawnWave(wave: SpawnList): void {
     const { ctx } = this;
     const p = ctx.player.pos;
+    const occupied: { x: number; z: number }[] = [];
+    const totals = { guard: 0, ranged: 0, hunter: 0, swarm: 0 };
+    const indices = { guard: 0, ranged: 0, hunter: 0, swarm: 0 };
+    for (const [kind, count] of wave) totals[FIELD_ROLES[kind]] += count;
+    // Place one legible pack across the room: guards in front of artillery,
+    // hunters on its flanks. The player always has an open side to approach.
+    const bearing = Math.hypot(p.x, p.z) > 3
+      ? Math.atan2(-p.x, -p.z) + ctx.rng.range(-0.35, 0.35)
+      : ctx.rng.range(0, Math.PI * 2);
+    let cx = p.x + Math.sin(bearing) * 12, cz = p.z + Math.cos(bearing) * 12;
+    const centerR = Math.hypot(cx, cz);
+    if (centerR > 10) { cx *= 10 / centerR; cz *= 10 / centerR; }
+    const toCenter = Math.hypot(cx - p.x, cz - p.z) || 1;
+    const dx = (cx - p.x) / toCenter, dz = (cz - p.z) / toCenter;
+    const clear = (x: number, z: number, spacing: boolean) =>
+      ctx.arena.containsPoint(x,z,2) && Math.hypot(x - p.x, z - p.z) > 7 &&
+      ctx.arena.obstacles.every(o => Math.hypot(x - o.x, z - o.z) > o.r + 1.4) &&
+      (!spacing || occupied.every(o => Math.hypot(x - o.x, z - o.z) > 2.4));
     for (const [kind, count, eliteFlag] of wave) {
       for (let i = 0; i < count; i++) {
-        let x = 0;
-        let z = 0;
-        for (let attempt = 0; attempt < 16; attempt++) {
-          const a = ctx.rng.range(0, Math.PI * 2);
-          const r = ctx.rng.range(5, ARENA_RADIUS - 3);
-          x = Math.sin(a) * r;
-          z = Math.cos(a) * r;
-          const clearOfPillars = ctx.arena.obstacles.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + 1.2);
-          if (Math.hypot(x - p.x, z - p.z) > 7 && clearOfPillars) break;
+        const role = FIELD_ROLES[kind], n = indices[role]++;
+        const across = (n - (totals[role] - 1) / 2) * 2.7;
+        const depth = role === "guard" ? -2.4 : role === "ranged" ? 2.1 : -0.6;
+        const flank = role === "hunter" ? (n % 2 ? 1 : -1) * (4.8 + Math.floor(n / 2) * 2.5) : across;
+        let lateral = flank, forward = depth;
+        const formation = this.currentNode?.encounter;
+        if (formation === "crossfire") {
+          lateral = (n % 2 ? 1 : -1) * (5.8 + Math.floor(n / 2) * 1.5);
+          forward = role === "ranged" ? 1.7 : -2.5;
+        } else if (formation === "pursuit" && role !== "ranged") {
+          lateral = (n % 2 ? 1 : -1) * (5.2 + Math.floor(n / 2) * 1.8);
+          forward = -2 + Math.floor(n / 2) * 2.5;
+        } else if (formation === "breach" && role === "swarm") {
+          const arc = (n / Math.max(1, totals.swarm - 1) - 0.5) * 2.2;
+          lateral = Math.sin(arc) * 7;
+          forward = Math.cos(arc) * 3 - 2;
+        } else if (formation === "bastion") {
+          lateral = role === "guard" ? across * 0.6 : flank;
+          forward = role === "guard" ? -3.5 : role === "ranged" ? 2.8 : -1;
         }
-        const delay = 0.8 + ctx.rng.range(0, 0.6);
+        const desiredX = cx + dx * forward + dz * lateral;
+        const desiredZ = cz + dz * forward - dx * lateral;
+        let x = desiredX, z = desiredZ;
+        if (!clear(x, z, true)) {
+          // Score a bounded deterministic grid instead of accepting an invalid
+          // final random sample inside a pillar or next to the player.
+          let best = Infinity;
+          for (let ring = 0; ring < 6; ring++) for (let slot = 0; slot < 40; slot++) {
+            const a = bearing + slot / 40 * Math.PI * 2;
+            const r = 3 + ring * 2.6;
+            const sx = Math.sin(a) * r, sz = Math.cos(a) * r;
+            if (!clear(sx, sz, false)) continue;
+            const score = Math.hypot(sx - desiredX, sz - desiredZ) + (clear(sx, sz, true) ? 0 : 100);
+            if (score < best) { best = score; x = sx; z = sz; }
+          }
+        }
+        occupied.push({ x, z });
+        const delay = 0.62 + (role === "ranged" ? 0.3 : 0) + n * 0.09;
         if (eliteFlag === "champion") {
           ctx.enemies.spawnCustom((c, xx, zz) => makeChampion(kind, c, xx, zz), x, z, delay + 0.4);
         } else if (eliteFlag === "elite") {
@@ -275,17 +332,21 @@ export class RunManager {
     }
   }
 
-  update(): void {
+  update(dt = 0): void {
     if (this.state !== "fighting") return;
     const node = this.currentNode;
     if (!node) return;
-    if (this.ctx.enemies.remaining > 0) return;
     if (node.bossKind) return; // resolved via BOSS_DEFEATED
-
-    this.waveIndex++;
-    if (this.waveIndex < node.waves.length) {
+    this.waveTime += dt;
+    const remaining = this.ctx.enemies.remaining;
+    const more = this.waveIndex + 1 < node.waves.length;
+    // A lone fleeing archer should not stop the fight's rhythm. Reinforcements
+    // show their full arrival tell, with at most two survivors carried over.
+    if (more && (remaining === 0 || (remaining <= 2 && this.waveTime >= 7.5))) {
+      this.waveIndex++;
+      this.waveTime = 0;
       this.spawnWave(node.waves[this.waveIndex]);
-    } else {
+    } else if (!more && remaining === 0 && !this.ctx.enemies.lingeringDanger) {
       this.state = "cleared";
       this.ctx.stats.roomsCleared++;
       this.ctx.hostiles.clear();
@@ -321,8 +382,9 @@ export class RunManager {
     const bossTheme = bossKind === "warden" ? "ember" : bossKind === "spire" ? "tempest"
       : bossKind === "colossus" ? "core" : bossKind === "unmaker" ? "starfall"
       : bossKind === "wound" ? "wound" : bossKind === "tyrant" ? "voidcrown" : "abyss";
-    // Land on a real mid-map fork, then swap in a synthetic boss node of the requested kind.
-    this.position = Math.min(act * 4 - 2, this.plan.forks.length - 2);
+    // Final-boss cuts must exercise the actual ending/Wound transition, too.
+    this.position = bossKind === "unmaker" || bossKind === "wound"
+      ? this.plan.forks.length - 1 : Math.min(act * 4 - 2, this.plan.forks.length - 2);
     this.currentNode = {
       id: -1, kind: "boss", act, actName: "DEBUG", name: bossKind === "echo" ? "A Rift Tear" : "Boss",
       theme: bossTheme, reward: "relic", bossKind, waves: [],
@@ -331,23 +393,4 @@ export class RunManager {
     return true;
   }
 
-  /** Warm boss shader/material variants under the boot loader. Bosses aren't in the
-   *  enemy registry, so the first time one is constructed mid-run its materials
-   *  compile on a live frame (a ~250ms+ stall). Build each off-screen, warm the
-   *  whole scene, then dispose — so no boss ever compiles during play. */
-  async warmBosses(kinds: readonly BossKind[] = Object.keys(BOSSES) as BossKind[]): Promise<void> {
-    const dummies: Enemy[] = [];
-    for (const key of kinds) {
-      if (this.warmedBosses.has(key)) continue;
-      try {
-        const b = BOSSES[key].make(this.ctx, 0, -1000);
-        b.warmVisuals();
-        dummies.push(b);
-        this.warmedBosses.add(key);
-      } catch { /* skip a bad ctor */ }
-    }
-    if (!dummies.length) return;
-    await this.ctx.stage.warmUpAsync();
-    for (const b of dummies) b.dispose();
-  }
 }

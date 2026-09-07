@@ -2,7 +2,7 @@
 // Electron entry — wraps the Vite production build (dist/) in a standalone
 // native window. No browser, no separate server console.
 //
-// We serve dist/ over http://127.0.0.1:<random-port> rather than loading via
+// We serve dist/ over a fixed loopback origin rather than loading via
 // file:// because:
 //   1. Vite's production output uses absolute base paths (/assets/...) that
 //      file:// resolves wrong.
@@ -16,6 +16,10 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { registerNativeIpc } = require("./electron-ipc.cjs");
+
+// Smoke uses an isolated profile and an invisible, muted window.
+const smoke = process.env.RH3_SMOKE === "1";
+if (smoke && process.env.RH3_USER_DATA) app.setPath("userData", process.env.RH3_USER_DATA);
 
 const distDir = path.join(__dirname, "dist");
 
@@ -59,12 +63,14 @@ function startServer() {
   return new Promise((resolve, reject) => {
     server = http.createServer((req, res) => {
       // Strip the query string and decode percent-encoded segments.
-      let urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
+      let urlPath;
+      try { urlPath = decodeURIComponent((req.url || "/").split("?")[0]); }
+      catch { res.writeHead(400); res.end("Invalid URL"); return; }
       if (urlPath === "/" || urlPath === "") urlPath = "/index.html";
       const filePath = path.join(distDir, urlPath);
       // Prevent directory traversal — reject any resolved path that escapes dist/.
       const resolved = path.resolve(filePath);
-      if (!resolved.startsWith(path.resolve(distDir))) {
+      if (!resolved.startsWith(path.resolve(distDir) + path.sep)) {
         res.writeHead(403);
         res.end("Forbidden");
         return;
@@ -113,7 +119,7 @@ function startServer() {
       reject(err);
     });
 
-    server.listen(PREFERRED_PORT, "127.0.0.1");
+    server.listen(smoke ? 0 : PREFERRED_PORT, "127.0.0.1");
   });
 }
 
@@ -127,8 +133,10 @@ function createWindow() {
   const h = Math.min(1080, Math.floor(height * 0.8));
 
   const win = new BrowserWindow({
-    width: w,
-    height: h,
+    width: smoke ? 1280 : w,
+    height: smoke ? 720 : h,
+    useContentSize: smoke,
+    paintWhenInitiallyHidden: true,
     minWidth: 960,
     minHeight: 600,
     autoHideMenuBar: true,
@@ -144,6 +152,9 @@ function createWindow() {
       // Backbuffer alpha would let the OS desktop bleed through transparent
       // pixels; the canvas paints to fully-opaque black so we want it off.
       backgroundThrottling: false,
+      // A never-shown Windows surface can tick at 1 Hz despite the timer flag.
+      // Offscreen composition gives the smoke real frames without stealing focus.
+      offscreen: smoke,
     },
   });
 
@@ -167,14 +178,14 @@ function createWindow() {
   win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
 
   win.once("ready-to-show", () => {
-    // During the Playwright smoke (smoke-electron.mjs sets RH3_SMOKE=1) show the
-    // window WITHOUT activating it — showInactive paints a real, screenshottable
-    // surface but never steals OS focus / the cursor from the editor. Real users
-    // get the normal focused window.
-    if (process.env.RH3_SMOKE === "1") win.showInactive();
-    else win.show();
+    // Smoke remains invisible; normal launches show the completed first frame.
+    if (!smoke) win.show();
   });
-  win.loadURL(`http://127.0.0.1:${serverPort}/`);
+  if (smoke) {
+    win.webContents.setAudioMuted(true);
+    win.webContents.setFrameRate(60);
+  }
+  win.loadURL(smoke && process.env.RH3_SMOKE_URL || `http://127.0.0.1:${serverPort}/`);
 
   // Optional devtools — set RH3_DEVTOOLS=1 to enable.
   if (process.env.RH3_DEVTOOLS === "1") {

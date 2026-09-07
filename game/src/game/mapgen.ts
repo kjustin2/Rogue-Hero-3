@@ -1,3 +1,4 @@
+import { ENCOUNTERS, type EncounterKind } from "./encounters";
 import { Rng } from "../core/rng";
 import { THEMES } from "../render/arena";
 import { difficultyFor, type Difficulty } from "./difficulty";
@@ -22,6 +23,7 @@ export interface MapNode {
   waves: SpawnList[];
   bossKind?: BossKind;
   elite?: boolean;
+  encounter?: EncounterKind;
   obstacles?: { x: number; z: number; r: number }[];
   /** Optional arena mechanic on combat/elite nodes — see MapFeatures. */
   feature?: "hazard" | "teleport" | "spikes" | "drifters" | "sweeper" | "flamevent";
@@ -50,99 +52,82 @@ const ACTS: ActDef[] = [
   { act: 1, name: "THE EMBER RIFT", theme: "rift", altTheme: "dusk", bossTheme: "ember", boss: "warden", bossRoom: "The Pit", pool: ["husk", "spitter", "swarmer", "bomber", "splitter"], eliteKind: "sentinel" },
   { act: 2, name: "THE SHATTERED SPIRE", theme: "spire", altTheme: "spire", bossTheme: "tempest", boss: "spire", bossRoom: "The Spire Crown", pool: ["wisp", "tether", "bastion", "shade", "leaper", "harrier"], eliteKind: "mirror" },
   { act: 3, name: "THE MOLTEN CORE", theme: "forge", altTheme: "forge", bossTheme: "core", boss: "colossus", bossRoom: "The Core", pool: ["leaper", "bomber", "caster", "swarmer", "bastion", "shade", "brute"], eliteKind: "brute" },
-  { act: 4, name: "THE SUNDERED ABYSS", theme: "abyss", altTheme: "abyss", bossTheme: "voidcrown", boss: "tyrant", bossRoom: "The Wound", pool: ["harrier", "brute", "splitter", "caster", "bastion", "leaper", "mirror"], eliteKind: "mirror" },
+  { act: 4, name: "THE SUNDERED ABYSS", theme: "abyss", altTheme: "abyss", bossTheme: "voidcrown", boss: "tyrant", bossRoom: "The Usurper's Throne", pool: ["harrier", "brute", "splitter", "caster", "bastion", "leaper", "mirror"], eliteKind: "mirror" },
   { act: 5, name: "THE HOLLOW STAR", theme: "hollow", altTheme: "hollow", bossTheme: "starfall", boss: "unmaker", bossRoom: "The Hollow Star", pool: ["voidling", "warper", "caster", "harrier", "brute", "mirror", "shade"], eliteKind: "brute" },
-];
-
-const COMBAT_NAMES = ["Skirmish", "The Gauntlet", "Ambush", "Broken Ground", "The Crossing", "Hollow Run"];
-
-/** Per-act arena identity: a signature mechanic (weighted heavily) + a secondary
- *  for variety — chambers within an act share a mechanical flavor instead of
- *  drawing from one uniform grab bag. Signatures are unique across acts:
- *  ember pits → sweeping beam → fire geysers → warp pads → drifting void orbs. */
-const ACT_FEATURES: Record<number, [NonNullable<MapNode["feature"]>, NonNullable<MapNode["feature"]>]> = {
-  1: ["hazard", "spikes"],
-  2: ["sweeper", "teleport"],
-  3: ["flamevent", "hazard"],
-  4: ["teleport", "spikes"],
-  5: ["drifters", "sweeper"],
-};
-
-function pickFeature(a: ActDef, rng: Rng, elite: boolean): NonNullable<MapNode["feature"]> {
-  const [sig, alt] = ACT_FEATURES[a.act] ?? ACT_FEATURES[1];
-  let f = rng.chance(0.75) ? sig : alt;
-  // Elite hunts stay pure combat mechanics — a warp pad mid-duel reads as escape, not threat.
-  if (elite && f === "teleport") f = sig === "teleport" ? alt : sig;
-  return f;
-}
-const OBSTACLE_PRESETS: { x: number; z: number; r: number }[][] = [
-  [{ x: -6, z: -3, r: 1.2 }, { x: 6, z: -3, r: 1.2 }, { x: 0, z: 6, r: 1.5 }],
-  [{ x: -8, z: 2, r: 1.3 }, { x: 8, z: 2, r: 1.3 }, { x: -4, z: -8, r: 1.1 }, { x: 4, z: -8, r: 1.1 }],
-  [{ x: 0, z: 0, r: 1.6 }, { x: -9, z: -5, r: 1.2 }, { x: 9, z: -5, r: 1.2 }],
 ];
 
 // Roles for coordinated packs — a tanky front line you must break through to
 // reach the fragile, dangerous back line.
-const FRONTLINE = new Set<FieldKind>(["bastion", "brute", "sentinel", "mirror"]);
-const BACKLINE = new Set<FieldKind>(["spitter", "caster", "wisp", "tether"]);
+export const FIELD_ROLES: Record<FieldKind, "guard" | "ranged" | "hunter" | "swarm"> = {
+  husk: "hunter", spitter: "ranged", swarmer: "swarm", bomber: "hunter", sentinel: "guard",
+  wisp: "ranged", leaper: "hunter", tether: "ranged", mirror: "guard", caster: "ranged",
+  shade: "hunter", bastion: "guard", brute: "guard", harrier: "ranged", splitter: "swarm",
+  voidling: "swarm", warper: "ranged",
+};
 
-/** A coordinated wave: a couple of front-liners shielding a cluster of back-liners. */
-function formationWave(a: ActDef, rng: Rng, diff: Difficulty): SpawnList | null {
-  const front = a.pool.filter((k) => FRONTLINE.has(k));
-  const back = a.pool.filter((k) => BACKLINE.has(k));
-  if (!front.length || !back.length) return null;
-  const f = rng.pick(front);
-  const b = rng.pick(back);
-  const wave: SpawnList = [
-    [f, 1 + (a.act >= 3 ? 1 : 0)],
-    [b, 2 + rng.int(0, 1) + diff.extraEnemies],
-  ];
-  return wave;
-}
-
-/** Two waves drawn from the act pool, scaled by act + difficulty; one may be a coordinated pack. */
-function generateWaves(a: ActDef, rng: Rng, elite: boolean, diff: Difficulty): SpawnList[] {
-  const waves: SpawnList[] = [];
-  // ~45% of fights open with a coordinated formation (front line + back line).
-  const formation = rng.chance(0.45) ? formationWave(a, rng, diff) : null;
-  for (let w = 0; w < 2; w++) {
-    if (w === 0 && formation) { waves.push(formation); continue; }
+/** Each room teaches one tactical shape, then changes the pressure in its second wave. */
+function generateWaves(a: ActDef, rng: Rng, elite: boolean, diff: Difficulty, encounter: EncounterKind): SpawnList[] {
+  type Role = (typeof FIELD_ROLES)[FieldKind];
+  const pick = (role: Role): FieldKind => {
+    const candidates = a.pool.filter(k => FIELD_ROLES[k] === role);
+    if (candidates.length) return rng.pick(candidates);
+    // Each act retains its creatures, with the act's elite species filling a missing guard role.
+    if (role === "guard") return a.eliteKind;
+    const fallback = a.pool.filter(k => FIELD_ROLES[k] === (role === "swarm" ? "hunter" : "swarm"));
+    return rng.pick(fallback.length ? fallback : a.pool);
+  };
+  const patterns: Record<EncounterKind, [Role, number][][]> = {
+    procession: [[["hunter", 3], ["ranged", 1]], [["hunter", 2], ["swarm", 3], ["ranged", 1]]],
+    crossfire: [[["ranged", 2], ["hunter", 2]], [["ranged", 2], ["guard", 1], ["hunter", 2]]],
+    pursuit: [[["hunter", 4]], [["hunter", 3], ["swarm", 3], ["ranged", 1]]],
+    bastion: [[["guard", 1], ["ranged", 2]], [["guard", 1], ["ranged", 2], ["hunter", 2]]],
+    breach: [[["swarm", 5], ["hunter", 1]], [["guard", 1], ["hunter", 2], ["ranged", 1]]],
+  };
+  const waves = patterns[encounter].map(pattern => {
     const wave: SpawnList = [];
-    const k = rng.shuffle([...a.pool]).slice(0, 2 + (a.act >= 3 ? 1 : 0));
-    for (const kind of k) {
-      const count = 2 + rng.int(0, 1) + (a.act >= 3 ? 1 : 0) + diff.extraEnemies;
-      wave.push([kind, count]);
+    for (const [role, count] of pattern) {
+      const kind = pick(role);
+      // Splitters already create another generation; five parents overwhelm the room.
+      const n = kind === "splitter" ? Math.min(count, 2) : count;
+      const existing = wave.find(s => s[0] === kind);
+      if (existing) existing[1] += n;
+      else wave.push([kind, n]);
     }
-    waves.push(wave);
-  }
+    for (let i = 0; i < diff.extraEnemies; i++) wave[i % wave.length][1]++;
+    return wave;
+  });
   if (elite) {
-    // From the Molten Core on, an elite hunt may instead crown a Champion — a 2-affix mini-boss.
-    const anchor: "elite" | "champion" = a.act >= 3 && rng.chance(0.5) ? "champion" : "elite";
-    waves[waves.length - 1].push([a.eliteKind, 1, anchor]);
+    // The named keeper arrives in the counterattack, with a small supporting pack.
+    const final = waves[1];
+    const oldGuard = final.findIndex(s => FIELD_ROLES[s[0]] === "guard");
+    if (oldGuard >= 0) final.splice(oldGuard, 1);
+    final.push([a.eliteKind, 1, a.act >= 3 && rng.chance(0.5) ? "champion" : "elite"]);
   }
   return waves;
 }
 
-function combatNode(a: ActDef, rng: Rng, diff: Difficulty, id: number): MapNode {
-  const hasObstacles = rng.chance(0.3);
-  // A rare combat chamber pays a relic draft instead of a card — an unexpected boon.
-  const reward: "card" | "relic" = rng.chance(0.13) ? "relic" : "card";
+function combatNode(a: ActDef, rng: Rng, diff: Difficulty, id: number, avoid: EncounterKind[] = [], forced?: EncounterKind): MapNode {
+  const kinds = (Object.keys(ENCOUNTERS) as EncounterKind[]).filter(k => !avoid.includes(k));
+  const encounter = forced ?? rng.pick(kinds.length ? kinds : ["procession" as const]);
+  const design = ENCOUNTERS[encounter];
+  const reward = rng.chance(.13) ? "relic" : "card";
   return {
     id, kind: "combat", act: a.act, actName: a.name,
-    name: rng.pick(COMBAT_NAMES), theme: a.theme, reward,
-    waves: generateWaves(a, rng, false, diff),
-    obstacles: hasObstacles ? rng.pick(OBSTACLE_PRESETS) : undefined,
-    // Some chambers carry the act's signature mechanic (skip if pillars crowd the floor).
-    feature: !hasObstacles && rng.chance(0.52) ? pickFeature(a, rng, false) : undefined,
+    name: design.name, theme: a.theme, reward: forced ? "card" : reward, encounter,
+    waves: generateWaves(a, rng, false, diff, encounter),
+    obstacles: design.obstacles.map(o => ({ ...o })),
+    // The open breach has room for an act-specific hazard. Cover rooms stay readable.
+    feature: encounter === "breach" && a.act > 1 ? (["hazard", "sweeper", "flamevent", "teleport", "drifters"] as const)[a.act - 1] : undefined,
   };
 }
 
 function eliteNode(a: ActDef, rng: Rng, diff: Difficulty, id: number): MapNode {
+  const encounter: EncounterKind = rng.pick(["bastion", "breach"]);
   return {
     id, kind: "elite", act: a.act, actName: a.name,
-    name: "Elite Hunt", theme: a.altTheme, reward: "relic", elite: true,
-    waves: generateWaves(a, rng, true, diff),
-    feature: rng.chance(0.58) ? pickFeature(a, rng, true) : undefined,
+    name: "The Keeper's Hunt", theme: a.altTheme, reward: "relic", elite: true, encounter,
+    waves: generateWaves(a, rng, true, diff, encounter),
+    obstacles: ENCOUNTERS[encounter].obstacles.map(o => ({ ...o })),
   };
 }
 
@@ -199,7 +184,7 @@ function choiceFork(a: ActDef, rng: Rng, diff: Difficulty, stepIdx: number, stat
     // No duplicate non-combat kinds within one fork
     const choices = bag.filter((k) => k === "combat" || k === "elite" || !usedSimple.has(k));
     const kind = rng.pick(choices);
-    if (kind === "combat") out.push(combatNode(a, rng, diff, nextId()));
+    if (kind === "combat") out.push(combatNode(a, rng, diff, nextId(), out.flatMap(n => n.encounter ? [n.encounter] : [])));
     else if (kind === "elite") out.push(eliteNode(a, rng, diff, nextId()));
     else {
       usedSimple.add(kind);
@@ -231,7 +216,7 @@ export function generatePlan(seed: number, depth: number): RunPlan {
   const nextId = () => id++;
   const forks: MapNode[][] = [];
   for (const a of ACTS) {
-    forks.push([combatNode(a, rng, diff, nextId())]); // act entry (forced)
+    forks.push([combatNode(a, rng, diff, nextId(), [], (["procession", "bastion", "pursuit", "crossfire", "breach"] as const)[a.act - 1])]); // act entry (forced)
     const state = { shopLeft: 1 };
     // First choice fork is combat-only so you always fight ≥2 battles before the boss
     // (non-combat nodes can't replace a real fight on the way down).
@@ -243,4 +228,31 @@ export function generatePlan(seed: number, depth: number): RunPlan {
     forks.push([bossNode(a, nextId())]); // act boss (forced)
   }
   return { seed, depth, forks };
+}
+
+/** Saved routes stay intact across generator changes. Reject malformed local
+ * data before any enemy or collider can be built from it. */
+export function isRunPlan(value: unknown, seed: number, depth: number): value is RunPlan {
+  try {
+    const plan = value as RunPlan;
+    const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+    const kinds: readonly string[] = ["combat","elite","shop","treasure","rest","event","shrine","gamble","boss"];
+    const features: readonly string[] = ["hazard","teleport","spikes","drifters","sweeper","flamevent"];
+    return !!plan && plan.seed === seed && plan.depth === depth && Array.isArray(plan.forks)
+      && plan.forks.length > 0 && plan.forks.length <= 64 && plan.forks.every(fork =>
+        Array.isArray(fork) && fork.length > 0 && fork.length <= 3 && fork.every(node =>
+          !!node && finite(node.id) && kinds.includes(node.kind) && ACTS.some(a=>a.act===node.act)
+          && typeof node.name === "string" && node.name.length <= 100 && typeof node.actName === "string"
+          && Object.hasOwn(THEMES,node.theme) && ["card","relic"].includes(node.reward)
+          && (!node.encounter || Object.hasOwn(ENCOUNTERS,node.encounter))
+          && (!node.feature || features.includes(node.feature))
+          && (node.kind !== "boss" || ACTS.some(a=>a.boss===node.bossKind) || node.bossKind === "echo" || node.bossKind === "wound")
+          && Array.isArray(node.waves) && node.waves.length <= 8 && node.waves.every(wave =>
+            Array.isArray(wave) && wave.length <= 12 && wave.every(spawn => Array.isArray(spawn)
+              && Object.hasOwn(FIELD_ROLES,spawn[0]) && Number.isInteger(spawn[1]) && spawn[1] > 0 && spawn[1] <= 32
+              && (!spawn[2] || spawn[2] === "elite" || spawn[2] === "champion")))
+          && (!node.obstacles || (Array.isArray(node.obstacles) && node.obstacles.length <= 16 && node.obstacles.every(o =>
+            finite(o.x) && finite(o.z) && finite(o.r) && o.r > 0 && o.r <= 6 && Math.hypot(o.x,o.z)+o.r <= 19)))
+        ));
+  } catch { return false; }
 }

@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { Enemy, type EnemyKind } from "./enemies";
 import type { Ctx } from "./ctx";
+import { forgeWarden } from "../render/wardenForge";
+import { ARENA_RADIUS } from "../render/arena";
+import { ParticleShape } from "../render/particles";
 import { PIT_WARDEN_MOVE_PROFILE, bossRecoverySeconds, chooseBossMove, type BossRecoveryClass, type PitWardenMove } from "./bossMoves";
 
 interface FirePatch {
@@ -13,7 +16,7 @@ interface FirePatch {
 }
 
 type BossState =
-  | "idle" | "dashTell" | "dashing" | "leap" | "slamTell" | "recover" | "phaseShift" | "guard"
+  | "idle" | "dashTell" | "dashing" | "leapTell" | "leap" | "recover" | "phaseShift" | "guard"
   | "fanTell" | "fissureTell";
 
 const PHASE_LINES = [
@@ -71,7 +74,7 @@ export class PitWarden extends Enemy {
   // Hip-pivot height of the legs. Tuned so the thigh plants and the boot rests ON
   // the arena floor (y≈0) rather than sinking ~0.13 below it — the old base left
   // the boots mostly buried, a "feet clipping through the ground" look from behind.
-  private readonly legBaseY = 0.7;
+  private readonly legBaseY = 0.92;
   private walkPhase = 0;
   private gait = 0;
   private prevWalkX = 0;
@@ -84,128 +87,32 @@ export class PitWarden extends Enemy {
     this.radius = 1.4;
     this.wardColor = 0xff7a3a;
 
-    // Faint ember warmth on the hide/plates so the beast's upper body reads
-    // instead of crushing to black above the molten mouth (audit finding).
-    const hide = this.stdMat(0x9a4d42, 0xff512c, 0.62);
-    const plate = this.stdMat(0x76505a, 0xff7540, 0.5);
-    const horn = this.stdMat(0xc9b8a0);
-    // Brighter iron links catching the furnace heat — the "chained" pit demon is
-    // the Warden's defining motif, so the bindings should actually read.
-    const chain = this.stdMat(0x342019, 0xff8a3a, 0.7);
-    const emberPlate = this.stdMat(0x3a0d06, 0xff8a32, 0.72);
-    this.coreMat = this.stdMat(0x331111, 0xff4422, 1.15);
-    this.eyeMat = this.stdMat(0x000000, 0xffaa22, 2.2);
-    this.hide = hide;
-    this.plate = plate;
-
-    // Massive torso, hunched forward
-    const torsoMat = this.stdMat(0xaa5548, 0xff5a32, 0.72);
-    const torso = this.addMesh(new THREE.BoxGeometry(2.2, 1.7, 1.5), torsoMat, 0, 1.7);
-    torso.rotation.x = 0.25;
-    this.core = this.addMesh(new THREE.BoxGeometry(1.0, 0.7, 0.5), this.coreMat, 0, 1.65, 0.78); // molten chest core
-    // The low reveal may look at the Warden from either side. Mirror the furnace
-    // cleft onto the back so its body never becomes a featureless black block.
-    this.addMesh(new THREE.BoxGeometry(0.72, 0.95, 0.16), this.coreMat, 0, 1.72, -0.82);
-    this.addMesh(new THREE.BoxGeometry(1.22, 0.11, 0.18), emberPlate, 0, 2.2, -0.84);
-    this.addMesh(new THREE.BoxGeometry(1.05, 0.11, 0.18), emberPlate, 0, 1.18, -0.84);
-    const braceGlow = this.stdMat(0x5a2418, 0xff7434, 1.6);
-    for (const z of [-1.02, 1.02]) {
-      for (let i = 0; i < 3; i++) {
-        const brace = this.addMesh(new THREE.BoxGeometry(1.28 - i * 0.12, 0.1, 0.07), braceGlow, 0, 1.34 + i * 0.42, z);
-        brace.rotation.z = (i - 1) * 0.08;
-      }
-    }
-    // Layered frame around the core so the torso reads as armor over heat, not one block.
-    this.addMesh(new THREE.BoxGeometry(1.18, 0.1, 0.16), emberPlate, 0, 2.03, 0.86);
-    this.addMesh(new THREE.BoxGeometry(1.12, 0.1, 0.16), emberPlate, 0, 1.26, 0.86);
-    for (const sx of [-1, 1]) {
-      const rib = this.addMesh(new THREE.BoxGeometry(0.14, 0.78, 0.16), emberPlate, sx * 0.62, 1.64, 0.88);
-      rib.rotation.z = sx * 0.12;
-      this.emberVents.push(rib);
-    }
-    this.addMesh(new THREE.BoxGeometry(1.6, 0.9, 1.1), plate, 0, 0.6, 0); // hips
-    this.addMesh(new THREE.BoxGeometry(1.85, 0.22, 1.18), chain, 0, 1.02, 0.08);
-    this.addMesh(new THREE.BoxGeometry(0.55, 0.18, 1.2), emberPlate, -0.56, 0.78, 0.12);
-    this.addMesh(new THREE.BoxGeometry(0.55, 0.18, 1.2), emberPlate, 0.56, 0.78, 0.12);
-    // Head low between shoulders
-    const head = this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.8), plate, 0, 2.45, 0.55);
-    head.rotation.x = 0.15;
-    this.addMesh(new THREE.BoxGeometry(0.16, 0.12, 0.1), this.eyeMat, -0.22, 2.5, 0.98);
-    this.addMesh(new THREE.BoxGeometry(0.16, 0.12, 0.1), this.eyeMat, 0.22, 2.5, 0.98);
-    // Horns
-    const hornL = this.addMesh(new THREE.ConeGeometry(0.18, 0.9, 5), horn, -0.55, 2.85, 0.45);
-    hornL.rotation.z = 0.55;
-    const hornR = this.addMesh(new THREE.ConeGeometry(0.18, 0.9, 5), horn, 0.55, 2.85, 0.45);
-    hornR.rotation.z = -0.55;
-    // Gorilla arms with huge fists — each hangs from a shoulder-pivot group so the
-    // whole arm swings through the walk and cocks/raises/thrusts on attacks. The
-    // pauldron is shoulder armor and stays on the body; everything below the
-    // shoulder (upper arm, fist, elbow band, wrist chain, claws) rides the group.
-    for (const sx of [-1, 1]) {
-      const pauldron = this.addMesh(new THREE.BoxGeometry(0.72, 0.28, 0.9), emberPlate, sx * 1.15, 2.05, 0.08);
-      pauldron.rotation.z = sx * -0.2;
-
-      const arm = new THREE.Group();
-      arm.position.set(sx * 1.35, 2.05, 0.2); // shoulder pivot
-      this.root.add(arm);
-      this.addMesh(new THREE.BoxGeometry(0.55, 1.6, 0.55), hide, 0, -0.75, 0, arm);   // upper arm
-      this.addMesh(new THREE.BoxGeometry(0.85, 0.7, 0.85), plate, 0, -1.7, 0, arm);   // fist
-      const elbowBand = this.addMesh(new THREE.BoxGeometry(0.66, 0.14, 0.64), emberPlate, 0, -0.97, 0, arm);
-      elbowBand.rotation.z = sx * -0.16;
-      this.emberVents.push(elbowBand);
-      const brace = this.addMesh(new THREE.BoxGeometry(0.72, 0.18, 0.5), chain, 0, -1.27, 0.32, arm);
-      brace.rotation.z = sx * -0.12;
-      this.chainLinks.push(brace);
-      for (let i = 0; i < 3; i++) {
-        const claw = this.addMesh(new THREE.ConeGeometry(0.08, 0.42, 4), emberPlate, sx * (-0.23 + i * 0.16), -1.85, 0.52, arm);
-        claw.rotation.x = Math.PI / 2;
-        claw.rotation.z = sx * 0.18;
-      }
-      this.arms.push(arm); // [0] = left (sx=-1), [1] = right (sx=1)
-    }
-    const chainA = this.addMesh(new THREE.BoxGeometry(1.55, 0.12, 0.12), chain, -0.05, 1.95, 0.93);
-    chainA.rotation.z = 0.32;
-    const chainB = this.addMesh(new THREE.BoxGeometry(1.35, 0.1, 0.1), chain, 0.08, 1.78, 0.95);
-    chainB.rotation.z = -0.35;
-    this.chainLinks.push(chainA, chainB);
-    for (let i = 0; i < 5; i++) {
-      const link = this.addMesh(new THREE.BoxGeometry(0.32, 0.08, 0.12), chain, -0.58 + i * 0.29, 1.86 + Math.sin(i) * 0.06, 1.07);
-      link.rotation.z = i % 2 === 0 ? 0.55 : -0.42;
-      this.chainLinks.push(link);
-    }
-    this.addMesh(new THREE.BoxGeometry(0.28, 0.28, 0.12), emberPlate, 0, 1.84, 1.02).rotation.z = Math.PI / 4;
-    // Stubby legs — each on a hip-pivoted group so it swings through a walk cycle,
-    // with the boot kept on its own pivot so the ankle can roll for toe-off/heel-strike.
-    for (const sx of [-1, 1]) {
-      const leg = new THREE.Group();
-      leg.position.set(sx * 0.55, this.legBaseY, -0.15);
-      this.root.add(leg);
-      this.addMesh(new THREE.BoxGeometry(0.6, 0.74, 0.7), hide, 0, -0.37, 0, leg);
-      // Ankle pivot near the bottom of the shin; the boot hangs off it. Raised so the
-      // boot lands flush on the floor with the higher hip pivot above.
-      const ankle = new THREE.Group();
-      ankle.position.set(0, -0.58, 0.05);
-      leg.add(ankle);
-      const boot = this.addMesh(new THREE.BoxGeometry(0.76, 0.18, 0.85), plate, 0, 0, 0.18, ankle);
-      boot.rotation.z = sx * 0.04;
-      this.legs.push(leg); // [0] = left, [1] = right
-      this.ankles.push(ankle);
-    }
-    this.prevWalkX = x;
-    this.prevWalkZ = z;
-    // Back furnace flares give the silhouette a professional layered read from every angle.
-    for (let i = 0; i < 5; i++) {
-      const x = (i - 2) * 0.38;
-      const flare = this.addMesh(new THREE.ConeGeometry(0.12, 0.72 - Math.abs(i - 2) * 0.06, 4), emberPlate, x, 2.05 - Math.abs(i - 2) * 0.08, -0.74);
-      flare.rotation.x = -0.9;
-      flare.rotation.z = (i - 2) * 0.08;
-      this.backFlares.push(flare);
-    }
+    const rig = forgeWarden(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.bindCinematicParts(rig.arms);
+    this.core = rig.core; this.coreMat = rig.coreMat; this.eyeMat = rig.eyeMat;
+    this.hide = rig.hide; this.plate = rig.plate;
+    this.arms = rig.arms; this.legs = rig.legs; this.ankles = rig.ankles;
+    for (const node of rig.ankles) this.footContacts.push({node,offset:new THREE.Vector3(0,-.1,.3),radius:.32});
+    this.chainLinks = rig.chains; this.backFlares = rig.flares; this.emberVents = rig.vents;
+    this.prevWalkX = x; this.prevWalkZ = z;
 
     this.patchGeo = new THREE.CircleGeometry(1.2, 24);
     this.patchGeo.rotateX(-Math.PI / 2);
 
     this.buildPhaseLooks();
+  }
+
+  protected animateDeath(dt: number, progress: number): boolean {
+    const sink = Math.min(1, progress / .5);
+    const weight = sink * sink * (3 - 2 * sink);
+    this.root.position.y -= weight * .17;
+    this.settleDeathPart(this.root, dt, .16, this.root.rotation.y, -.055);
+    for (let i = 0; i < this.arms.length; i++) {
+      this.settleDeathPart(this.arms[i], dt, -.24, 0, i === 0 ? -.06 : .1);
+      this.settleDeathPart(this.legs[i], dt, i === 0 ? -.55 : -.28, 0, i === 0 ? -.09 : .09);
+      this.settleDeathPart(this.ankles[i], dt, i === 0 ? .42 : .16, 0, 0);
+    }
+    return true;
   }
 
   /** Pre-build the escalation geometry hidden until its phase unveils it. */
@@ -218,7 +125,7 @@ export class PitWarden extends Enemy {
       [-1.35, 1.55, -0.2, -0.7], [1.35, 1.55, -0.2, 0.7],
     ];
     for (const [x, y, z, tilt] of ridge) {
-      const sp = this.addMesh(spikeGeo, spikeMat, x, y, z);
+      const sp = this.addMesh(spikeGeo, spikeMat, x, y+0.22, z);
       sp.rotation.x = -0.6;
       sp.rotation.z = tilt;
       sp.visible = false;
@@ -230,15 +137,15 @@ export class PitWarden extends Enemy {
     const fangGeo = new THREE.ConeGeometry(0.12, 0.6, 4);
     for (let i = 0; i < 7; i++) {
       const a = (i / 7) * Math.PI * 2;
-      const fang = this.addMesh(fangGeo, crownMat, Math.sin(a) * 0.62, 2.95, 0.55 + Math.cos(a) * 0.4);
+      const fang = this.addMesh(fangGeo, crownMat, Math.sin(a) * 0.62, 3.17, 0.55 + Math.cos(a) * 0.4);
       fang.rotation.x = Math.cos(a) * 0.35;
       fang.rotation.z = -Math.sin(a) * 0.35;
       fang.visible = false;
       this.p3Crown.push(fang);
     }
     const knuckleGeo = new THREE.BoxGeometry(0.95, 0.3, 0.95);
-    for (const fx of [-1.35, 1.35]) {
-      const k = this.addMesh(knuckleGeo, crownMat, fx, 0.7, 0.2);
+    for (const arm of this.arms) {
+      const k = this.addMesh(knuckleGeo, crownMat, 0, -1.65, 0.2, arm);
       k.visible = false;
       this.p3Crown.push(k);
     }
@@ -252,14 +159,14 @@ export class PitWarden extends Enemy {
       // Hide darkens to char, core burns hotter and shifts toward orange-white.
       this.hide.color.set(0x5a1410);
       this.hide.emissive.set(0x8a1606);
-      this.hide.emissiveIntensity = 0.5;
+      this.hide.emissiveIntensity = 0.12;
       this.coreMat.emissive.set(0xff5522);
       this.eyeMat.emissive.set(0xffcc33);
     } else if (phase === 3) {
       this.setBossScale(1.15);
       this.eruptReveal(this.p3Crown);
       this.plate.emissive.set(0x551200);
-      this.plate.emissiveIntensity = 0.36;
+      this.plate.emissiveIntensity = 0.12;
       this.coreMat.emissive.set(0xff7a32);
       this.eyeMat.emissive.set(0xffffff);
       this.eyeMat.emissiveIntensity = 3.2;
@@ -269,6 +176,38 @@ export class PitWarden extends Enemy {
       f.baseEmissive.copy(f.mat.emissive);
       f.baseIntensity = f.mat.emissiveIntensity;
     }
+  }
+
+  interruptAttack(): void {
+    super.interruptAttack();
+    this.dashesLeft = 0; this.fissures = []; this.leapT = 1; this.pos.y = 0;
+    this.clearPatches();
+  }
+
+  protected onGuardBroken(): void {
+    this.state = "recover";
+    this.timer = 1.35;
+  }
+
+  protected animateCinematic(action: string, time: number, dt: number): boolean {
+    const k = Math.min(1, time / 0.65), ease = k*k*(3-2*k);
+    const landing = action === "land", drop = action === "drop", drag = action === "drag";
+    const spread = action === "roar" || action === "last-stand";
+    const pull = spread ? Math.sin(Math.min(1, time / 0.6)*Math.PI) : 0;
+    this.drivePose(dt, { lunge: landing ? 0.2*(1-ease) : drag ? 0.13 : drop ? 0.16 : 0.04, rear: spread ? 0.065*ease : 0 });
+    for (let i = 0; i < 2; i++) {
+      const side = i === 0 ? 1 : -1;
+      const x = drop ? -1.05 : landing ? -0.18 : drag ? (i === 0 ? -0.32 : 0.12) : -0.32-pull*0.55-(i===0 ? 0.12 : 0);
+      const z = drop ? side*0.18 : spread ? side*(pull*0.3-ease*0.18) : side*0.045;
+      this.arms[i].rotation.x += (x-this.arms[i].rotation.x)*Math.min(1,dt*12);
+      this.arms[i].rotation.y += ((i===0 ? -0.08 : 0.12)-this.arms[i].rotation.y)*Math.min(1,dt*9);
+      this.arms[i].rotation.z += (z-this.arms[i].rotation.z)*Math.min(1,dt*12);
+      this.legs[i].rotation.x = drop ? 0.5 : 0;
+      this.ankles[i].rotation.x = drop ? -0.3 : 0;
+      this.legs[i].position.y = this.legBaseY;
+    }
+    this.coreMat.emissiveIntensity = 1 + pull*0.6 + Math.sin(time*3)*0.08;
+    return true;
   }
 
   protected deathColor(): number {
@@ -299,6 +238,7 @@ export class PitWarden extends Enemy {
       // world, so if we leave the boss airborne it hangs frozen in the sky for a
       // beat — snap it down to the ground and end the leap before transitioning.
       if (this.state === "leap") { this.pos.y = 0; this.leapT = 1; }
+      this.interruptAttack();
       this.state = "phaseShift";
       this.timer = 1.2;
       this.applyPhaseLook(this.phase);
@@ -322,9 +262,10 @@ export class PitWarden extends Enemy {
   }
 
   die(): void {
+    if (!this.alive) return;
     this.disposeExtras();
-    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
+    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
   }
 
   // Room teardown for a still-alive Warden (player death / exit) calls dispose(),
@@ -336,12 +277,16 @@ export class PitWarden extends Enemy {
   }
 
   private disposeExtras(): void {
+    this.clearPatches();
+    this.patchGeo.dispose();
+  }
+
+  private clearPatches(): void {
     for (const pt of this.patches) {
       this.ctx.stage.scene.remove(pt.mesh);
       pt.mat.dispose();
     }
     this.patches = [];
-    this.patchGeo.dispose();
   }
 
   protected tick(dt: number): void {
@@ -350,12 +295,12 @@ export class PitWarden extends Enemy {
     this.updatePatches(dt);
 
     // Core breathes faster as phases climb
-    this.coreMat.emissiveIntensity = 1.8 + this.phase * 0.5 + Math.sin(this.t * (2 + this.phase * 2)) * 0.7;
+    this.coreMat.emissiveIntensity = 0.85 + this.phase * 0.16 + Math.sin(this.t * (2 + this.phase * 2)) * 0.2;
     const corePulse = 1 + Math.sin(this.t * (2.6 + this.phase * 0.65)) * 0.055;
     this.core.scale.set(1 + (corePulse - 1) * 1.2, 1 + (corePulse - 1) * 0.75, 1 + (corePulse - 1) * 1.45);
     for (let i = 0; i < this.chainLinks.length; i++) {
       const link = this.chainLinks[i];
-      link.rotation.y = Math.sin(this.t * 1.45 + i * 0.7) * 0.045;
+      link.rotation.y = (i % 2) * 1.05 + Math.sin(this.t * 1.45 + i * 0.7) * 0.045;
     }
     for (let i = 0; i < this.backFlares.length; i++) {
       const flare = this.backFlares[i];
@@ -402,13 +347,18 @@ export class PitWarden extends Enemy {
       switch (this.state) {
         case "dashTell": armX = 0.95; break;     // wind both fists back
         case "dashing": armX = -1.15; break;     // drive them forward through the charge
+        case "leapTell": armX = 0.75; break;
         case "leap": armX = -2.4; break;         // raise overhead for the smash
         case "guard": armX = -1.95; break;       // braced fists up in front
         case "fanTell": armX = 1.05; break;      // rear back, gathering embers
         case "fissureTell": armX = -2.25; break; // both fists raised to crack the ground
+        case "recover":
+          // Stay planted over the delivered blow before pulling the fists free.
+          armX = this.currentMove === "leap" || this.currentMove === "fissure" || this.currentMove === "guard"
+            ? -0.62 * Math.min(1, this.timer * 2) : -0.22 * Math.min(1, this.timer * 2);
+          break;
       }
-      const armActive = this.state !== "idle" && this.state !== "recover" &&
-        this.state !== "phaseShift" && this.state !== "slamTell";
+      const armActive = this.state !== "idle" && this.state !== "phaseShift";
       this.armPose += ((armActive ? 1 : 0) - this.armPose) * Math.min(1, dt * 12);
       for (let i = 0; i < this.arms.length; i++) {
         const walkSwing = Math.sin(this.walkPhase + i * Math.PI) * 0.5 * this.gait;
@@ -423,7 +373,6 @@ export class PitWarden extends Enemy {
     switch (this.state) {
       case "idle": {
         const d = this.seek(p.pos.x, p.pos.z, dt, 1.05 + this.phase * 0.14);
-        this.tryContactDamageBoss();
         this.attackCd -= dt;
         if (this.attackCd <= 0) {
           const move = chooseBossMove(PIT_WARDEN_MOVE_PROFILE, this.phase, this.lastMove, d, this.ctx.rng.next());
@@ -467,6 +416,21 @@ export class PitWarden extends Enemy {
           this.dashHit = true;
           this.ctx.combat.damagePlayer(14, this.pos.x, this.pos.z);
         }
+        const wall = ARENA_RADIUS - this.radius;
+        const radial = Math.hypot(this.pos.x, this.pos.z);
+        if (radial >= wall && this.pos.x * this.dashDir.x + this.pos.z * this.dashDir.y > 0) {
+          this.pos.x *= wall / radial;
+          this.pos.z *= wall / radial;
+          this.dashesLeft = 0;
+          this.state = "recover";
+          this.timer = 1.5;
+          this.applyVulnerable(1.5, 1.35);
+          this.ctx.floaters.spawn(this.pos.x, 3.2, this.pos.z, "EXPOSED", "crit");
+          this.ctx.fx.burst({ x: this.pos.x, y: 1.3, z: this.pos.z, count: 18, color: [0xb8a38a, 0xe8c68e], speed: [3, 9], up: 0.5, size: [0.08, 0.25], life: [0.25, 0.55], gravity: -6, drag: 3, shape: ParticleShape.shard });
+          this.ctx.cam.addTrauma(0.28);
+          this.ctx.sfx.bossSlam();
+          break;
+        }
         if (this.timer <= 0) {
           this.dashesLeft--;
           if (this.dashesLeft > 0) {
@@ -480,6 +444,14 @@ export class PitWarden extends Enemy {
         }
         break;
       }
+
+      case "leapTell":
+        if (this.timer <= 0) {
+          this.state = "leap";
+          this.leapFrom.copy(this.pos);
+          this.ctx.sfx.bossLeap();
+        }
+        break;
 
       case "leap": {
         this.leapT += dt / 0.62;
@@ -531,7 +503,6 @@ export class PitWarden extends Enemy {
         }
         break;
 
-      case "slamTell":
       case "recover":
       case "phaseShift":
         this.facePlayer(dt);
@@ -545,28 +516,18 @@ export class PitWarden extends Enemy {
 
   /** An armored ground-brace: invulnerable through a telegraphed quake that punishes melee. */
   private beginGuard(): void {
-    this.setInvuln(1.4);
+    this.raiseGuard();
     this.state = "guard";
     this.guardWarned = false;
-    this.timer = 0.74; // wind-up = telegraph duration
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.8, 0.74, 0xff7a3a);
+    this.timer = this.phase === 1 ? 0.95 : 0.85;
+    this.warnCircle(this.pos.x, this.pos.z, 4.8, this.timer, 0xff7a3a);
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 4.8, color: 0xffaa44, duration: 0.45, startRadius: 1.0 });
     this.ctx.sfx.bossRoar();
   }
 
-  private tryContactDamageBoss(): void {
-    if (this.contactCd > 0) return;
-    const p = this.ctx.player;
-    if (this.distToPlayer() < this.radius + p.radius + 0.3) {
-      if (this.ctx.combat.damagePlayer(9, this.pos.x, this.pos.z) === "hit") {
-        this.contactCd = 1.0;
-      }
-    }
-  }
-
   private beginDashCombo(): void {
     this.dashesLeft = this.phase >= 3 ? 3 : 2;
-    const tell = this.phase >= 3 ? 0.34 : 0.38;
+    const tell = this.phase >= 3 ? 0.4 : 0.48;
     this.aimDash(tell);
     this.state = "dashTell";
     this.timer = tell;
@@ -581,17 +542,17 @@ export class PitWarden extends Enemy {
     this.dashDir.set(dx / len, dz / len);
     // 17 m/s × 0.42 s travel plus the boss's own bulk; width covers
     // radius(1.4) + player(0.5) + grace(0.4) on each side.
-    this.ctx.tele.line(this.pos.x, this.pos.z, Math.atan2(this.dashDir.x, this.dashDir.y), 8.5, 4.2, tellDur, 0xff5533);
+    this.warnLine(this.pos.x, this.pos.z, Math.atan2(this.dashDir.x, this.dashDir.y), 8.5, 4.2, tellDur, 0xff5533);
   }
 
   private beginLeap(): void {
     const p = this.ctx.player;
-    this.state = "leap";
+    this.state = "leapTell";
+    this.timer = 0.24;
     this.leapT = 0;
     this.leapFrom.copy(this.pos);
     this.leapTo.set(p.pos.x, 0, p.pos.z);
-    this.ctx.tele.circle(p.pos.x, p.pos.z, 4.6, 0.62, 0xff7733);
-    this.ctx.sfx.bossLeap();
+    this.warnCircle(p.pos.x, p.pos.z, 4.6, 0.86, 0xff7733);
   }
 
   /** Ranged answer to a kiting player: rear back and belch a spreading fan of
@@ -599,9 +560,13 @@ export class PitWarden extends Enemy {
   private beginFan(): void {
     const p = this.ctx.player;
     this.state = "fanTell";
-    this.timer = 0.55;
+    this.timer = 0.65;
     this.fanAngle = Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 2.4, 0.55, 0xff7733);
+    const n = this.phase >= 3 ? 9 : this.phase >= 2 ? 7 : 5;
+    const spread = this.phase >= 3 ? 1.25 : 0.95;
+    for (let i = 0; i < n; i++) {
+      this.warnLine(this.pos.x, this.pos.z, this.fanAngle + (i - (n - 1) / 2) * spread / (n - 1), 22, 0.68, this.timer, 0xff7733);
+    }
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: 2.2, color: 0xffaa44, duration: 0.4, startRadius: 0.4 });
     this.ctx.sfx.beamCharge();
   }
@@ -632,7 +597,7 @@ export class PitWarden extends Enemy {
     this.fissures = [];
     for (let i = 0; i < arms; i++) {
       const angle = off + (i / arms) * Math.PI * 2;
-      this.ctx.tele.line(this.pos.x, this.pos.z, angle, this.fissureLen, this.fissureHalfW * 2, 0.82, 0xff5533);
+      this.warnLine(this.pos.x, this.pos.z, angle, this.fissureLen, this.fissureHalfW * 2, 0.82, 0xff5533);
       this.fissures.push({ angle });
     }
     this.ctx.sfx.bossRoar();
@@ -677,8 +642,8 @@ export class PitWarden extends Enemy {
     this.ctx.fx.ring(this.pos.x, this.pos.z, { radius: R * 0.55, color: 0xffffff, duration: 0.35 });
     this.ctx.fx.burst({
       x: this.pos.x, y: 0.5, z: this.pos.z,
-      count: 40, color: [0xff7733, 0xffcc66, 0x885544],
-      speed: [4, 13], up: 0.9, size: [0.5, 1.1], life: [0.3, 0.8], gravity: -8, drag: 2.5,
+      count: 22, color: [0xff7733, 0xccb397, 0x66594e],
+      speed: [4, 13], up: 0.9, size: [0.08, 0.28], life: [0.3, 0.7], gravity: -8, drag: 2.5, shape: ParticleShape.shard,
     });
     this.ctx.cam.addTrauma(0.55);
     this.ctx.stage.punch(0.3);
@@ -706,7 +671,6 @@ export class PitWarden extends Enemy {
     const phase = PIT_WARDEN_MOVE_PROFILE.find((entry) => entry.phase === this.phase);
     const def = phase?.moves.find((entry) => entry.id === move);
     if (!def) return false;
-    this.invulnTime = 0;
     this.currentMove = def.id;
     this.lastMove = def.id;
     this.currentRecovery = def.recovery;

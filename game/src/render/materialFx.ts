@@ -1,10 +1,5 @@
 import * as THREE from "three";
 
-/** Shared global uniform so the effect-bisection panel can toggle the rim on EVERY material
- *  at once (all rim shaders point at this one object; flipping `.value` affects them all). */
-const RIM_ON = { value: 1 };
-export function setRimEnabled(on: boolean): void { RIM_ON.value = on ? 1 : 0; }
-
 /**
  * Fresnel rim shell (IDEAS-GRAPHICS #2). Injects `pow(1-dot(n,v),power)*rimColor`
  * into a MeshStandardMaterial's emissive term so every unit gets a defining
@@ -34,15 +29,14 @@ export function applyRim(
     shader.uniforms.uRimColor = { value: rim };
     shader.uniforms.uRimPow = { value: power };
     shader.uniforms.uRimInt = { value: intensity };
-    shader.uniforms.uRimOn = RIM_ON; // SHARED object → one global bisection toggle
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        "#include <common>\nuniform vec3 uRimColor;\nuniform float uRimPow;\nuniform float uRimInt;\nuniform float uRimOn;",
+        "#include <common>\nuniform vec3 uRimColor;\nuniform float uRimPow;\nuniform float uRimInt;\n",
       )
       .replace(
         "#include <emissivemap_fragment>",
-        "#include <emissivemap_fragment>\n\tfloat rh3Rim = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), uRimPow);\n\ttotalEmissiveRadiance += uRimColor * (rh3Rim * uRimInt * uRimOn);",
+        "#include <emissivemap_fragment>\n\tfloat rh3Rim = pow(1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0), uRimPow);\n\ttotalEmissiveRadiance += uRimColor * (rh3Rim * uRimInt);",
       );
   };
 }

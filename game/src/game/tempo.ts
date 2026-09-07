@@ -12,22 +12,26 @@ export interface ZoneDef {
 
 /** Ordered low → high. */
 export const ZONES: ZoneDef[] = [
-  { zone: "cold", min: 0, damageMult: 0.75, speedMult: 0.82, color: 0x4488ff, css: "#4f8dff" },
-  { zone: "flowing", min: 30, damageMult: 1.0, speedMult: 1.0, color: 0x44ff88, css: "#3df59a" },
-  { zone: "hot", min: 70, damageMult: 1.35, speedMult: 1.14, color: 0xff8822, css: "#ffa028" },
-  { zone: "critical", min: 90, damageMult: 1.8, speedMult: 1.26, color: 0xff3344, css: "#ff4252" },
+  { zone: "cold", min: 0, damageMult: 0.75, speedMult: 0.95, color: 0x86b4d4, css: "#86b4d4" },
+  { zone: "flowing", min: 30, damageMult: 1.0, speedMult: 1.0, color: 0x75b8ac, css: "#75b8ac" },
+  { zone: "hot", min: 70, damageMult: 1.35, speedMult: 1.14, color: 0xd8a059, css: "#d8a059" },
+  { zone: "critical", min: 90, damageMult: 1.8, speedMult: 1.26, color: 0xdc7276, css: "#dc7276" },
 ];
 
 export const CRASH_THRESHOLD = 85;
+export const PERFECT_CRASH_THRESHOLD = 95;
+export function crashRadius(tempo: number): number { return tempo >= PERFECT_CRASH_THRESHOLD ? 6.6 : 5.2; }
+
+export interface TempoState { value: number; resting: number; sustain: number; crescendo: number; crescendoTime: number; }
 
 // Default zone palette (cyan→green→orange→red) is hard for red-green colorblindness;
 // the alternate ramp (blue→ice→amber→magenta) keeps hue AND brightness distinct.
 export const ZONE_PALETTE = {
   default: [
-    { color: 0x4488ff, css: "#4f8dff" },
-    { color: 0x44ff88, css: "#3df59a" },
-    { color: 0xff8822, css: "#ffa028" },
-    { color: 0xff3344, css: "#ff4252" },
+    { color: 0x86b4d4, css: "#86b4d4" },
+    { color: 0x75b8ac, css: "#75b8ac" },
+    { color: 0xd8a059, css: "#d8a059" },
+    { color: 0xdc7276, css: "#dc7276" },
   ],
   colorblind: [
     { color: 0x2f7dff, css: "#3a8dff" },
@@ -61,8 +65,6 @@ export class Tempo {
   decayScale: (value: number) => number = () => 1;
   /** Ascension: >1 makes tempo bleed back toward rest faster (harder to hold heat). */
   drainMult = 1;
-  /** Hero identity: <1 holds heat longer (e.g. Tempest surfs the rhythm). Set at run start. */
-  heroDecayMult = 1;
 
   // Crescendo: sustaining the Critical zone stacks a damage bonus (max 3), reset on cooling.
   private crescendoStacks = 0;
@@ -114,6 +116,21 @@ export class Tempo {
     this.refreshZone();
   }
 
+  snapshot(): TempoState {
+    return { value: this.value, resting: this.resting, sustain: this.sustainTimer, crescendo: this.crescendoStacks, crescendoTime: this.crescendoTimer };
+  }
+
+  restore(saved: Partial<TempoState>): void {
+    const finite = (n: number | undefined, fallback: number) => Number.isFinite(n) ? n! : fallback;
+    this.resting = clamp(finite(saved.resting, 50), 0, 100);
+    this.value = clamp(finite(saved.value, this.resting), 0, 100);
+    this.sustainTimer = clamp(finite(saved.sustain, 0), 0, 2);
+    this.crescendoStacks = Math.floor(clamp(finite(saved.crescendo, 0), 0, 3));
+    this.crescendoTimer = clamp(finite(saved.crescendoTime, 0), 0, Tempo.CRESCENDO_STEP);
+    this.refreshZone();
+    this.events.emit("CRESCENDO", { stacks: this.crescendoStacks });
+  }
+
   private refreshZone(): void {
     let idx = 0;
     for (let i = ZONES.length - 1; i >= 0; i--) {
@@ -121,6 +138,11 @@ export class Tempo {
         idx = i;
         break;
       }
+    }
+    if (idx < 3 && (this.crescendoStacks > 0 || this.crescendoTimer > 0)) {
+      this.crescendoStacks = 0;
+      this.crescendoTimer = 0;
+      this.events.emit("CRESCENDO", { stacks: 0 });
     }
     if (idx !== this.zoneIdx) {
       const prev = ZONES[this.zoneIdx].zone;
@@ -137,8 +159,7 @@ export class Tempo {
     }
     if (Math.abs(this.value - this.resting) < 0.01) return;
     const dir = this.value > this.resting ? -1 : 1;
-    // Ascension's drainMult + the hero's identity both scale the cool-DOWN from heat (not cold recovery).
-    const rate = this.decayRate * this.decayScale(this.value) * (dir === -1 ? this.drainMult * this.heroDecayMult : 1);
+    const rate = this.decayRate * this.decayScale(this.value) * (dir === -1 ? this.drainMult : 1);
     if (rate <= 0) return;
     this.value = clamp(this.value + dir * rate * dt, 0, 100);
     // Don't overshoot the resting point

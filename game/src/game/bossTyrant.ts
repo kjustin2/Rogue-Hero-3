@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
 import { Enemy, type EnemyKind } from "./enemies";
 import type { Ctx } from "./ctx";
+import { forgeTyrant } from "../render/tyrantForge";
 
 const PHASE_LINES = [
   "THE RIFT ENGINE TURNS",
@@ -29,6 +30,7 @@ interface PendingLance {
   z: number;
   angle: number;
   timer: number;
+  width?: number;
 }
 
 /** A queued ground-slam shockwave: telegraphed circle, then radial damage on expiry.
@@ -78,8 +80,6 @@ export class RiftTyrant extends Enemy {
   private lockAngle = 0;
   /** 0→1 wind-up read: the caged core blazes and the halo spins up while charging. */
   private chargeAmt = 0;
-  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
-  private dimTimer = 0;
   private coreMat: THREE.MeshStandardMaterial;
   private haloMat: THREE.MeshStandardMaterial;
   private plateMat: THREE.MeshStandardMaterial;
@@ -87,8 +87,8 @@ export class RiftTyrant extends Enemy {
   private hull: THREE.Mesh;
   private core: THREE.Mesh;
   private halo: THREE.Group;
-  private shellL: THREE.Mesh;
-  private shellR: THREE.Mesh;
+  private shellL: THREE.Group;
+  private shellR: THREE.Group;
   private cageStruts: THREE.Object3D[] = [];
   private ventPanels: THREE.Object3D[] = [];
   private stabilizers: THREE.Object3D[] = [];
@@ -104,105 +104,55 @@ export class RiftTyrant extends Enemy {
     this.radius = 1.6;
     this.wardColor = RIFT_VIOLET;
 
-    // Lifted from near-black: the hull crushed into the dark floor and only the
-    // cyan blocks/crown read, dissolving the silhouette (audit finding).
-    const plateMat = this.stdMat(0x1f1a2e, 0x3a2460, 0.6);
-    const trimMat = this.stdMat(0x0d1a24, RIFT_VIOLET, 0.9);
-    this.coreMat = this.stdMat(0x06121a, RIFT_CYAN, 2.6);
-    this.haloMat = this.stdMat(0x140a26, RIFT_VIOLET, 1.8);
-    this.plateMat = plateMat;
-    this.trimMat = trimMat;
-
-    // Hovering octahedral hull — a faceted "engine block", point-down menace
-    this.hull = this.addMesh(new THREE.OctahedronGeometry(1.7, 0), plateMat, 0, 2.0);
-    this.hull.scale.set(1.0, 1.4, 1.0);
-    this.hull.castShadow = true;
-    // Exposed rift core inside the cage
-    this.core = this.addMesh(new THREE.IcosahedronGeometry(0.7, 0), this.coreMat, 0, 2.0);
-    this.addMesh(new THREE.TorusGeometry(0.86, 0.035, 6, 28), this.coreMat, 0, 2.0).rotation.x = Math.PI / 2;
-    // Caging struts around the core
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2;
-      const strut = this.addMesh(new THREE.BoxGeometry(0.14, 1.9, 0.14), trimMat, Math.sin(a) * 0.85, 2.0, Math.cos(a) * 0.85);
-      strut.rotation.x = Math.sin(a) * 0.18;
-      strut.rotation.z = Math.cos(a) * 0.18;
-      this.cageStruts.push(strut);
-    }
-    // Heavy split shoulder vents that flare during attacks
-    this.shellL = this.addMesh(new THREE.BoxGeometry(0.9, 1.4, 1.6), plateMat, -1.55, 2.0, 0);
-    this.shellR = this.addMesh(new THREE.BoxGeometry(0.9, 1.4, 1.6), plateMat, 1.55, 2.0, 0);
-    this.shellL.rotation.z = 0.25;
-    this.shellR.rotation.z = -0.25;
-    this.ventPanels.push(this.addMesh(new THREE.BoxGeometry(0.5, 0.9, 0.2), this.coreMat, -1.55, 2.0, 0.85));
-    this.ventPanels.push(this.addMesh(new THREE.BoxGeometry(0.5, 0.9, 0.2), this.coreMat, 1.55, 2.0, 0.85));
-    for (const sx of [-1, 1]) {
-      for (let i = 0; i < 3; i++) {
-        const vent = this.addMesh(new THREE.BoxGeometry(0.12, 0.54, 0.12), this.haloMat, sx * 1.18, 1.55 + i * 0.3, 1.03);
-        vent.rotation.z = sx * 0.12;
-        this.ventPanels.push(vent);
-      }
-    }
-    // A jagged crown spike
-    this.addMesh(new THREE.ConeGeometry(0.35, 1.6, 5), trimMat, 0, 3.9);
-    // Skirt that anchors the silhouette to the floor
-    this.addMesh(new THREE.CylinderGeometry(0.5, 1.3, 1.0, 6), plateMat, 0, 0.5);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const fin = this.addMesh(new THREE.BoxGeometry(0.12, 0.64, 0.32), trimMat, Math.sin(a) * 0.92, 0.9, Math.cos(a) * 0.92);
-      fin.rotation.y = a;
-      fin.rotation.z = Math.sin(a) * 0.22;
-      this.stabilizers.push(fin);
-    }
-
-    // Counter-spinning halo of rift shards
-    this.halo = new THREE.Group();
-    this.halo.position.y = 2.0;
-    this.root.add(this.halo);
-    this.addMesh(new THREE.TorusGeometry(2.1, 0.08, 8, 32), this.haloMat, 0, 0, 0, this.halo).rotation.x = Math.PI / 2;
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const shard = this.addMesh(new THREE.OctahedronGeometry(0.26), this.haloMat, Math.sin(a) * 2.1, 0, Math.cos(a) * 2.1, this.halo);
-      shard.rotation.y = a;
-    }
-    const tiltedHalo = this.addMesh(new THREE.TorusGeometry(1.62, 0.045, 8, 36), this.coreMat, 0, 0, 0, this.halo);
-    tiltedHalo.rotation.set(1.0, 0.35, 0.45);
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
-      const fang = this.addMesh(new THREE.ConeGeometry(0.12, 0.8, 4), this.trimMat, Math.sin(a) * 1.65, 0.05, Math.cos(a) * 1.65, this.halo);
-      fang.rotation.set(Math.PI / 2, a, 0);
-    }
-
-    // A second, tighter shard ring unveiled across phases; parented to root so dispose() frees it.
-    this.shardRing = new THREE.Group();
-    this.shardRing.position.y = 2.0;
-    this.root.add(this.shardRing);
-    this.buildPhaseLooks();
+    const rig = forgeTyrant(this.root, (color, emissive, intensity) => this.stdMat(color, emissive, intensity));
+    this.bindCinematicParts([rig.shellL,rig.shellR,rig.core,rig.halo,...rig.cageStruts], "mantle");
+    this.plateMat = rig.plate;
+    this.trimMat = rig.trim;
+    this.coreMat = rig.coreMat;
+    this.haloMat = rig.haloMat;
+    this.hull = rig.hull;
+    this.core = rig.core;
+    this.halo = rig.halo;
+    this.shellL = rig.shellL;
+    this.shellR = rig.shellR;
+    this.cageStruts = rig.cageStruts;
+    this.ventPanels = rig.ventPanels;
+    this.stabilizers = rig.stabilizers;
+    this.shardRing = rig.shardRing;
+    this.p2Shards = rig.phaseShards;
+    this.p3Crown = rig.phaseCrown;
   }
 
-  /** Pre-build the escalation geometry hidden until its phase unveils it. */
-  private buildPhaseLooks(): void {
-    // Phase 2: a denser inner ring of rift shards splits off and counter-orbits.
-    const shardMat = this.stdMat(0x1a0a30, 0xc070ff, 2.0);
-    const shardGeo = new THREE.OctahedronGeometry(0.3);
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2;
-      const sh = this.addMesh(shardGeo, shardMat, Math.sin(a) * 1.25, 0, Math.cos(a) * 1.25, this.shardRing);
-      sh.rotation.y = a;
-      sh.visible = false;
-      this.p2Shards.push(sh);
-    }
+  protected animateDeath(dt: number, progress: number): boolean {
+    const close = Math.min(1, progress / .6);
+    this.settleDeathPart(this.root, dt, .045, this.root.rotation.y, 0);
+    this.settleDeathPart(this.shellL, dt, .2, .18, -.28);
+    this.settleDeathPart(this.shellR, dt, .2, -.18, .28);
+    const ease = 1 - Math.exp(-dt * 4);
+    this.shellL.position.x += (-.9 - this.shellL.position.x) * ease;
+    this.shellR.position.x += (.9 - this.shellR.position.x) * ease;
+    this.core.scale.setScalar(1 - close * .85);
+    this.halo.rotation.y += dt * (1 - close) * .8;
+    this.halo.scale.setScalar(1 - close * .45);
+    return true;
+  }
 
-    // Phase 3: a violet-white crown of rift spikes erupts above the hull as it collapses inward.
-    const crownMat = this.stdMat(0x2a0a40, 0xe6d0ff, 3.0);
-    const spikeGeo = new THREE.ConeGeometry(0.16, 1.1, 4);
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const sp = this.addMesh(spikeGeo, crownMat, Math.sin(a) * 0.6, 3.55, Math.cos(a) * 0.6);
-      sp.rotation.x = Math.cos(a) * 0.4;
-      sp.rotation.z = -Math.sin(a) * 0.4;
-      sp.visible = false;
-      this.p3Crown.push(sp);
+  protected animateCinematic(action: string, time: number, dt: number): boolean {
+    const opening=action!=="manifest", gather=Math.min(1,time/.65);
+    const release=opening?Math.min(1,Math.max(0,(time-.4)/.4)):0;
+    const open=release*release*(3-2*release), k=Math.min(1,dt*12);
+    const flare=opening?.04+open*.65:.04;
+    for(const [shell,side] of [[this.shellL,-1],[this.shellR,1]] as const) {
+      shell.rotation.z += (-side*flare-shell.rotation.z)*k;
+      shell.position.x += (side*(1.48+open*.65)-shell.position.x)*k;
     }
+    this.halo.rotation.y += dt*(opening?1.1-open*.7:.16);
+    this.halo.rotation.x += ((1-open)*.38-this.halo.rotation.x)*k;
+    this.core.scale.setScalar(.72+gather*.14+open*.25);
+    this.coreMat.emissiveIntensity=.5+gather*.35+open*.5;
+    for(let i=0;i<this.cageStruts.length;i++)this.cageStruts[i].rotation.y=Math.sin(i*Math.PI/2)*open*.13;
+    this.drivePose(dt,{rise:.25*gather,rear:-.035*open});
+    return true;
   }
 
   /** Visibly escalate the boss at each phase transition. */
@@ -211,7 +161,7 @@ export class RiftTyrant extends Enemy {
       this.setBossScale(1.08);
       this.eruptReveal(this.p2Shards);
       this.plateMat.emissive.set(0x2e1a52);
-      this.plateMat.emissiveIntensity = 0.7;
+      this.plateMat.emissiveIntensity = 0.14;
       this.trimMat.emissive.set(0xb060ff);
       this.haloMat.emissive.set(0xc070ff);
     } else if (phase === 3) {
@@ -219,7 +169,7 @@ export class RiftTyrant extends Enemy {
       this.eruptReveal(this.p3Crown);
       this.plateMat.color.set(0x241a3a);
       this.trimMat.emissive.set(0xe6d0ff);
-      this.trimMat.emissiveIntensity = 1.6;
+      this.trimMat.emissiveIntensity = 0.34;
       this.coreMat.emissive.set(0xeafaff);
       this.haloMat.emissive.set(0xf0e0ff);
     }
@@ -227,6 +177,16 @@ export class RiftTyrant extends Enemy {
       f.baseEmissive.copy(f.mat.emissive);
       f.baseIntensity = f.mat.emissiveIntensity;
     }
+  }
+
+  interruptAttack(): void {
+    super.interruptAttack();
+    this.disposeExtras();
+  }
+
+  protected onGuardBroken(): void {
+    this.state = "recover";
+    this.timer = 1.35;
   }
 
   protected deathColor(): number {
@@ -247,6 +207,7 @@ export class RiftTyrant extends Enemy {
     if (!killed && targetPhase > this.phase) {
       const from = this.phase;
       this.phase = targetPhase;
+      this.interruptAttack();
       this.state = "phaseShift";
       this.timer = 1.2;
       // Walk intervening phases so a two-threshold hit still fires each phase's content.
@@ -269,9 +230,6 @@ export class RiftTyrant extends Enemy {
       this.ctx.cam.pulseFov(0.85);
       this.ctx.stage.punch(0.45);
       this.ctx.sfx.bossRoar();
-      // The room holds its breath a beat, then snaps back to full light.
-      this.ctx.arena.cutsceneDim = 1;
-      this.dimTimer = 0.65;
       // Rift implosion shoves the player outward
       const p = this.ctx.player;
       const dx = p.pos.x - this.pos.x;
@@ -288,12 +246,10 @@ export class RiftTyrant extends Enemy {
   }
 
   die(): void {
-    // Safety net: a killing blow landing inside the phase-shift dim window must not
-    // leave the arena stuck dark — tick() stops running the instant alive flips false.
-    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
+    if (!this.alive) return;
     this.disposeExtras();
-    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
+    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
   }
 
   dispose(): void {
@@ -327,10 +283,10 @@ export class RiftTyrant extends Enemy {
 
   /** Rift bulwark: a barrier seals the engine (invulnerable), then a close rift nova. */
   private beginGuard(): void {
-    this.setInvuln(1.6);
+    this.raiseGuard();
     this.state = "guard";
-    this.timer = 0.7; // wind-up = telegraph duration
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.6, 0.7, RIFT_VIOLET);
+    this.timer = 0.88; // wind-up = telegraph duration
+    this.warnCircle(this.pos.x, this.pos.z, 4.6, 0.88, RIFT_VIOLET);
     this.ctx.sfx.beamCharge();
   }
 
@@ -341,7 +297,7 @@ export class RiftTyrant extends Enemy {
     const count = this.phase >= 3 ? 18 : this.phase === 2 ? 13 : 10;
     const spin = this.phase >= 3 ? (this.ctx.rng.next() < 0.5 ? -1 : 1) * 0.4 : 0;
     // The whole ring is the threat — mark it with a circle the player must escape.
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.6, RIFT_CYAN);
+    this.warnCircle(this.pos.x, this.pos.z, 3.2, 0.6, RIFT_CYAN);
     this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.6 });
     this.ctx.sfx.beamCharge();
   }
@@ -380,7 +336,7 @@ export class RiftTyrant extends Enemy {
       const off = lanes === 1 ? 0 : (i - (lanes - 1) / 2) * 3.2;
       const ox = Math.cos(this.lockAngle) * off;
       const oz = -Math.sin(this.lockAngle) * off;
-      this.ctx.tele.line(this.pos.x + ox, this.pos.z + oz, this.lockAngle, LANCE_LEN, LANCE_WIDTH, LANCE_TELL, RIFT_VIOLET);
+      this.warnLine(this.pos.x + ox, this.pos.z + oz, this.lockAngle, LANCE_LEN, LANCE_WIDTH, LANCE_TELL, RIFT_VIOLET);
       this.lances.push({ x: this.pos.x + ox, z: this.pos.z + oz, angle: this.lockAngle, timer: LANCE_TELL });
     }
     this.ctx.sfx.beamCharge();
@@ -399,8 +355,8 @@ export class RiftTyrant extends Enemy {
       const cz = Math.cos(angle);
       const x = p.pos.x - sx * LANCE_LEN * 0.46;
       const z = p.pos.z - cz * LANCE_LEN * 0.46;
-      this.ctx.tele.line(x, z, angle, LANCE_LEN, LANCE_WIDTH * 0.82, LANCE_TELL, RIFT_CYAN);
-      this.lances.push({ x, z, angle, timer: LANCE_TELL });
+      this.warnLine(x, z, angle, LANCE_LEN, LANCE_WIDTH * 0.82, LANCE_TELL, RIFT_CYAN);
+      this.lances.push({ x, z, angle, timer: LANCE_TELL, width: LANCE_WIDTH * 0.82 });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -409,12 +365,14 @@ export class RiftTyrant extends Enemy {
     const p = this.ctx.player;
     const sx = Math.sin(l.angle);
     const cz = Math.cos(l.angle);
+    const width = l.width ?? LANCE_WIDTH;
 
     // Visual beam
     const mat = new THREE.MeshBasicMaterial({
       color: 0xddbbff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const mesh = new THREE.Mesh(TYRANT_LANCE_GEO, mat);
+    mesh.scale.x = width / LANCE_WIDTH;
     mesh.position.set(l.x + sx * LANCE_LEN * 0.5, 1.4, l.z + cz * LANCE_LEN * 0.5);
     mesh.rotation.y = l.angle;
     this.ctx.stage.scene.add(mesh);
@@ -428,7 +386,7 @@ export class RiftTyrant extends Enemy {
     const along = px * sx + pz * cz;
     if (along > 0 && along < LANCE_LEN) {
       const perp = Math.abs(px * cz - pz * sx);
-      if (perp < LANCE_WIDTH * 0.5 + p.radius) this.ctx.combat.damagePlayer(17, l.x, l.z);
+      if (perp < width * 0.5 + p.radius) this.ctx.combat.damagePlayer(17, l.x, l.z);
     }
   }
 
@@ -437,13 +395,13 @@ export class RiftTyrant extends Enemy {
     this.state = "slamTell";
     this.timer = 0.68;
     const R = this.phase >= 3 ? 5.6 : 5.0;
-    this.ctx.tele.circle(this.pos.x, this.pos.z, R, 0.68, RIFT_VIOLET);
+    this.warnCircle(this.pos.x, this.pos.z, R, 0.68, RIFT_VIOLET);
     this.slams.push({ x: this.pos.x, z: this.pos.z, radius: R, timer: 0.68 });
     // P3: pair the slam with a spinning nova so the safe space squeezes
     if (this.phase >= 3) {
       const count = 14;
       const spin = (this.ctx.rng.next() < 0.5 ? -1 : 1) * 0.5;
-      this.ctx.tele.circle(this.pos.x, this.pos.z, 3.2, 0.68, RIFT_CYAN);
+      this.warnCircle(this.pos.x, this.pos.z, 3.2, 0.68, RIFT_CYAN);
       this.novas.push({ x: this.pos.x, z: this.pos.z, count, spin, timer: 0.68 });
     }
     this.ctx.sfx.beamCharge();
@@ -463,10 +421,12 @@ export class RiftTyrant extends Enemy {
     this.ctx.sfx.bossSlam();
     const d = Math.hypot(p.pos.x - sl.x, p.pos.z - sl.z);
     if (d < sl.radius + p.radius) {
-      this.ctx.combat.damagePlayer(sl.light ? 14 : 20, sl.x, sl.z);
-      const len = Math.max(0.001, d);
-      const force = sl.light ? 5 : 7;
-      this.ctx.controller.push(((p.pos.x - sl.x) / len) * force, ((p.pos.z - sl.z) / len) * force);
+      const result = this.ctx.combat.damagePlayer(sl.light ? 14 : 20, sl.x, sl.z);
+      if (result === "hit" || result === "shielded") {
+        const len = Math.max(0.001, d);
+        const force = sl.light ? 5 : 7;
+        this.ctx.controller.push(((p.pos.x - sl.x) / len) * force, ((p.pos.z - sl.z) / len) * force);
+      }
     }
   }
 
@@ -480,8 +440,8 @@ export class RiftTyrant extends Enemy {
     const base = this.ctx.rng.next() * Math.PI * 2;
     for (let i = 0; i < n; i++) {
       const angle = base + (i / n) * Math.PI * 2;
-      this.ctx.tele.line(this.pos.x, this.pos.z, angle, LANCE_LEN, LANCE_WIDTH * 0.78, tell, RIFT_CYAN);
-      this.lances.push({ x: this.pos.x, z: this.pos.z, angle, timer: tell });
+      this.warnLine(this.pos.x, this.pos.z, angle, LANCE_LEN, LANCE_WIDTH * 0.78, tell, RIFT_CYAN);
+      this.lances.push({ x: this.pos.x, z: this.pos.z, angle, timer: tell, width: LANCE_WIDTH * 0.78 });
     }
     this.ctx.sfx.beamCharge();
   }
@@ -504,7 +464,7 @@ export class RiftTyrant extends Enemy {
       if (rr > maxR) { x = (x / rr) * maxR; z = (z / rr) * maxR; }
       const t = 0.7 + i * 0.22;
       maxT = Math.max(maxT, t);
-      this.ctx.tele.circle(x, z, R, t, RIFT_VIOLET);
+      this.warnCircle(x, z, R, t, RIFT_VIOLET);
       this.slams.push({ x, z, radius: R, timer: t, light: true });
     }
     this.timer = maxT + 0.1;
@@ -515,11 +475,6 @@ export class RiftTyrant extends Enemy {
   protected tick(dt: number): void {
     const p = this.ctx.player;
     this.timer -= dt;
-    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
-    if (this.dimTimer > 0) {
-      this.dimTimer -= dt;
-      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
-    }
 
     // Wind-up read: while charging any attack, the caged core blazes, the halo spins
     // up, and the shoulder vents gape — then it all settles back between volleys.
@@ -527,9 +482,9 @@ export class RiftTyrant extends Enemy {
     this.chargeAmt += ((charging ? 1 : 0) - this.chargeAmt) * Math.min(1, dt * 6);
 
     // Living engine: core pulses, halo counter-spins, the hull breathes a hover.
-    this.coreMat.emissiveIntensity = 2.6 + this.phase * 0.5 + Math.sin(this.t * (2 + this.phase * 1.5)) * 0.9 + this.chargeAmt * 2.4;
-    this.haloMat.emissiveIntensity = 1.8 + Math.sin(this.t * 2.4) * 0.5 + this.chargeAmt * 1.1;
-    this.halo.rotation.y -= dt * (1.0 + this.phase * 0.55 + this.chargeAmt * 2.5);
+    this.coreMat.emissiveIntensity = 0.82 + this.phase * 0.1 + Math.sin(this.t * (2 + this.phase * 1.5)) * 0.12 + this.chargeAmt * 0.6;
+    this.haloMat.emissiveIntensity = 0.28 + Math.sin(this.t * 2.4) * 0.08 + this.chargeAmt * 0.32;
+    this.halo.rotation.y -= dt * (0.3 + this.phase * 0.14 + this.chargeAmt * 0.9);
     this.shardRing.rotation.y += dt * (1.3 + this.phase * 0.5 + this.chargeAmt * 2.0);
     this.pos.y = 0.35 + Math.sin(this.t * 1.6) * 0.14;
     this.hull.rotation.y += dt * 0.12;

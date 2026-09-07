@@ -210,7 +210,7 @@ export class Particles {
     this.scene.add(this.points);
 
     // Pre-build ring pool
-    const ringGeo = new THREE.RingGeometry(0.88, 1.0, 48);
+    const ringGeo = new THREE.RingGeometry(0.983, 1.0, 80);
     ringGeo.rotateX(-Math.PI / 2);
     for (let i = 0; i < 28; i++) {
       const mat = new THREE.MeshBasicMaterial({
@@ -228,11 +228,18 @@ export class Particles {
     }
 
     // Light-beam pool (spawn pillars, arrivals)
-    const beamGeo = new THREE.CylinderGeometry(0.4, 0.55, 9, 10, 1, true);
-    beamGeo.translate(0, 4.5, 0);
+    const beamGeo = new THREE.CylinderGeometry(0.12, 0.44, 3.3, 20, 1, true);
+    beamGeo.translate(0, 1.65, 0);
+    const beamCanvas = document.createElement("canvas");
+    beamCanvas.width = 16; beamCanvas.height = 128;
+    const bg = beamCanvas.getContext("2d")!;
+    const gradient = bg.createLinearGradient(0, 0, 0, 128);
+    gradient.addColorStop(0, "black"); gradient.addColorStop(0.7, "#a0a0a0"); gradient.addColorStop(0.96, "white"); gradient.addColorStop(1, "black");
+    bg.fillStyle = gradient; bg.fillRect(0, 0, 16, 128);
+    const beamAlpha = new THREE.CanvasTexture(beamCanvas);
     for (let i = 0; i < 12; i++) {
       const mat = new THREE.MeshBasicMaterial({
-        color: 0xffffff, transparent: true, opacity: 0,
+        color: 0xffffff, transparent: true, opacity: 0, alphaMap: beamAlpha,
         blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
       });
       const mesh = new THREE.Mesh(beamGeo, mat);
@@ -251,7 +258,7 @@ export class Particles {
     b.mesh.position.set(x, 0, z);
     b.mesh.scale.set(1, 1, 1);
     b.mat.color.set(color);
-    b.mat.opacity = 0.7;
+    b.mat.opacity = 0.32;
   }
 
   burst(opts: BurstOpts): void {
@@ -374,7 +381,7 @@ export class Particles {
     slot.from = opts.startRadius ?? opts.radius * 0.15;
     slot.to = opts.radius;
     slot.mat.color.set(opts.color);
-    slot.mat.opacity = 0.9;
+    slot.mat.opacity = 0.5;
     slot.mesh.scale.setScalar(slot.from);
   }
 
@@ -473,7 +480,7 @@ export class Particles {
       const k = Math.min(1, r.t / r.dur);
       const eased = 1 - Math.pow(1 - k, 3);
       r.mesh.scale.setScalar(r.from + (r.to - r.from) * eased);
-      r.mat.opacity = 0.9 * (1 - k);
+      r.mat.opacity = 0.5 * (1 - k) * (1 - k);
       if (k >= 1) r.mesh.visible = false;
     }
 
@@ -482,7 +489,7 @@ export class Particles {
       b.t += dt;
       const k = Math.min(1, b.t / 0.5);
       b.mesh.scale.set(1 - k * 0.75, 1 + k * 0.3, 1 - k * 0.75);
-      b.mat.opacity = 0.7 * (1 - k);
+      b.mat.opacity = 0.32 * (1 - k);
       if (k >= 1) {
         b.t = -1;
         b.mesh.visible = false;

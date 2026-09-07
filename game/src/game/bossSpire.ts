@@ -1,3 +1,4 @@
+import { forgeSpire } from "../render/spireForge";
 import * as THREE from "three";
 import { ARENA_RADIUS } from "../render/arena";
 import { Enemy, type EnemyKind } from "./enemies";
@@ -73,8 +74,6 @@ export class SpireCaster extends Enemy {
   private channelsSinceShift = 0;
   /** 0→1 wind-up read: orbs pull inward and the core surges while charging an attack. */
   private chargeAmt = 0;
-  /** Counts down the arena's phase-transition dim-then-snap-back; 0 = no dim pending. */
-  private dimTimer = 0;
   // Per-phase appearance escalation (built once, revealed on transition).
   private shardRing: THREE.Group;
   private p2Shards: THREE.Object3D[] = [];
@@ -87,66 +86,11 @@ export class SpireCaster extends Enemy {
     this.radius = 1.0;
     this.wardColor = 0x3effd2;
 
-    // Dimmer glass robe so the bright crystalline crown/fins/orbs read as the
-    // glowing "glass crown" against a darker body — value contrast the old
-    // brighter-teal silhouette lacked (it blurred into one glowing blob).
-    const robeMat = this.stdMat(0x0a201e, 0x105046, 0.38);
-    const trimMat = this.stdMat(0x081a16, 0x2affc8, 0.85);
-    this.coreMat = this.stdMat(0x06201a, 0x3effd2, 2.4);
-    this.robeMat = robeMat;
-    this.trimMat = trimMat;
-
-    const robe = this.addMesh(new THREE.CylinderGeometry(0.35, 1.05, 2.6, 6), robeMat, 0, 1.3);
-    robe.castShadow = true;
-    this.addMesh(new THREE.TorusGeometry(1.05, 0.1, 8, 24), trimMat, 0, 0.18).rotation.x = Math.PI / 2;
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const strip = this.addMesh(new THREE.BoxGeometry(0.09, 1.58, 0.08), trimMat, Math.sin(a) * 0.74, 1.22, Math.cos(a) * 0.74);
-      strip.rotation.y = a;
-      strip.rotation.z = Math.sin(a) * 0.08;
-      this.robeStrips.push(strip);
-    }
-    this.crownOrb = this.addMesh(new THREE.SphereGeometry(0.38, 10, 8), trimMat, 0, 3.0);
-    this.addMesh(new THREE.BoxGeometry(0.5, 0.3, 0.3), this.coreMat, 0, 1.7, 0.5);
-    // The lance focus: a forward aperture the echo-lances pour out of — echoes the
-    // Sentinel's beam-lens motif so the glass artillerist reads as artillery.
-    this.addMesh(new THREE.TorusGeometry(0.26, 0.06, 6, 24), trimMat, 0, 1.7, 0.62).rotation.x = 0;
-    this.addMesh(new THREE.CircleGeometry(0.22, 18), this.coreMat, 0, 1.7, 0.64);
-    for (const sx of [-1, 1]) {
-      const guide = this.addMesh(new THREE.ConeGeometry(0.05, 0.5, 4), trimMat, sx * 0.34, 1.7, 0.6);
-      guide.rotation.x = Math.PI / 2;
-    }
-    for (const sx of [-1, 1]) {
-      const fin = this.addMesh(new THREE.BoxGeometry(0.12, 1.45, 0.46), trimMat, sx * 0.72, 1.55, 0.05);
-      fin.rotation.z = sx * -0.26;
-      fin.rotation.y = sx * 0.18;
-      this.finPanels.push(fin);
-      const prism = this.addMesh(new THREE.OctahedronGeometry(0.18), this.coreMat, sx * 0.62, 2.35, 0.36);
-      prism.scale.y = 1.55;
-      prism.rotation.z = sx * 0.25;
-      this.finPanels.push(prism);
-    }
-    const lowerHalo = this.addMesh(new THREE.TorusGeometry(0.72, 0.035, 6, 36), trimMat, 0, 2.62);
-    lowerHalo.rotation.x = Math.PI / 2;
-    const crownHalo = this.addMesh(new THREE.TorusGeometry(0.58, 0.025, 6, 36), this.coreMat, 0, 3.14);
-    crownHalo.rotation.x = Math.PI / 2;
-    const tiltedHalo = this.addMesh(new THREE.TorusGeometry(0.92, 0.026, 6, 36), this.coreMat, 0, 2.88);
-    tiltedHalo.rotation.set(0.95, 0.24, 0.55);
-    this.haloRings.push(lowerHalo, crownHalo, tiltedHalo);
-
-    // Orbiting crystal orbs
-    this.orbGroup = new THREE.Group();
-    this.orbGroup.position.y = 2.1;
-    this.root.add(this.orbGroup);
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      this.addMesh(new THREE.OctahedronGeometry(0.22), this.coreMat, Math.sin(a) * 1.1, 0, Math.cos(a) * 1.1, this.orbGroup);
-    }
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
-      const chip = this.addMesh(new THREE.TetrahedronGeometry(0.08), trimMat, Math.sin(a) * 1.36, Math.cos(a * 2) * 0.16, Math.cos(a) * 1.36, this.orbGroup);
-      chip.rotation.set(a, a * 1.7, 0);
-    }
+    const rig=forgeSpire(this.root,(color,emissive,intensity)=>this.stdMat(color,emissive,intensity));
+    this.bindCinematicParts([...rig.finPanels,...rig.haloRings,...rig.robeStrips,rig.orbGroup,rig.crownOrb], "mantle");
+    this.robeMat=rig.robeMat;this.trimMat=rig.trimMat;this.coreMat=rig.coreMat;
+    this.crownOrb=rig.crownOrb;this.robeStrips=rig.robeStrips;this.finPanels=rig.finPanels;
+    this.haloRings=rig.haloRings;this.orbGroup=rig.orbGroup;
 
     this.lastPlayer.set(ctx.player.pos.x, ctx.player.pos.z);
 
@@ -155,6 +99,43 @@ export class SpireCaster extends Enemy {
     this.shardRing.position.y = 1.6;
     this.root.add(this.shardRing);
     this.buildPhaseLooks();
+  }
+
+  protected animateDeath(dt: number, progress: number): boolean {
+    const close = Math.min(1, progress / .58);
+    this.settleDeathPart(this.root, dt, .08, this.root.rotation.y, -.1);
+    this.orbGroup.rotation.y += dt * (1 - close) * 1.5;
+    this.orbGroup.scale.setScalar(1 - close * .82);
+    this.orbGroup.position.y = 2.1 - close * 1.35;
+    this.crownOrb.position.y += (2.45 - this.crownOrb.position.y) * (1 - Math.exp(-dt * 3));
+    for (let i = 0; i < this.finPanels.length; i++) {
+      this.settleDeathPart(this.finPanels[i], dt, .28, i === 0 ? -.08 : .08, i === 0 ? -.16 : .16);
+    }
+    for (const ring of this.haloRings) ring.scale.setScalar(1 - close * .32);
+    this.shardRing.scale.setScalar(1 - close * .65);
+    return true;
+  }
+
+  protected animateCinematic(action: string, time: number, dt: number): boolean {
+    const unveil=action!=="manifest", k=Math.min(1,dt*12);
+    const release=unveil?Math.min(1,Math.max(0,(time-.48)/.32)):0;
+    const gather=1-Math.exp(-time*5), open=release*release*(3-2*release);
+    this.orbGroup.rotation.y += dt*(unveil?4.6-open*3.7:.7);
+    this.orbGroup.scale.setScalar(1-gather*.52+open*.77);
+    this.orbGroup.position.y=2.1+gather*.18-open*.35;
+    for(let i=0;i<this.finPanels.length;i++) {
+      const side=i===0?-1:1,fin=this.finPanels[i];
+      fin.rotation.z += (side*(.09+open*.39)-fin.rotation.z)*k;
+      fin.rotation.x += (-.17*open-fin.rotation.x)*k;
+    }
+    for(let i=0;i<this.haloRings.length;i++) {
+      this.haloRings[i].rotation.z += dt*(i?-.5:.38)*(1+open);
+      this.haloRings[i].rotation.x += (.28+open*.35-this.haloRings[i].rotation.x)*k;
+    }
+    this.crownOrb.scale.setScalar(.7+gather*.3+open*.2);
+    this.coreMat.emissiveIntensity=.65+gather*.45+Math.sin(open*Math.PI)*.7;
+    this.drivePose(dt,{rise:.16*gather,rear:-.025*open});
+    return true;
   }
 
   /** Pre-build the escalation geometry hidden until its phase unveils it. */
@@ -189,7 +170,7 @@ export class SpireCaster extends Enemy {
       this.setBossScale(1.08);
       this.eruptReveal(this.p2Shards);
       this.robeMat.emissive.set(0x1aa884);
-      this.robeMat.emissiveIntensity = 1.0;
+      this.robeMat.emissiveIntensity = 0.12;
       this.trimMat.emissive.set(0x6affe0);
       this.coreMat.emissive.set(0x8affe8);
     } else if (phase === 3) {
@@ -197,13 +178,23 @@ export class SpireCaster extends Enemy {
       this.eruptReveal(this.p3Crown);
       this.robeMat.color.set(0x103a4a);
       this.trimMat.emissive.set(0xbfffe8);
-      this.trimMat.emissiveIntensity = 1.8;
+      this.trimMat.emissiveIntensity = 0.3;
       this.coreMat.emissive.set(0xdcffff);
     }
     for (const f of this.flashMats) {
       f.baseEmissive.copy(f.mat.emissive);
       f.baseIntensity = f.mat.emissiveIntensity;
     }
+  }
+
+  interruptAttack(): void {
+    super.interruptAttack();
+    this.clearLances(); this.channelStep = 0; this.channelTimer = 0; this.channelFired = false;
+  }
+
+  protected onGuardBroken(): void {
+    this.state = "recover";
+    this.timer = 1.35;
   }
 
   protected deathColor(): number {
@@ -223,6 +214,7 @@ export class SpireCaster extends Enemy {
     if (!killed && targetPhase > this.phase) {
       const from = this.phase;
       this.phase = targetPhase;
+      this.interruptAttack();
       this.state = "phaseShift";
       this.timer = 1.2;
       this.channelsSinceShift = 0;
@@ -253,9 +245,6 @@ export class SpireCaster extends Enemy {
       this.ctx.cam.pulseFov(0.8);
       this.ctx.stage.punch(0.42);
       this.ctx.sfx.bossRoar();
-      // The room holds its breath a beat, then snaps back to full light.
-      this.ctx.arena.cutsceneDim = 1;
-      this.dimTimer = 0.6;
       // A crystalline shockwave shoves the player back off the crown.
       const player = this.ctx.player;
       const dx = player.pos.x - this.pos.x;
@@ -276,12 +265,10 @@ export class SpireCaster extends Enemy {
   }
 
   die(): void {
-    // Safety net: a killing blow landing inside the phase-shift dim window must not
-    // leave the arena stuck dark — tick() stops running the instant alive flips false.
-    if (this.dimTimer > 0) { this.dimTimer = 0; this.ctx.arena.cutsceneDim = 0; }
+    if (!this.alive) return;
     this.disposeExtras();
-    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
     super.die();
+    this.ctx.events.emit("BOSS_DEFEATED", { x: this.pos.x, z: this.pos.z });
   }
 
   dispose(): void {
@@ -298,6 +285,10 @@ export class SpireCaster extends Enemy {
       });
     }
     this.echoes = [];
+    this.clearLances();
+  }
+
+  private clearLances(): void {
     for (const b of this.beams) {
       this.ctx.stage.scene.remove(b.mesh);
       b.mat.dispose(); // geometry is shared (LANCE_GEO) — never disposed
@@ -337,7 +328,7 @@ export class SpireCaster extends Enemy {
   // ---------------------------------------------------------------- lances
   /** Telegraph + queue a lance. Echo copies are scheduled when it fires. */
   private queueLance(x: number, z: number, angle: number, fromEcho: boolean): void {
-    this.ctx.tele.line(x, z, angle, LANCE_LEN, 2.0, LANCE_TELL, 0x3effd2);
+    this.warnLine(x, z, angle, LANCE_LEN, 2.0, LANCE_TELL, 0x3effd2);
     this.pending.push({ x, z, angle, timer: LANCE_TELL, fromEcho });
     if (!fromEcho) this.ctx.sfx.beamCharge();
   }
@@ -399,11 +390,11 @@ export class SpireCaster extends Enemy {
     // Lead the player; all three origins lance through that point
     const tx = p.pos.x + this.playerVel.x * 0.6;
     const tz = p.pos.z + this.playerVel.y * 0.6;
-    this.ctx.tele.circle(tx, tz, 1.4, 0.75, 0x3effd2);
+    this.warnCircle(tx, tz, 1.4, 0.75, 0x3effd2);
     const origins: [number, number][] = [[this.pos.x, this.pos.z], ...this.echoes.map((e) => [e.x, e.z] as [number, number])];
     for (const [ox, oz] of origins) {
       const ang = Math.atan2(tx - ox, tz - oz);
-      this.ctx.tele.line(ox, oz, ang, LANCE_LEN, 2.0, 0.75, 0x3effd2);
+      this.warnLine(ox, oz, ang, LANCE_LEN, 2.0, 0.75, 0x3effd2);
       this.pending.push({ x: ox, z: oz, angle: ang, timer: 0.75, fromEcho: true });
     }
     this.ctx.sfx.beamCharge();
@@ -411,10 +402,10 @@ export class SpireCaster extends Enemy {
 
   /** Glass ward: invulnerable behind a shard shell, then a close shard-burst punish. */
   private beginGuard(): void {
-    this.setInvuln(1.5);
+    this.raiseGuard();
     this.state = "guard";
-    this.timer = 0.65; // wind-up = telegraph duration
-    this.ctx.tele.circle(this.pos.x, this.pos.z, 4.4, 0.65, 0x3effd2);
+    this.timer = 0.88; // wind-up = telegraph duration
+    this.warnCircle(this.pos.x, this.pos.z, 4.4, 0.88, 0x3effd2);
     this.ctx.sfx.beamCharge();
   }
 
@@ -439,7 +430,7 @@ export class SpireCaster extends Enemy {
         for (let i = 0; i < n; i++) {
           const a = aim + (i - (n - 1) / 2) * 0.21;
           this.fanAngles.push(a);
-          this.ctx.tele.line(this.pos.x, this.pos.z, a, 11, 1.0, 0.4, 0x55ffcc);
+          this.warnLine(this.pos.x, this.pos.z, a, 11, 1.0, 0.4, 0x55ffcc);
         }
         this.channelFired = true;
         this.channelTimer = 0.4;
@@ -467,11 +458,6 @@ export class SpireCaster extends Enemy {
     const p = this.ctx.player;
     this.timer -= dt;
     this.blinkCd -= dt;
-    // Phase-transition dim: holds the arena dark for a beat, then snaps back to full light.
-    if (this.dimTimer > 0) {
-      this.dimTimer -= dt;
-      if (this.dimTimer <= 0) this.ctx.arena.cutsceneDim = 0;
-    }
     // Wind-up read: while charging a lance/channel/ward, the orbs spin up and pull
     // inward and the whole crown brightens — then it all snaps loose on the fire.
     const charging = this.state === "track" || this.state === "channel" || this.state === "guard";
@@ -479,7 +465,7 @@ export class SpireCaster extends Enemy {
     this.orbGroup.rotation.y += dt * (1.2 + this.phase * 0.5 + this.chargeAmt * 3);
     this.orbGroup.scale.setScalar(1 - this.chargeAmt * 0.22);
     this.shardRing.rotation.y -= dt * (0.8 + this.phase * 0.4 + this.chargeAmt * 2);
-    this.coreMat.emissiveIntensity = 2.4 + Math.sin(this.t * (2 + this.phase)) * 0.8 + this.chargeAmt * 2.6;
+    this.coreMat.emissiveIntensity = 1.2 + Math.sin(this.t * (2 + this.phase)) * 0.2 + this.chargeAmt * 0.8;
     this.pos.y = Math.sin(this.t * 1.8) * 0.12;
     this.crownOrb.scale.setScalar(1 + Math.sin(this.t * 2.4) * 0.045 + this.chargeAmt * 0.32);
     for (let i = 0; i < this.haloRings.length; i++) {

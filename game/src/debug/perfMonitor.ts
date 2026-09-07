@@ -1,402 +1,44 @@
-// Performance instrumentation + on-screen debug overlay.
-//
-// Goals it serves:
-//  • TEST OPTIMIZATIONS — a single, accurate source of per-frame truth (frame
-//    pacing + real GPU load: draw calls / triangles / programs) that every perf
-//    script can read through `window.__rh3perf`, instead of each script bolting
-//    its own rAF probe onto the page.
-//  • SEE VISUALS WITH AI — a toggleable on-screen overlay (FPS, frame ms, draw
-//    calls, programs, enemy count + a frame-time sparkline) so a single
-//    screenshot tells Claude how the frame is performing, not just how it looks.
-//
-// Cost when idle is one subtraction + one ring-buffer write per frame, so it is
-// safe to construct in production (it is, like __rh3, harmless for an offline
-// single-player game and nothing reads it unless a test/overlay asks).
-//
-// Accurate draw-call counting: the postprocessing EffectComposer renders several
-// internal passes per frame, and Three's `info.render` auto-resets at the START
-// of every `renderer.render()` — so reading `info.render.calls` after a composer
-// render reports only the LAST pass. We turn auto-reset OFF and reset once per
-// frame in begin(), then read the accumulated total in end(): true per-frame load.
-
 import type { Ctx } from "../game/ctx";
 
-export interface PerfStats {
-  /** Wall-clock span the samples cover (ms). */
-  ms: number;
-  /** Frame samples in the window. */
-  frames: number;
-  /** Mean frames-per-second over the window. */
-  fps: number;
-  /** Frame-interval statistics in milliseconds. */
-  mean: number;
-  p50: number;
-  p95: number;
-  p99: number;
-  min: number;
-  max: number;
-  /** Counts of frames slower than common budgets (regression tripwires). */
-  long16: number; // missed 60fps
-  long33: number; // missed 30fps
-  long50: number;
-  long100: number;
-  /** Big synchronous stalls (shader compile / GC) — the freeze class of bug. */
-  over250: number;
-}
-
-/** One captured frame spike, with the deltas that classify it + the activity tag. */
-export interface SpikeRecord {
-  /** ms since page start (performance.now). */
-  t: number;
-  /** The slow frame interval in ms. */
-  dt: number;
-  /** Classification: a shader compile (programs grew) vs a GC pause / external stall. */
-  klass: "compile" | "gc/stall";
-  /** Top-level game state when it struck. */
-  state: string;
-  /** Harness-set activity label (which scenario/event was running). */
-  label: string;
-  enemies: number;
-  draws: number;
-  programs: number;
-  /** Programs added on the slow frame (>0 ⇒ first-use compile). */
-  dProg: number;
-  /** Heap change on the slow frame in MB (a drop suggests a GC collection). */
-  dHeapMB: number;
-  heapMB: number;
-}
-
-/** A point-in-time snapshot of GPU load + scene size. */
-export interface PerfSnapshot {
-  calls: number;
-  triangles: number;
-  points: number;
-  lines: number;
-  programs: number;
-  geometries: number;
-  textures: number;
-  /** JS heap used in MB, or 0 where performance.memory is unavailable. */
-  heapMB: number;
-  /** Live (alive) enemies on the field. */
-  enemies: number;
-  /** Current top-level UI/game state, for context. */
-  state: string;
-}
-
-interface MemoryPerf extends Performance {
-  memory?: { usedJSHeapSize: number };
-}
-
-function computeStats(samples: readonly number[]): PerfStats {
-  const n = samples.length;
-  if (n === 0) {
-    return { ms: 0, frames: 0, fps: 0, mean: 0, p50: 0, p95: 0, p99: 0, min: 0, max: 0, long16: 0, long33: 0, long50: 0, long100: 0, over250: 0 };
-  }
-  let sum = 0, min = Infinity, max = 0;
-  let long16 = 0, long33 = 0, long50 = 0, long100 = 0, over250 = 0;
-  for (const d of samples) {
-    sum += d;
-    if (d < min) min = d;
-    if (d > max) max = d;
-    if (d > 16.7) long16++;
-    if (d > 33.4) long33++;
-    if (d > 50) long50++;
-    if (d > 100) long100++;
-    if (d > 250) over250++;
-  }
-  const sorted = [...samples].sort((a, b) => a - b);
-  const pct = (p: number): number => sorted[Math.min(n - 1, Math.floor(n * p))];
-  const mean = sum / n;
-  return {
-    ms: Math.round(sum),
-    frames: n,
-    fps: mean > 0 ? Math.round((1000 / mean) * 10) / 10 : 0,
-    mean: Math.round(mean * 100) / 100,
-    p50: Math.round(pct(0.5) * 100) / 100,
-    p95: Math.round(pct(0.95) * 100) / 100,
-    p99: Math.round(pct(0.99) * 100) / 100,
-    min: Math.round(min * 100) / 100,
-    max: Math.round(max * 100) / 100,
-    long16, long33, long50, long100, over250,
-  };
-}
-
-const RING = 240; // ~4s of rolling history at 60fps — enough for report() + sparkline
-const SPIKE_CAP = 600; // structured spike records kept (soak harness clears per phase)
-
+/** Optional F8 display for manual play. No recording, scanning, or benchmark work. */
 export class PerfMonitor {
-  /** Rolling ring of recent frame intervals (ms) — always recording, cheap. */
-  private ring = new Float64Array(RING);
-  private ringIdx = 0;
-  private ringLen = 0;
+  private visible = false;
+  private panel: HTMLDivElement | null = null;
+  private elapsed = 0;
+  private frames = 0;
   private lastNow = 0;
-
-  /** Explicit recording window (start/stop), unbounded so a long scenario keeps
-   *  every sample for an accurate p99/over250. */
-  private recording = false;
-  private recStart = 0;
-  private rec: number[] = [];
-  private marks: { label: string; t: number }[] = [];
-
-  private snap: PerfSnapshot = {
-    calls: 0, triangles: 0, points: 0, lines: 0, programs: 0,
-    geometries: 0, textures: 0, heapMB: 0, enemies: 0, state: "?",
-  };
-  /** Rendered-frame load samples inside the active benchmark window. The old
-   * final-frame snapshot depended on which boss effect expired as the timer
-   * stopped. We report p95 load, matching the timing gate: sustained overload
-   * fails while one-frame effect construction does not define the whole scene. */
-  private recLoads: PerfSnapshot[] = [];
-
-  private hudEl: HTMLDivElement | null = null;
-  private hudGraph: HTMLCanvasElement | null = null;
-  private hudText: HTMLDivElement | null = null;
-  private hudOn = false;
-  private hudAcc = 0;
-
-  // Frame-spike auto-diagnostics. The perf harness can't reproduce the player's
-  // "random lag spots" headless (SwiftShader + V8 GC behave unlike a real GPU), so
-  // each real hitch classifies itself: a jump in shader programs ⇒ first-use compile;
-  // a heap move with no new programs ⇒ GC pause / external stall. Near-free (one
-  // compare/frame). Structured records (perf.spikes()) feed the real-GPU soak harness;
-  // a rate-limited console line covers live F8 play. Threshold + label are settable.
-  private frameCount = 0;
-  private spikeCooldownUntil = 0;
-  private spikeThresholdMs = 120;
-  private spikeLabel = "";
-  private spikeLog: SpikeRecord[] = [];
-  private prevPrograms = 0;
-  private prevHeapMB = 0;
-  private lastProgramsDelta = 0;
-  private lastHeapDelta = 0;
-
+  private interval = 0;
   constructor(private ctx: Ctx, private getState: () => string) {
-    // Take ownership of the render-info counters so we report true per-frame load.
-    this.ctx.stage.renderer.info.autoReset = false;
+    window.addEventListener("keydown", event => {
+      if (event.code === "F8" && !event.repeat) { event.preventDefault(); this.toggle(); }
+    });
+    if (new URLSearchParams(location.search).has("perf")) this.toggle();
   }
-
-  /** Top of the frame loop: record the interval and zero the per-frame counters. */
-  begin(now: number): void {
-    if (this.lastNow) {
-      const dt = now - this.lastNow;
-      this.ring[this.ringIdx] = dt;
-      this.ringIdx = (this.ringIdx + 1) % RING;
-      if (this.ringLen < RING) this.ringLen++;
-      if (this.recording) this.rec.push(dt);
-      this.frameCount++;
-      // A real hitch (not boot warm-up, not a multi-second pause/breakpoint). The
-      // structured record is always kept (capped); the console line is rate-limited.
-      if (dt > this.spikeThresholdMs && dt < 5000 && this.frameCount > 150) {
-        this.recordSpike(dt);
-        if (now > this.spikeCooldownUntil) { this.spikeCooldownUntil = now + 400; this.logSpike(dt); }
-      }
+  toggle(): void {
+    this.visible = !this.visible;
+    this.ctx.stage.renderer.info.autoReset = !this.visible;
+    this.lastNow = 0;
+    this.elapsed = this.frames = 0;
+    if (!this.panel && this.visible) {
+      this.panel = document.createElement("div");
+      this.panel.style.cssText = "position:fixed;left:16px;bottom:70px;z-index:2000;padding:10px 14px;background:#090e18ed;color:#c6e2ec;font:12px/1.6 monospace;pointer-events:none;white-space:pre";
+      document.body.append(this.panel);
     }
+    if (this.panel) this.panel.hidden = !this.visible;
+  }
+  begin(now: number): void {
+    if (!this.visible) return;
+    this.interval = this.lastNow ? now - this.lastNow : 0;
     this.lastNow = now;
     this.ctx.stage.renderer.info.reset();
   }
-
-  /** Append a structured, classified spike record (capped ring; newest kept). */
-  private recordSpike(dt: number): void {
-    const s = this.snap;
-    this.spikeLog.push({
-      t: Math.round(performance.now()),
-      dt: Math.round(dt),
-      klass: this.lastProgramsDelta > 0 ? "compile" : "gc/stall",
-      state: s.state,
-      label: this.spikeLabel,
-      enemies: s.enemies,
-      draws: s.calls,
-      programs: s.programs,
-      dProg: this.lastProgramsDelta,
-      dHeapMB: this.lastHeapDelta,
-      heapMB: s.heapMB,
-    });
-    if (this.spikeLog.length > SPIKE_CAP) this.spikeLog.shift();
-  }
-
-  /** Classify a frame spike in the console: shader compile vs GC/stall (see fields). */
-  private logSpike(dt: number): void {
-    const s = this.snap;
-    const compiled = this.lastProgramsDelta > 0;
-    const heapSign = this.lastHeapDelta >= 0 ? "+" : "";
-    console.warn(
-      `[rh3perf] frame spike ${dt.toFixed(0)}ms — ` +
-      (compiled
-        ? `first-use SHADER COMPILE (Δprograms +${this.lastProgramsDelta})`
-        : `likely GC pause / external stall (no new programs)`) +
-      ` | state=${s.state}${this.spikeLabel ? ` @${this.spikeLabel}` : ""} enemies=${s.enemies}` +
-      ` draws=${s.calls} programs=${s.programs} heap=${s.heapMB}mb(Δ${heapSign}${this.lastHeapDelta})`,
-    );
-  }
-
-  /** Tag the activity the soak harness is currently driving, attached to each spike. */
-  setSpikeLabel(label: string): void { this.spikeLabel = label; }
-
-  /** Lower the spike threshold (ms) for a soak so micro-stalls are captured too. */
-  setSpikeThreshold(ms: number): void { this.spikeThresholdMs = Math.max(16, ms); }
-
-  /** All captured spike records (newest last). */
-  spikes(): SpikeRecord[] { return this.spikeLog.slice(); }
-
-  /** Drop all captured spikes (call between soak phases). */
-  clearSpikes(): void { this.spikeLog = []; }
-
-  /** End of the frame loop (after render): snapshot GPU load + refresh overlay. */
-  end(dt: number): void {
+  end(_dt: number): void {
+    if (!this.visible || !this.panel) return;
+    this.elapsed += this.interval;
+    this.frames++;
+    if (this.elapsed < 500) return;
     const info = this.ctx.stage.renderer.info;
-    // Per-render counters are only valid on frames that actually rendered — menu
-    // mode caps rendering to ~40fps while the loop runs every rAF, so on a skipped
-    // frame `calls` is still 0 from begin()'s reset. Keep the last real values then.
-    if (info.render.calls > 0) {
-      this.snap.calls = info.render.calls;
-      this.snap.triangles = info.render.triangles;
-      this.snap.points = info.render.points;
-      this.snap.lines = info.render.lines;
-    }
-    this.snap.programs = info.programs?.length ?? 0;
-    this.snap.geometries = info.memory.geometries;
-    this.snap.textures = info.memory.textures;
-    const mem = (performance as MemoryPerf).memory;
-    this.snap.heapMB = mem ? Math.round(mem.usedJSHeapSize / 1048576) : 0;
-    this.snap.enemies = this.ctx.enemies.living().length;
-    this.snap.state = this.getState();
-    if (this.recording && info.render.calls > 0) {
-      this.recLoads.push({ ...this.snap });
-    }
-
-    // Per-frame deltas feed the spike classifier read in the NEXT begin().
-    this.lastProgramsDelta = this.snap.programs - this.prevPrograms;
-    this.prevPrograms = this.snap.programs;
-    this.lastHeapDelta = this.snap.heapMB - this.prevHeapMB;
-    this.prevHeapMB = this.snap.heapMB;
-
-    if (this.hudOn) {
-      this.hudAcc += dt;
-      if (this.hudAcc >= 0.2) { this.hudAcc = 0; this.refreshHud(); }
-    }
-  }
-
-  // ───────────────────────────────────────────── scripting / query surface ──
-
-  /** Stats over the recent rolling window (no start/stop needed). */
-  report(): PerfStats & { snap: PerfSnapshot } {
-    const out: number[] = [];
-    const start = this.ringLen < RING ? 0 : this.ringIdx;
-    for (let i = 0; i < this.ringLen; i++) out.push(this.ring[(start + i) % RING]);
-    return { ...computeStats(out), snap: { ...this.snap } };
-  }
-
-  /** Begin an explicit recording window; clears prior samples + marks. */
-  start(label = ""): void {
-    this.recording = true;
-    this.recStart = this.lastNow || performance.now();
-    this.rec = [];
-    this.recLoads = [];
-    this.marks = label ? [{ label, t: 0 }] : [];
-  }
-
-  /** End the recording window; returns its stats + correlated event marks. */
-  stop(): PerfStats & { snap: PerfSnapshot; marks: { label: string; t: number }[] } {
-    this.recording = false;
-    // Drop the first couple of warm-up frames the way the legacy probes did.
-    const samples = this.rec.length > 4 ? this.rec.slice(2) : this.rec;
-    const p95 = (key: "calls" | "triangles" | "points" | "lines"): number => {
-      if (!this.recLoads.length) return this.snap[key];
-      const values = this.recLoads.map((load) => load[key]).sort((a, b) => a - b);
-      return values[Math.min(values.length - 1, Math.floor(values.length * 0.95))];
-    };
-    const peak = (key: "programs" | "geometries" | "textures" | "heapMB" | "enemies"): number =>
-      this.recLoads.reduce((max, load) => Math.max(max, load[key]), this.snap[key]);
-    const load = {
-      ...this.snap,
-      calls: p95("calls"), triangles: p95("triangles"), points: p95("points"), lines: p95("lines"),
-      programs: peak("programs"), geometries: peak("geometries"), textures: peak("textures"),
-      heapMB: peak("heapMB"), enemies: peak("enemies"),
-    };
-    return { ...computeStats(samples), snap: load, marks: this.marks.slice() };
-  }
-
-  /** Tag the current moment with a label (relative to the recording start) so a
-   *  later frame spike can be attributed to the game event that caused it. */
-  mark(label: string): void {
-    if (this.recording) this.marks.push({ label, t: Math.round((performance.now() - this.recStart)) });
-  }
-
-  /** Just the GPU-load / scene snapshot (latest frame). */
-  snapshot(): PerfSnapshot { return { ...this.snap }; }
-
-  // ─────────────────────────────────────────────────────────── overlay HUD ──
-
-  /** Toggle (no arg) or set the on-screen overlay. Returns the new state. */
-  hud(on?: boolean): boolean {
-    this.hudOn = on === undefined ? !this.hudOn : on;
-    if (this.hudOn) { this.ensureHud(); this.refreshHud(); if (this.hudEl) this.hudEl.style.display = "block"; }
-    else if (this.hudEl) this.hudEl.style.display = "none";
-    return this.hudOn;
-  }
-
-  private ensureHud(): void {
-    if (this.hudEl) return;
-    const el = document.createElement("div");
-    el.id = "rh3-perf-hud";
-    // Sized for legibility in a FULL-FRAME screenshot (AI vision downscales large
-    // images, so tiny text becomes unreadable) — large, bold, near-opaque panel.
-    el.style.cssText =
-      "position:fixed;top:10px;left:10px;z-index:99999;pointer-events:none;" +
-      "font:14px/1.4 ui-monospace,Consolas,monospace;color:#dff;font-weight:600;" +
-      "background:rgba(4,6,14,.92);border:2px solid rgba(120,170,255,.55);" +
-      "border-radius:8px;padding:9px 12px;min-width:236px;letter-spacing:.3px;" +
-      "text-shadow:0 1px 2px #000";
-    const text = document.createElement("div");
-    const graph = document.createElement("canvas");
-    graph.width = 232; graph.height = 40;
-    graph.style.cssText = "display:block;margin-top:7px;width:232px;height:40px;border-radius:4px;background:rgba(0,0,0,.45)";
-    el.appendChild(text);
-    el.appendChild(graph);
-    document.body.appendChild(el);
-    this.hudEl = el; this.hudText = text; this.hudGraph = graph;
-  }
-
-  private refreshHud(): void {
-    if (!this.hudText || !this.hudGraph) return;
-    const r = this.report();
-    const fps = r.fps;
-    const col = fps >= 55 ? "#7df09b" : fps >= 30 ? "#ffd66b" : "#ff6b6b";
-    const s = r.snap;
-    this.hudText.innerHTML =
-      `<div style="font-size:19px;line-height:1.15"><b style="color:${col}">${fps.toFixed(0)} FPS</b>` +
-      ` <span style="color:#9bf;font-size:14px">${r.mean.toFixed(1)}ms</span>` +
-      ` <span style="opacity:.75;font-size:13px">p95 ${r.p95.toFixed(0)}</span></div>` +
-      `draws <b>${s.calls}</b>  tris ${(s.triangles / 1000).toFixed(0)}k  prog ${s.programs}` +
-      `<br>geo ${s.geometries}  tex ${s.textures}` + (s.heapMB ? `  heap ${s.heapMB}mb` : "") +
-      `<br><span style="opacity:.85">state ${s.state}  enemies ${s.enemies}</span>`;
-    this.drawGraph();
-  }
-
-  /** Frame-time sparkline: green ≤16ms, amber ≤33ms, red beyond — so a hitch is
-   *  unmistakable in a screenshot. */
-  private drawGraph(): void {
-    const c = this.hudGraph;
-    if (!c) return;
-    const g = c.getContext("2d");
-    if (!g) return;
-    const W = c.width, H = c.height;
-    g.clearRect(0, 0, W, H);
-    const start = this.ringLen < RING ? 0 : this.ringIdx;
-    const n = this.ringLen;
-    if (!n) return;
-    // Show the most recent W samples.
-    const show = Math.min(n, W);
-    const cap = 50; // ms mapped to full height
-    for (let i = 0; i < show; i++) {
-      const d = this.ring[(start + n - show + i) % RING];
-      const h = Math.max(1, Math.min(H, (d / cap) * H));
-      g.fillStyle = d <= 16.7 ? "#3fae62" : d <= 33.4 ? "#d8a93c" : "#d84545";
-      g.fillRect(i, H - h, 1, h);
-    }
-    // 60fps + 30fps reference lines.
-    g.fillStyle = "rgba(255,255,255,.18)";
-    g.fillRect(0, H - (16.7 / cap) * H, W, 1);
-    g.fillRect(0, H - (33.4 / cap) * H, W, 1);
+    this.panel.textContent = Math.round(this.frames * 1000 / this.elapsed) + " FPS · " + this.getState() + "\n" + info.render.calls + " draws · " + Math.round(info.render.triangles / 1000) + "k triangles · " + this.ctx.enemies.remaining + " enemies";
+    this.elapsed = this.frames = 0;
   }
 }

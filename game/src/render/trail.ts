@@ -25,6 +25,7 @@ export class SwordTrail {
   private mat: THREE.ShaderMaterial;
   private positions: Float32Array;
   private alphas: Float32Array;
+  private edges: Float32Array;
   private geometry: THREE.BufferGeometry;
   private life = 0.16;
 
@@ -32,9 +33,11 @@ export class SwordTrail {
     const maxVerts = (MAX_SEGS - 1) * 6;
     this.positions = new Float32Array(maxVerts * 3);
     this.alphas = new Float32Array(maxVerts);
+    this.edges = new Float32Array(maxVerts);
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute("position", new THREE.BufferAttribute(this.positions, 3));
     this.geometry.setAttribute("aAlpha", new THREE.BufferAttribute(this.alphas, 1));
+    this.geometry.setAttribute("aEdge", new THREE.BufferAttribute(this.edges, 1));
     this.mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
@@ -43,9 +46,12 @@ export class SwordTrail {
       uniforms: { uColor: { value: new THREE.Color(0x44ccff) }, uIntensity: { value: 1 } },
       vertexShader: /* glsl */ `
         attribute float aAlpha;
+        attribute float aEdge;
         varying float vAlpha;
+        varying float vEdge;
         void main() {
           vAlpha = aAlpha;
+          vEdge = aEdge;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -53,8 +59,11 @@ export class SwordTrail {
         uniform vec3 uColor;
         uniform float uIntensity;
         varying float vAlpha;
+        varying float vEdge;
         void main() {
-          gl_FragColor = vec4(uColor * (0.82 + vAlpha * uIntensity), vAlpha * (0.38 + uIntensity * 0.14));
+          float feather = smoothstep(0.0, 0.28, vEdge) * (1.0 - smoothstep(0.84, 1.0, vEdge));
+          float life = vAlpha * vAlpha;
+          gl_FragColor = vec4(mix(uColor, vec3(0.92,0.97,1.0), life * 0.28), life * feather * (0.22 + uIntensity * 0.1));
         }
       `,
     });
@@ -97,11 +106,12 @@ export class SwordTrail {
   /** The i-th live segment, oldest-first (i in 0..count-1). */
   private segAt(i: number): Seg { return this.pool[(this.head + i) % MAX_SEGS]; }
 
-  private writeVert(v: number, p: THREE.Vector3, a: number): void {
+  private writeVert(v: number, p: THREE.Vector3, a: number, edge: number): void {
     this.positions[v * 3] = p.x;
     this.positions[v * 3 + 1] = p.y;
     this.positions[v * 3 + 2] = p.z;
     this.alphas[v] = a;
+    this.edges[v] = edge;
   }
 
   update(dt: number, tip: THREE.Vector3, base: THREE.Vector3, active: boolean): void {
@@ -130,11 +140,12 @@ export class SwordTrail {
       const s1 = this.segAt(i + 1);
       const a0 = 1 - s0.age / this.life;
       const a1 = 1 - s1.age / this.life;
-      this.writeVert(v++, s0.base, a0); this.writeVert(v++, s0.tip, a0); this.writeVert(v++, s1.tip, a1);
-      this.writeVert(v++, s0.base, a0); this.writeVert(v++, s1.tip, a1); this.writeVert(v++, s1.base, a1);
+      this.writeVert(v++, s0.base, a0, 0); this.writeVert(v++, s0.tip, a0, 1); this.writeVert(v++, s1.tip, a1, 1);
+      this.writeVert(v++, s0.base, a0, 0); this.writeVert(v++, s1.tip, a1, 1); this.writeVert(v++, s1.base, a1, 0);
     }
     this.geometry.setDrawRange(0, v);
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.attributes.aAlpha.needsUpdate = true;
+    this.geometry.attributes.aEdge.needsUpdate = true;
   }
 }

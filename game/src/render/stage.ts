@@ -6,6 +6,8 @@ import {
   FXAAEffect,
   HueSaturationEffect,
   RenderPass,
+  ToneMappingEffect,
+  ToneMappingMode,
   VignetteEffect,
   type Effect,
 } from "postprocessing";
@@ -35,16 +37,6 @@ export class Stage {
   readonly fog: THREE.FogExp2;
   private envBaker!: EnvironmentBaker;
   private envTex: THREE.Texture | null = null;
-  /** MSAA is OFF by default: a real-GPU glitch-hunt (npm run glitch-hunt, NVIDIA/ANGLE/D3D11)
-   *  proved hardware MSAA through the EffectComposer's multisampled target flickers the frame
-   *  ~3/255 EVERY frame even on a frozen scene — a per-frame shimmer that headless SwiftShader
-   *  can't reproduce. FXAA also moved thousands of pixels in the temporal harness,
-   *  so the shipped path relies on quality-scaled DPR for stable edge quality.
-   *  The bisection panel can still toggle it on for experimentation. */
-  private msaaEnabled = false;
-  // Legacy debug key is still named `smaa`, but this now toggles optional FXAA.
-  // Off in production: both multisample and post-AA paths failed frozen-frame stability.
-  private smaaEnabled = false;
   quality: Quality = "high";
   /**
    * Resolution scale (render-target multiplier on the quality-capped device pixel
@@ -68,12 +60,13 @@ export class Stage {
   private tintAmt = 0;
   private tintAmtTarget = 0;
   private satTarget = 0;
-  /** True while a menu/overlay is up: render the lean chain and drop shadows. */
+  /** True while a menu/overlay is up: render the lean color chain. */
   private lowCost = false;
 
   /** 0..1 transient screen stress — pushed up by hits/crashes, decays fast. */
   private stress = 0;
-  private baseVignette = 0.42;
+  private baseVignette = 0.3;
+  private toneMode = ToneMappingMode.ACES_FILMIC;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({
@@ -90,8 +83,9 @@ export class Stage {
     // Read once here so every material compiles + warms with the chosen curve — never
     // hot-swapped mid-scene (tone mapping is in every program's cache key).
     const agx = new URLSearchParams(location.search).get("tonemap") === "agx";
+    this.toneMode=agx?ToneMappingMode.AGX:ToneMappingMode.ACES_FILMIC;
     this.renderer.toneMapping = agx ? THREE.AgXToneMapping : THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = agx ? 1.15 : 1.32;
+    this.renderer.toneMappingExposure = agx ? 1.15 : 1.16;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -118,7 +112,7 @@ export class Stage {
     this.scene.add(new THREE.AmbientLight(0x2b3446, 0.28));
 
     this.keyLight = new THREE.DirectionalLight(0xfff2e0, 1.6);
-    this.keyLight.position.set(14, 26, 8);
+    this.keyLight.position.set(-7, 18, 11);
     this.keyLight.castShadow = true;
     this.keyLight.shadow.mapSize.set(2048, 2048);
     // A LOOSE frustum (±30) with the original bias. The earlier "tighten to ±23 +
@@ -141,7 +135,7 @@ export class Stage {
 
     // Rim/kicker light opposite the key — present from construction so the 2-dir-light
     // program variant is what every material compiles + warms (no later relink).
-    this.rimLight = new THREE.DirectionalLight(0x37e0ff, 0.55);
+    this.rimLight = new THREE.DirectionalLight(0x8fc5e0, 1.05);
     this.rimLight.position.set(-13, 9, -11);
     this.scene.add(this.rimLight);
     this.scene.add(this.rimLight.target);
@@ -150,8 +144,9 @@ export class Stage {
     // exists so they all compile with the envMap variant (arena.ts rebakes per act —
     // a texture swap, never null↔texture, so it never triggers a whole-scene relink).
     this.envBaker = new EnvironmentBaker(this.renderer);
-    this.envTex = this.envBaker.bake(0x0b0820, 0x251440, 0xfff2e0, 0x37e0ff, 0x55ccff);
+    this.envTex = this.envBaker.bake(0x58667c, 0x29232c, 0xffeed1, 0x88b7d6, 0xad7653);
     this.scene.environment = this.envTex;
+    this.scene.environmentIntensity = .55;
 
     this.buildPost();
     window.addEventListener("resize", () => this.onResize());
@@ -166,18 +161,17 @@ export class Stage {
     // edges on near-black were only 1px-jagged and crawled as the camera followed
     // the player. Hardware MSAA remains available only for diagnosis; the shipped
     // path uses stable single-pass FXAA below. Scaled by preset.
-    const msaa = this.msaaEnabled ? (this.quality === "high" ? 4 : this.quality === "medium" ? 2 : 0) : 0;
+    const msaa = 0;
 
     // --- Full combat chain ---
     this.composer?.dispose();
-    // With framebuffer bloom removed there is no HDR range to preserve. The
-    // half-float compositor showed broad color changes between frozen frames on
-    // the shipping ANGLE/D3D11 path; an 8-bit target is deterministic, cheaper,
-    // and matches the final display precision.
-    this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.UnsignedByteType, multisampling: msaa });
+    // Lighting stays linear and HDR until the explicit display transform below.
+    // WebGLRenderer does not apply its tone map when drawing into a render target;
+    // an 8-bit target here clipped metal and emissive colors before the final pass.
+    this.composer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
     this.composer.addPass(new RenderPass(this.scene, this.camera));
 
-    const effects: Effect[] = [];
+    const effects: Effect[] = [new ToneMappingEffect({mode:this.toneMode})];
     // No framebuffer bloom in the shipping chain. Repeated frozen-frame
     // bisections on the real NVIDIA/ANGLE path named BloomEffect as the owner of
     // broad pixel shimmer. Authored emissive materials and local impact sprites
@@ -188,8 +182,8 @@ export class Stage {
     this.vignette = new VignetteEffect({ darkness: this.baseVignette, offset: 0.32 });
     effects.push(this.vignette);
     // Subtle grade: a touch more saturation + contrast sells "finished"
-    effects.push(new HueSaturationEffect({ saturation: 0.12 }));
-    effects.push(new BrightnessContrastEffect({ contrast: 0.07 }));
+    effects.push(new HueSaturationEffect({ saturation: -0.035 }));
+    effects.push(new BrightnessContrastEffect({ contrast: 0.025 }));
     // Split-tone + tempo/mood tint + dither (IDEAS-GRAPHICS #5/#17/#18/#21). Rebuilt
     // per preset; uniforms re-seeded from the current damped tint state so a quality
     // change mid-run doesn't reset an active tempo/mood grade.
@@ -203,7 +197,7 @@ export class Stage {
     // from the lean menu chain. That WAS the "flickering" bug. If a film-texture look is ever
     // wanted, it must be a STATIC (uv-only, no time) grain — never the animated NoiseEffect.
     this.composer.addPass(new EffectPass(this.camera, ...effects));
-    if (this.smaaEnabled && this.quality !== "low") {
+    if (this.quality !== "low") {
       // SMAA's multi-pass lookup path showed a measurable frozen-frame shimmer
       // on the shipping NVIDIA/ANGLE path. FXAA is a single deterministic pass;
       // DPR scaling retains the fine procedural detail without temporal crawling.
@@ -214,18 +208,20 @@ export class Stage {
     // --- Lean menu chain ---
     // Just render + vignette + grade. No bloom (its mipmap blur crushes the menu's
     // subtle starfield/aurora to near-black — dropping it makes the rift backdrop
-    // read *richer*), no grain, no FXAA. Combined with shadows-off in menu mode this
+    // read *richer*), no grain. Combined with shadows-off in menu mode this
     // is both the look we want behind the menus and a big perf win. Built as its own
     // chain so the final pass actually routes to screen (see menuComposer doc).
     this.menuComposer?.dispose();
-    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.UnsignedByteType, multisampling: msaa });
+    this.menuComposer = new EffectComposer(this.renderer, { frameBufferType: THREE.HalfFloatType, multisampling: msaa });
     this.menuComposer.addPass(new RenderPass(this.scene, this.camera));
     this.menuComposer.addPass(new EffectPass(
       this.camera,
+      new ToneMappingEffect({mode:this.toneMode}),
       new VignetteEffect({ darkness: this.baseVignette, offset: 0.32 }),
-      new HueSaturationEffect({ saturation: 0.12 }),
-      new BrightnessContrastEffect({ contrast: 0.07 }),
+      new HueSaturationEffect({ saturation: -0.035 }),
+      new BrightnessContrastEffect({ contrast: 0.025 }),
     ));
+    if (this.quality !== "low") this.menuComposer.addPass(new EffectPass(this.camera, new FXAAEffect()));
     this.menuComposer.setSize(w, h);
   }
 
@@ -247,9 +243,8 @@ export class Stage {
     this.renderer.setPixelRatio(this.effectiveDpr());
     this.renderer.setSize(window.innerWidth, window.innerHeight);
 
-    // Shadows: high 2048, medium 1024, low off — but never while a menu is up
-    // (the low-cost path keeps them off there; see setLowCost).
-    this.keyLight.castShadow = !this.lowCost && q !== "low";
+    // Shadows stay consistent between the hero showcase and gameplay.
+    this.keyLight.castShadow = q !== "low";
     const size = q === "high" ? 2048 : 1024;
     if (this.keyLight.shadow.mapSize.x !== size) {
       this.keyLight.shadow.mapSize.set(size, size);
@@ -274,19 +269,18 @@ export class Stage {
 
   /**
    * Switch to the lean menu chain while a menu/overlay is up, and back to the full
-   * chain for combat/cutscenes. Menu mode also drops the key light's shadow — pure
-   * perf there (no shadow-map render), and gameplay restores it. The lean chain is
-   * what makes the rift backdrop read rich behind the menus while staying cheap.
+   * chain for combat/cutscenes. Both retain the selected shadow quality so the
+   * hero stays grounded and menu transitions don't change material variants.
    */
   setLowCost(on: boolean): void {
     if (on === this.lowCost) return;
     this.lowCost = on;
-    this.keyLight.castShadow = on ? false : this.quality !== "low";
+    this.keyLight.castShadow = this.quality !== "low";
   }
 
   /** Brightness/gamma: `mult` scales the base ACES exposure (1.0 = default). */
   setExposure(mult: number): void {
-    this.renderer.toneMappingExposure = 1.32 * mult;
+    this.renderer.toneMappingExposure = 1.16 * mult;
   }
 
   private onResize(): void {
@@ -315,21 +309,6 @@ export class Stage {
     if (mood === "dead") { this.tintTarget.set(0x5a6a88); this.tintAmtTarget = 0.5; this.satTarget = -0.32; }
     else if (mood === "victory") { this.tintTarget.set(0xffe6b0); this.tintAmtTarget = 0.35; this.satTarget = 0.18; }
     else { this.tintAmtTarget = 0; this.satTarget = 0; }
-  }
-
-  /** Live effect toggles for the debug bisection panel (effectsToggle.ts). Lets a player
-   *  strip render features one-by-one on real hardware to pinpoint a GPU-specific glitch. */
-  setDebug(name: "bloom" | "msaa" | "smaa" | "shadows" | "env" | "fog" | "grade" | "vignette", on: boolean): void {
-    switch (name) {
-      case "bloom": break; // intentionally unavailable in the stable shipping chain
-      case "grade": this.grade.blendMode.opacity.value = on ? 1 : 0; break;
-      case "vignette": this.vignette.blendMode.opacity.value = on ? 1 : 0; break;
-      case "shadows": this.keyLight.castShadow = on && !this.lowCost && this.quality !== "low"; break;
-      case "env": this.scene.environment = on ? this.envTex : null; break;
-      case "fog": this.scene.fog = on ? this.fog : null; break;
-      case "msaa": if (this.msaaEnabled !== on) { this.msaaEnabled = on; this.buildPost(); } break;
-      case "smaa": if (this.smaaEnabled !== on) { this.smaaEnabled = on; this.buildPost(); } break;
-    }
   }
 
   update(dt: number): void {
@@ -376,36 +355,6 @@ export class Stage {
       this.renderer.compile(this.scene, this.camera);
       this.menuComposer.render(0.016);
     } catch { /* headless / lost ctx */ } finally {
-      this.keyLight.castShadow = prevCast;
-    }
-  }
-
-  /** Boot-grade warm-up. `renderer.compile()` may return while ANGLE's parallel
-   * shader linker is still working; drawing newly linked enemy programs during
-   * that window can produce missing/incorrect frames on real GPUs. Await the
-   * renderer's completion-aware path before the loader is allowed to reveal. */
-  async warmUpAsync(): Promise<void> {
-    const prevCast = this.keyLight.castShadow;
-    try {
-      this.keyLight.castShadow = this.quality !== "low";
-      await this.renderer.compileAsync(this.scene, this.camera);
-      // Postprocessing shaders are not covered by WebGLRenderer.compileAsync.
-      // Give ANGLE a few presented frames to finish those links too; otherwise
-      // the first combat frames can phase while the FXAA/grade programs settle.
-      for (let i = 0; i < 3; i++) {
-        this.composer.render(0.016);
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      }
-      this.keyLight.castShadow = false;
-      await this.renderer.compileAsync(this.scene, this.camera);
-      for (let i = 0; i < 2; i++) {
-        this.menuComposer.render(0.016);
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      }
-    } catch {
-      // Older/limited WebGL implementations still get the synchronous fallback.
-      this.warmUp();
-    } finally {
       this.keyLight.castShadow = prevCast;
     }
   }

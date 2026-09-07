@@ -1,10 +1,11 @@
-import * as THREE from "three";
+import { schoolLabel, SPECIALTIES, cardSchool, specialtyFor } from "../game/specialties";
+import { ENCOUNTERS } from "../game/encounters";
 import type { Ctx, RunStats } from "../game/ctx";
 import type { CardDef } from "../game/cards";
 import type { RelicDef } from "../game/relics";
-import { CARDS, cardById, HERO_SIGNATURE_CARDS } from "../game/cards";
+import { CARDS } from "../game/cards";
 import { RELICS } from "../game/relics";
-import { HEROES, type HeroDef } from "../game/heroes";
+import { heroById, type HeroDef } from "../game/heroes";
 import { COSMETICS } from "../game/cosmetics";
 import { ROMAN } from "../game/run";
 import { MILESTONES, type UnlockedItem } from "../game/profile";
@@ -137,10 +138,7 @@ export function loadSettings(): Settings {
  * settle, plus ~1.5s for each paragraph already shown (later beats of a run of
  * lines hold progressively longer), never under a 3.4s floor.
  *
- * This is the SINGLE source for the project's text-dwell rule -- storyIntro,
- * the act-transition banners in main.ts, and the qa:text oracle (via the
- * __rh3text seam) all read it, so the gate can never green-light a beat the
- * game actually shows for less time.
+ * Shared by the story intro and the act-transition banners.
  */
 export function storyDwellMs(line: string, extraHoldMs = 0, perParagraphMs = 0, paragraph = 1): number {
   const len = line.replace(/<[^>]*>/g, "").length;
@@ -170,11 +168,9 @@ export interface MenuCallbacks {
 export class Menus {
   private root: HTMLElement;
   settings: Settings;
-  /** Depth chosen on the hero-select screen, carried into the run. */
-  private heroDepth = 0;
-  private heroBlessing = "";
-  /** Focused hero in the gallery. The surrounding heroes are navigation, not six equal CTAs. */
-  private heroCarouselIndex = 0;
+  /** Depth and blessing carried into the run. */
+  private runDepth = 0;
+  private runBlessing = "";
   /** Live fullscreen state (kept in sync with native + the Fullscreen API). */
   private fsState = false;
   /** Cached primary-display metrics (Electron only); null in the browser. */
@@ -293,18 +289,40 @@ export class Menus {
     if (ws) ws.disabled = this.fsState;
   }
 
+  private storyAuto: { remaining: number; advance: () => void } | null = null;
+  private storyCleanup: (() => void) | null = null;
+  private actCard: { el: HTMLElement; time: number } | null = null;
+
+  updatePresentation(dt: number): void {
+    if (this.actCard) {
+      const card = this.actCard;
+      card.time += dt;
+      card.el.style.opacity = String(Math.min(1, card.time / 0.22, Math.max(0, (2.7 - card.time) / 0.45)));
+      if (card.time >= 2.7) { card.el.remove(); this.actCard = null; }
+    }
+    const beat = this.storyAuto;
+    if (!beat) return;
+    beat.remaining -= dt;
+    if (beat.remaining <= 0) { this.storyAuto = null; beat.advance(); }
+  }
+
   clear(): void {
+    this.actCard?.el.remove();
+    this.actCard = null;
+    this.storyCleanup?.();
+    this.storyCleanup = null;
+    this.storyAuto = null;
     this.root.innerHTML = "";
   }
 
   private blessingDesc(): string {
-    return BLESSINGS.find((b) => b.id === this.heroBlessing)?.desc
+    return BLESSINGS.find((b) => b.id === this.runBlessing)?.desc
       ?? "An optional gift to begin the run with — pick one, or none. Locked blessings are earned through play.";
   }
 
   private refreshBlessingPick(scope: HTMLElement): void {
     scope.querySelectorAll<HTMLElement>(".blessing-chip").forEach((chip) => {
-      chip.classList.toggle("blessing-chip--on", (chip.dataset.bl ?? null) === this.heroBlessing);
+      chip.classList.toggle("blessing-chip--on", (chip.dataset.bl ?? null) === this.runBlessing);
     });
     const desc = scope.querySelector(".blessing-desc");
     if (desc) desc.textContent = this.blessingDesc();
@@ -378,8 +396,8 @@ export class Menus {
   showMain(): void {
     const s = this.screen("screen--main");
     const p = this.ctx.profile.data;
-    const unlockedCount = p.unlocks.length;
     const draftableRelics = RELICS.filter((r) => !r.boon && !r.eventOnly);
+    const unlockedCount = CARDS.filter(c => this.ctx.profile.isUnlocked(`card:${c.id}`)).length + draftableRelics.filter(r => this.ctx.profile.isUnlocked(`relic:${r.id}`)).length;
     const totalCount = CARDS.length + draftableRelics.length;
     const riftbreaker = p.earnedMilestones.includes("depth-15") ? ` &nbsp;·&nbsp; <span style="color:#ffd24a">✦ RIFTBREAKER</span>` : "";
     const strip = p.runs > 0
@@ -424,7 +442,7 @@ export class Menus {
     `;
     this.wireButtons(s);
     s.querySelector('[data-act="exit-game"]')?.addEventListener("click", () =>
-      this.confirm("Exit Rogue Hero III?", "Your run is saved — Continue Run will resume it.", () => this.cb.onQuit(), () => this.showMain()));
+      this.confirm("Exit Rogue Hero III?", "Continue Run returns to your last chamber checkpoint.", () => this.cb.onQuit(), () => this.showMain()));
     s.querySelector('[data-act="continue"]')?.addEventListener("click", () => this.cb.onContinueRun());
     s.querySelector('[data-act="start"]')!.addEventListener("click", () => {
       // A saved checkpoint is real progress — never let one misclick eat it.
@@ -439,282 +457,75 @@ export class Menus {
     s.querySelector('[data-act="credits"]')!.addEventListener("click", () => this.showCredits(() => this.showMain()));
   }
 
-  // ---------------------------------------------------------------- hero select
-  /**
-   * Build the (paint-heavy) hero-select DOM once under the boot loader, then restore
-   * the menu. Resolving + laying out the 6 elaborate `.hero-card` figures the first
-   * time costs a one-off ~150ms style/raster stall; doing it while hidden behind the
-   * loader means the player's first real "New Run" opens instantly. No flicker — boot
-   * skips the visible render while `booting` holds.
-   */
-  /** Data-URL 3D portraits of each hero mesh, baked once at boot (see bakeHeroPortraits). */
-  private heroPortraits: Record<string, string> = {};
-
-  /**
-   * Render a real 3D portrait of every hero's actual in-game mesh (lit by the live
-   * rig + env map) to a data URL, once, under the boot loader — so the hero-select
-   * cards show the gorgeous procedural knights instead of crude CSS silhouettes.
-   * Hijacks the live player (applies each hero, frames it, reads back the pixels) and
-   * restores it afterward. Isolates the hero: hides every non-light scene object and
-   * clears the background/fog so the portrait is transparent.
-   */
-  bakeHeroPortraits(): void {
-    const { stage, player, profile } = this.ctx;
-    const renderer = stage.renderer, scene = stage.scene;
-    if (!renderer || !player) return;
-    const SIZE = 384;
-    let rt: THREE.WebGLRenderTarget | null = null;
-    const prevVis: [THREE.Object3D, boolean][] = scene.children.map((c) => [c, c.visible]);
-    const prevBg = scene.background, prevFog = scene.fog, prevTarget = renderer.getRenderTarget();
-    const prevAlpha = renderer.getClearAlpha();
-    const prevHero = player.hero?.id;
-    const equipped = profile.data.equipped;
-    try {
-      rt = new THREE.WebGLRenderTarget(SIZE, SIZE, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
-      rt.texture.colorSpace = THREE.SRGBColorSpace; // display-ready sRGB, not raw linear
-      const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 60);
-      cam.position.set(1.9, 2.55, 4.7);
-      cam.lookAt(0, 1.25, 0);
-      // Isolate the hero: keep only lights + the player root; drop bg/fog.
-      for (const c of scene.children) c.visible = c === player.root || (c as THREE.Light).isLight === true;
-      scene.background = null;
-      scene.fog = null;
-      renderer.setClearAlpha(0);
-      renderer.setRenderTarget(rt);
-      const buf = new Uint8Array(SIZE * SIZE * 4);
-      const canvas = document.createElement("canvas");
-      canvas.width = canvas.height = SIZE;
-      const g = canvas.getContext("2d")!;
-      const img = g.createImageData(SIZE, SIZE);
-      const prevPos = player.pos.clone(), prevRootY = player.root.rotation.y;
-      for (const hero of HEROES) {
-        player.applyHero(hero, equipped.cape, equipped.blade);
-        player.pos.set(0, 0, 0);
-        player.root.position.set(0, 0, 0);
-        player.facing = 0.42; // a slight 3/4 turn toward the camera
-        player.animMoveAmount = player.animMoveX = player.animMoveZ = 0;
-        player.update(0.1); player.update(0.1); player.update(0.1); // settle the idle pose + facing
-        player.root.position.set(0, 0, 0);
-        renderer.clear();
-        renderer.render(scene, cam);
-        renderer.readRenderTargetPixels(rt, 0, 0, SIZE, SIZE, buf);
-        for (let y = 0; y < SIZE; y++) { // GL pixels are bottom-up — flip into the ImageData
-          const src = (SIZE - 1 - y) * SIZE * 4, dst = y * SIZE * 4;
-          img.data.set(buf.subarray(src, src + SIZE * 4), dst);
-        }
-        g.putImageData(img, 0, 0);
-        this.heroPortraits[hero.id] = canvas.toDataURL("image/png");
-      }
-      player.pos.copy(prevPos);
-      player.root.rotation.y = prevRootY;
-    } catch { /* headless / lost ctx: fall back to the CSS figures */ } finally {
-      renderer.setRenderTarget(prevTarget);
-      renderer.setClearAlpha(prevAlpha);
-      for (const [c, v] of prevVis) c.visible = v;
-      scene.background = prevBg;
-      scene.fog = prevFog;
-      rt?.dispose();
-      // Restore the menu's live hero mesh.
-      const restore = HEROES.find((h) => h.id === prevHero) ?? HEROES[0];
-      player.applyHero(restore, equipped.cape, equipped.blade);
-      player.root.position.set(player.pos.x, 0, player.pos.z);
-    }
-  }
-
-  async warmHeroSelect(): Promise<void> {
-    this.bakeHeroPortraits();
-    this.renderHeroSelect();
-    // Data-URL portraits decode asynchronously. Waiting here, behind the opaque
-    // loader, prevents the first real hero-select open from pausing on image decode.
-    const images = [...this.root.querySelectorAll<HTMLImageElement>(".hero-portrait")];
-    await Promise.all(images.map((img) => img.decode().catch(() => undefined)));
-    void document.body.offsetHeight;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    this.showMain();
-  }
-
-  showHeroSelect(): void {
+  // The run is defined by the abilities found inside the rift.
+  showRunSetup(): void {
     const maxD = this.ctx.profile.data.maxDepth;
-    this.heroDepth = Math.max(0, Math.min(this.heroDepth || maxD, maxD));
-    this.heroCarouselIndex = Math.max(0, Math.min(this.heroCarouselIndex, HEROES.length - 1));
-    this.renderHeroSelect();
+    this.runDepth = Math.max(0, Math.min(this.runDepth || maxD, maxD));
+    if (maxD === 0 && !BLESSINGS.some(b => this.ctx.profile.isUnlocked(`blessing:${b.id}`))) {
+      this.cb.onStartRun(heroById("blade"), 0);
+      return;
+    }
+    this.renderRunSetup();
   }
 
-  private renderHeroSelect(): void {
+  private renderRunSetup(): void {
     const s = this.screen();
     // A previously-chosen blessing that isn't unlocked (or got reset) falls back to None.
-    if (this.heroBlessing && !this.ctx.profile.isUnlocked(`blessing:${this.heroBlessing}`)) this.heroBlessing = "";
+    if (this.runBlessing && !this.ctx.profile.isUnlocked(`blessing:${this.runBlessing}`)) this.runBlessing = "";
     const maxD = this.ctx.profile.data.maxDepth;
     const modsForDepth = () => {
-      const diff = difficultyFor(this.heroDepth);
-      return this.heroDepth === 0
+      const diff = difficultyFor(this.runDepth);
+      return this.runDepth === 0
         ? "No modifiers — the standard descent"
         : diff.labels.map((l) => l.replace(/^D\d+\s+/, "")).slice(-3).join(" &nbsp;·&nbsp; ");
     };
     const mods = modsForDepth();
-    const atCeiling = this.heroDepth === maxD && maxD < MAX_DEPTH;
+    const atCeiling = this.runDepth === maxD && maxD < MAX_DEPTH;
     s.innerHTML = `
-      <div class="draft-title">CHOOSE YOUR HERO</div>
-      <div class="draft-sub">EACH FIGHTS THE RIFT THEIR OWN WAY</div>
+      <div class="draft-title">ENTER THE RIFT</div>
+      <div class="draft-sub">ONE BLADE. YOUR ABILITIES. YOUR DESCENT.</div>
       <div class="depth-pick">
-        <button class="depth-btn" data-d="dn"${this.heroDepth <= 0 ? " disabled" : ""}>◂</button>
+        <button class="depth-btn" data-d="dn"${this.runDepth <= 0 ? " disabled" : ""}>◂</button>
         <div class="depth-pick__mid">
-          <div class="depth-pick__label">RIFT DEPTH ${this.heroDepth}${atCeiling ? " · your ceiling" : maxD >= MAX_DEPTH && this.heroDepth === maxD ? " · MAX" : ""}</div>
+          <div class="depth-pick__label">RIFT DEPTH ${this.runDepth}${atCeiling ? " · your ceiling" : maxD >= MAX_DEPTH && this.runDepth === maxD ? " · MAX" : ""}</div>
           <div class="depth-pick__mods">${mods}</div>
         </div>
-        <button class="depth-btn" data-d="up"${this.heroDepth >= maxD ? " disabled" : ""}>▸</button>
+        <button class="depth-btn" data-d="up"${this.runDepth >= maxD ? " disabled" : ""}>▸</button>
       </div>
       <div class="blessing-pick">
         <span class="blessing-pick__label">BLESSING</span>
-        <button class="blessing-chip${this.heroBlessing === "" ? " blessing-chip--on" : ""}" data-bl="">None</button>
+        <button class="blessing-chip${this.runBlessing === "" ? " blessing-chip--on" : ""}" data-bl="">None</button>
         ${BLESSINGS.map((b) => {
           const got = this.ctx.profile.isUnlocked(`blessing:${b.id}`);
           return got
-            ? `<button class="blessing-chip${this.heroBlessing === b.id ? " blessing-chip--on" : ""}" data-bl="${b.id}">${b.icon} ${b.name}</button>`
+            ? `<button class="blessing-chip${this.runBlessing === b.id ? " blessing-chip--on" : ""}" data-bl="${b.id}">${b.icon} ${b.name}</button>`
             : `<button class="blessing-chip blessing-chip--locked" data-bl-locked="${b.id}">🔒 ${b.name}</button>`;
         }).join("")}
       </div>
       <div class="blessing-desc">${this.blessingDesc()}</div>
-      <div class="hero-carousel">
-        <button class="hero-carousel__nav" data-hero-nav="prev" aria-label="Previous hero">&#x2039;</button>
-        <div class="hero-row"></div>
-        <button class="hero-carousel__nav" data-hero-nav="next" aria-label="Next hero">&#x203a;</button>
-      </div>
-      <button class="btn btn--primary hero-confirm">ENTER THE RIFT</button>
+      <button class="btn btn--primary run-confirm">BEGIN DESCENT</button>
       <button class="draft-skip">BACK</button>
     `;
-    const row = s.querySelector(".hero-row")!;
-    const heroFrag = document.createDocumentFragment();
-    const bars = (n: number) =>
-      Array.from({ length: 5 }, (_, i) => `<span class="hbar${i < n ? " hbar--on" : ""}"></span>`).join("");
-    const heroFigure = (hero: HeroDef, unlocked: boolean) => {
-      // Unlocked heroes show a real 3D render of their in-game mesh (baked at boot);
-      // locked ones stay a mystery CSS silhouette.
-      const portrait = unlocked ? this.heroPortraits[hero.id] : undefined;
-      if (portrait) {
-        return `<div class="hero-card__figure hero-card__figure--portrait" aria-hidden="true"><img class="hero-portrait" src="${portrait}" alt=""></div>`;
-      }
-      return `
-      <div class="hero-card__figure hero-card__figure--${hero.id}" aria-hidden="true">
-        <span class="hero-fig__cape"></span>
-        <span class="hero-fig__body"></span>
-        <span class="hero-fig__head"></span>
-        <span class="hero-fig__blade"></span>
-        <span class="hero-fig__aura"></span>
-      </div>`;
-    };
-
-    const visibleHeroIndices = [
-      this.heroCarouselIndex,
-      (this.heroCarouselIndex - 1 + HEROES.length) % HEROES.length,
-      (this.heroCarouselIndex + 1) % HEROES.length,
-    ];
-    for (const [visibleIndex, heroIndex] of visibleHeroIndices.entries()) {
-      const hero = HEROES[heroIndex];
-      const unlocked = this.ctx.profile.isUnlocked(`hero:${hero.id}`);
-      const el = document.createElement("div");
-      const positionClass = visibleIndex === 0 ? "hero-card--active" : visibleIndex === 1 ? "hero-card--prev" : "hero-card--next";
-      el.className = `hero-card ${positionClass}${unlocked ? "" : " hero-card--locked"}`;
-      el.style.setProperty("--accent", hero.color);
-      const handIcons = hero.startingHand.map((id) => {
-        const c = cardById(id);
-        return `<span class="hero-hand__icon" style="--accent:${c.color}" title="${c.name}">${c.icon}</span>`;
-      }).join("");
-      // Per-hero SIGNATURE level: how many of this hero's unique cards you've unlocked.
-      const sig = HERO_SIGNATURE_CARDS[hero.id] ?? [];
-      const sigLvl = sig.filter((id) => this.ctx.profile.isUnlocked(`card:${id}`)).length;
-      const sigPips = sig.map((id) => {
-        const on = this.ctx.profile.isUnlocked(`card:${id}`);
-        const c = cardById(id);
-        const hint = on ? c.name : `${c.name} — locked: ${this.ctx.profile.unlockHintFor(`card:${id}`)}`;
-        return `<span class="hero-sig__pip${on ? " hero-sig__pip--on" : ""}" title="${hint}"></span>`;
-      }).join("");
-      const sigRow = sig.length
-        ? `<div class="hero-sig" title="Signature cards unlocked for ${hero.name}">
-             <span class="hero-sig__lv">SIGNATURE&nbsp;·&nbsp;LV ${sigLvl}</span>
-             <span class="hero-sig__pips">${sigPips}</span>
-             <span class="hero-sig__count">${sigLvl}/${sig.length}</span>
-           </div>`
-        : "";
-      el.innerHTML = unlocked
-        ? `
-          ${heroFigure(hero, true)}
-          <div class="hero-card__icon">${hero.icon}</div>
-          <div class="hero-card__name">${hero.name}</div>
-          <div class="hero-card__title">${hero.title}</div>
-          <div class="hero-card__desc">${hero.desc}</div>
-          <div class="hero-stats">
-            <div class="hero-stat"><span>VIT</span>${bars(hero.bars.vitality)}</div>
-            <div class="hero-stat"><span>SPD</span>${bars(hero.bars.speed)}</div>
-            <div class="hero-stat"><span>PWR</span>${bars(hero.bars.power)}</div>
-          </div>
-          <div class="hero-passive"><b>${hero.passiveName}</b> — ${hero.passiveDesc}</div>
-          <div class="hero-hand">${handIcons}</div>
-          ${sigRow}
-          ${(this.ctx.profile.data.heroWins[hero.id] ?? 0) > 0 ? `<div class="hero-mastery">★ ${this.ctx.profile.data.heroWins[hero.id]} WIN${this.ctx.profile.data.heroWins[hero.id] === 1 ? "" : "S"}${(this.ctx.profile.data.heroBestWinDepth[hero.id] ?? 0) > 0 ? ` · BEST DEPTH ${this.ctx.profile.data.heroBestWinDepth[hero.id]}` : ""}</div>` : ""}`
-        : `
-          ${heroFigure(hero, false)}
-          <div class="hero-card__icon">🔒</div>
-          <div class="hero-card__name">???</div>
-          <div class="hero-card__title">${hero.title}</div>
-          <div class="hero-card__desc hero-card__desc--hint">${this.ctx.profile.unlockHintFor(`hero:${hero.id}`)}</div>`;
-      if (unlocked) {
-        // The baked portrait is the preview. Rebuilding the live 3D hero on
-        // hover created a visible main-thread hitch on the selection screen.
-        el.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
-        el.addEventListener("click", () => {
-          this.ctx.events.emit("UI_CLICK", {});
-          if (heroIndex === this.heroCarouselIndex) {
-            this.cb.onStartRun(hero, this.heroDepth, this.heroBlessing);
-          } else {
-            this.heroCarouselIndex = heroIndex;
-            this.renderHeroSelect();
-          }
-        });
-      } else {
-        el.addEventListener("click", () => {
-          if (heroIndex === this.heroCarouselIndex) return;
-          this.ctx.events.emit("UI_CLICK", {});
-          this.heroCarouselIndex = heroIndex;
-          this.renderHeroSelect();
-        });
-      }
-      heroFrag.appendChild(el);
-    }
-    row.appendChild(heroFrag);
     this.wireButtons(s);
-    const moveHero = (delta: number) => {
-      this.heroCarouselIndex = (this.heroCarouselIndex + delta + HEROES.length) % HEROES.length;
-      this.renderHeroSelect();
-    };
-    s.querySelector('[data-hero-nav="prev"]')?.addEventListener("click", () => moveHero(-1));
-    s.querySelector('[data-hero-nav="next"]')?.addEventListener("click", () => moveHero(1));
-    const focusedHero = HEROES[this.heroCarouselIndex];
-    const confirm = s.querySelector(".hero-confirm") as HTMLButtonElement;
-    const focusedUnlocked = this.ctx.profile.isUnlocked(`hero:${focusedHero.id}`);
-    confirm.disabled = !focusedUnlocked;
-    confirm.textContent = focusedUnlocked ? `ENTER AS ${focusedHero.name.toUpperCase()}` : "HERO LOCKED";
-    confirm.addEventListener("click", () => {
-      if (!focusedUnlocked) return;
-      this.cb.onStartRun(focusedHero, this.heroDepth, this.heroBlessing);
-    });
+    s.querySelector(".run-confirm")!.addEventListener("click", () =>
+      this.cb.onStartRun(heroById("blade"), this.runDepth, this.runBlessing));
     const refreshDepth = () => {
-      const nextDiff = difficultyFor(this.heroDepth);
-      const nextMods = this.heroDepth === 0
+      const nextDiff = difficultyFor(this.runDepth);
+      const nextMods = this.runDepth === 0
         ? "No modifiers — the standard descent"
         : nextDiff.labels.map((l) => l.replace(/^D\d+\s+/, "")).slice(-3).join(" &nbsp;·&nbsp; ");
-      const nextCeiling = this.heroDepth === maxD && maxD < MAX_DEPTH;
+      const nextCeiling = this.runDepth === maxD && maxD < MAX_DEPTH;
       const label = s.querySelector(".depth-pick__label") as HTMLElement | null;
       const modsEl = s.querySelector(".depth-pick__mods") as HTMLElement | null;
       const down = s.querySelector('[data-d="dn"]') as HTMLButtonElement | null;
       const up = s.querySelector('[data-d="up"]') as HTMLButtonElement | null;
-      if (label) label.textContent = `RIFT DEPTH ${this.heroDepth}${nextCeiling ? " · your ceiling" : maxD >= MAX_DEPTH && this.heroDepth === maxD ? " · MAX" : ""}`;
+      if (label) label.textContent = `RIFT DEPTH ${this.runDepth}${nextCeiling ? " · your ceiling" : maxD >= MAX_DEPTH && this.runDepth === maxD ? " · MAX" : ""}`;
       if (modsEl) modsEl.innerHTML = nextMods;
-      if (down) down.disabled = this.heroDepth <= 0;
-      if (up) up.disabled = this.heroDepth >= maxD;
+      if (down) down.disabled = this.runDepth <= 0;
+      if (up) up.disabled = this.runDepth >= maxD;
     };
-    s.querySelector('[data-d="dn"]')?.addEventListener("click", () => { if (this.heroDepth > 0) { this.heroDepth--; refreshDepth(); } });
-    s.querySelector('[data-d="up"]')?.addEventListener("click", () => { if (this.heroDepth < maxD) { this.heroDepth++; refreshDepth(); } });
+    s.querySelector('[data-d="dn"]')?.addEventListener("click", () => { if (this.runDepth > 0) { this.runDepth--; refreshDepth(); } });
+    s.querySelector('[data-d="up"]')?.addEventListener("click", () => { if (this.runDepth < maxD) { this.runDepth++; refreshDepth(); } });
     s.querySelectorAll<HTMLElement>(".blessing-chip").forEach((chip) => {
       chip.addEventListener("click", () => {
         const lockedId = chip.dataset.blLocked;
@@ -727,7 +538,7 @@ export class Menus {
           this.ctx.events.emit("UI_CLICK", {});
           return;
         }
-        this.heroBlessing = chip.dataset.bl ?? "";
+        this.runBlessing = chip.dataset.bl ?? "";
         this.refreshBlessingPick(s);
       });
     });
@@ -834,8 +645,6 @@ export class Menus {
           <div class="stat"><div class="stat__value">${ROMAN[Math.max(0, p.furthestAct - 1)]}</div><div class="stat__label">Furthest Act</div></div>
           <div class="stat"><div class="stat__value">${p.maxDepth}</div><div class="stat__label">Rift Depth</div></div>
         </div>
-        <h3 class="prog-h3">HEROES</h3>
-        <div class="prog-grid">${HEROES.map((h) => gridItem("hero", h)).join("")}</div>
         <h3 class="prog-h3">CARDS</h3>
         <div class="prog-grid">${CARDS.map((c) => gridItem("card", c)).join("")}</div>
         <h3 class="prog-h3">RELICS</h3>
@@ -857,6 +666,7 @@ export class Menus {
 
   showHowTo(back: () => void): void {
     const s = this.screen();
+    const key = (action: Action) => codeLabel(this.ctx.input.bindings[action][0] ?? "").toUpperCase();
     s.innerHTML = `
       <div class="panel panel--progress">
         <h2>HOW TO PLAY</h2>
@@ -864,13 +674,13 @@ export class Menus {
           <div>
             <h3 class="prog-h3">KEYBOARD &amp; MOUSE</h3>
             <div class="controls-grid">
-              <b>W A S D</b><span>Move</span>
+              <b>${(["up", "left", "down", "right"] as Action[]).map(key).join(" ")}</b><span>Move</span>
               <b>MOUSE</b><span>Aim — you always face the cursor</span>
-              <b>LMB</b><span>Sword combo; <i>hold</i> to wind up a heavy</span>
-              <b>SPACE</b><span>Dodge — dodge <i>through</i> a hit for a <span style="color:#66ffee">PERFECT DODGE</span>, then strike back fast: the next blow is a <span style="color:#66ffee">COUNTER</span>; strike as a blow lands to <span style="color:#ffe066">PARRY</span></span>
-              <b>1 · 2 · 3</b><span>Cast cards</span>
-              <b>F</b><span>CRASH — at 85+ tempo, detonate your heat</span>
-              <b>ESC</b><span>Pause</span>
+              <b>${key("attack")}</b><span>Sword combo; <i>hold and release</i> for a heavy that breaks combat guards. Mix a sword hit and a direct ability hit within 4s to expose a gold seam. Land a charged heavy within 3s to <i>Unravel</i>: +50% damage and +10 tempo.</span>
+              <b>${key("dodge")}</b><span>Dash — two charges, recharging automatically. Dash <i>through</i> a hit for a <span style="color:#a6d5cb">PERFECT DODGE</span>, then strike back for a <span style="color:#e8c68e">COUNTER</span>. Attack immediately after any dash to lunge.</span>
+              <b>${(["card1", "card2", "card3"] as Action[]).map(key).join(" · ")}</b><span>Cast abilities</span>
+              <b>${key("crash")}</b><span>CRASH — at 85+ tempo, detonate your heat. Perfect at 95+. Breaks combat guards.</span>
+              <b>${key("pause")}</b><span>Pause</span>
             </div>
           </div>
           <div>
@@ -880,7 +690,7 @@ export class Menus {
               <b>R STICK</b><span>Aim freely (overrides auto-aim)</span>
               <b>RT</b><span>Attack (hold = heavy)</span>
               <b>LT · LB · RB</b><span>Cards 1 · 2 · 3</span>
-              <b>A</b><span>Dodge</span>
+              <b>A</b><span>Dash (two charges)</span>
               <b>B</b><span>Crash</span>
               <b>Y</b><span>Switch target</span>
               <b>START</b><span>Pause</span>
@@ -921,7 +731,7 @@ export class Menus {
     s.innerHTML = `
       <div class="panel panel--progress">
         <h2>ACHIEVEMENTS</h2>
-        <div class="armory-shards">${got} / ${MILESTONES.length} milestones earned — each unlocks new cards, relics, or heroes</div>
+        <div class="armory-shards">${got} / ${MILESTONES.length} milestones earned — relics, blessings, and cosmetics earned</div>
         <div class="ach-list">${rows}</div>
         <button class="btn">Back</button>
       </div>
@@ -1167,11 +977,12 @@ export class Menus {
     const s = this.screen();
     s.innerHTML = `
       <div class="panel" style="text-align:center">
-        <h2 style="margin-bottom:34px">PAUSED</h2>
+        <h2 style="margin-bottom:12px">PAUSED</h2>
+        <p class="pause-checkpoint">Progress saves between chambers. Leaving restarts this chamber.</p>
         <div class="menu-buttons" style="margin:0 auto">
           <button class="btn btn--primary" data-act="resume">Resume</button>
           <button class="btn" data-act="settings">Settings</button>
-          <button class="btn" data-act="exit">Save &amp; Exit to Menu</button>
+          <button class="btn" data-act="exit">Return to Menu</button>
           <button class="btn btn--danger" data-act="abandon">Abandon Run</button>
           <button class="btn btn--danger" data-act="quit">Quit to Desktop</button>
         </div>
@@ -1182,7 +993,7 @@ export class Menus {
     s.querySelector('[data-act="settings"]')!.addEventListener("click", () => this.showSettings(() => this.showPause()));
     s.querySelector('[data-act="exit"]')!.addEventListener("click", () => this.cb.onExitRun());
     s.querySelector('[data-act="abandon"]')!.addEventListener("click", () => this.cb.onAbandon());
-    s.querySelector('[data-act="quit"]')!.addEventListener("click", () => this.confirm("Quit to desktop?", "Your run is saved — Continue Run will resume it.", () => this.cb.onQuit(), () => this.showPause()));
+    s.querySelector('[data-act="quit"]')!.addEventListener("click", () => this.confirm("Quit to desktop?", "Continue Run returns to your last chamber checkpoint.", () => this.cb.onQuit(), () => this.showPause()));
   }
 
   /** Generic yes/no confirmation overlay. */
@@ -1212,8 +1023,9 @@ export class Menus {
       const cost = REROLL_COST;
       const canReroll = this.ctx.stats.shards >= cost;
       s.innerHTML = `
-        <div class="draft-title">CHOOSE A CARD</div>
-        <div class="draft-sub">IT JOINS YOUR HAND FOR THE REST OF THE RUN &nbsp;·&nbsp; YOU HAVE ◆ ${this.ctx.stats.shards}</div>
+        <div class="draft-title">CHOOSE AN ABILITY</div>
+        <div class="draft-sub">EQUIP TWO ABILITIES OF ONE SCHOOL TO SPECIALIZE · ◆ ${this.ctx.stats.shards}</div>
+        <div class="draft-build">${this.ctx.deck.specialty ? `${this.ctx.deck.specialty.name}: ${this.ctx.deck.specialty.benefit} ${this.ctx.deck.specialty.crashBenefit}` : "Keep a versatile hand, or pair a school for a specialty and 15% faster matching cooldowns."}</div>
         <div class="draft-row"></div>
         <div class="draft-actions">
           <button class="draft-reroll"${canReroll ? "" : " disabled"} data-act="reroll">↻ REROLL — ◆ ${cost}</button>
@@ -1222,7 +1034,7 @@ export class Menus {
       `;
       const row = s.querySelector(".draft-row")!;
       for (const card of pool) {
-        row.appendChild(this.cardEl(card, () => {
+        const tile = this.cardEl(card, () => {
           this.ctx.events.emit("UI_CLICK", {});
           if (this.ctx.deck.hasEmptySlot) {
             const slot = this.ctx.deck.slots.findIndex((x) => x === null);
@@ -1231,13 +1043,23 @@ export class Menus {
           } else {
             renderSwap(card);
           }
-        }));
+        });
+        const preview = () => {
+          const specialty = SPECIALTIES.find(s => s.id === cardSchool(card))!;
+          const paired = this.ctx.deck.slots.some(held => held && cardSchool(held) === specialty.id);
+          s.querySelector(".draft-build")!.textContent = `${paired ? "COMPLETE THE PAIR" : "BUILD TOWARD"} → ${specialty.name}. ${specialty.benefit} ${specialty.crashBenefit}`;
+        };
+        tile.addEventListener("mouseenter", preview);
+        tile.addEventListener("focus", preview);
+        row.appendChild(tile);
       }
       this.wireButtons(s);
       s.querySelector('[data-act="reroll"]')!.addEventListener("click", () => {
         if (this.ctx.stats.shards < cost) { this.ctx.sfx.deny(); return; }
+        const next = this.ctx.deck.draftChoices(pool.map(card => card.id));
+        if (!next.length) { this.ctx.sfx.deny(); return; }
         this.ctx.stats.shards -= cost;
-        pool = this.ctx.deck.draftChoices();
+        pool = next;
         renderPick();
       });
       s.querySelector(".draft-skip")!.addEventListener("click", () => {
@@ -1249,26 +1071,52 @@ export class Menus {
     };
 
     const renderSwap = (incoming: CardDef) => {
-      s.innerHTML = `
-        <div class="draft-title">REPLACE WHICH CARD?</div>
-        <div class="draft-sub">${incoming.name.toUpperCase()} TAKES ITS PLACE</div>
-        <div class="draft-row"></div>
-        <button class="draft-skip">BACK</button>
-      `;
-      const row = s.querySelector(".draft-row")!;
-      this.ctx.deck.slots.forEach((slotCard, i) => {
-        if (!slotCard) return;
-        row.appendChild(this.cardEl(slotCard, () => {
-          this.ctx.events.emit("UI_CLICK", {});
-          this.ctx.deck.equip(incoming, i);
-          onDone();
-        }, true));
-      });
-      this.wireButtons(s);
-      s.querySelector(".draft-skip")!.addEventListener("click", renderPick);
+      this.renderAbilitySwap(s, incoming, slot => {
+        this.ctx.deck.equip(incoming, slot);
+        onDone();
+      }, renderPick);
     };
 
     renderPick();
+  }
+
+  /** Drafts and purchases use the same explicit build consequence before a swap. */
+  private renderAbilitySwap(s: HTMLElement, incoming: CardDef, onSelect: (slot: number) => void, onBack: () => void): void {
+    s.innerHTML = `
+      <div class="draft-title">REPLACE WHICH ABILITY?</div>
+      <div class="draft-sub">TAKE ${incoming.name.toUpperCase()} · ${schoolLabel(incoming)}</div>
+      <div class="draft-build">${incoming.desc} Select the ability it will replace.</div>
+      <div class="draft-row"></div>
+      <button class="draft-skip" data-act="back">BACK</button>`;
+    const row = s.querySelector(".draft-row")!;
+    this.ctx.deck.slots.forEach((card, slot) => {
+      if (!card) return;
+      const tile = this.cardEl(card, () => {
+        this.ctx.events.emit("UI_CLICK", {});
+        onSelect(slot);
+      }, true);
+      const honed = this.ctx.deck.upgraded[slot];
+      if (honed) {
+        const label = document.createElement("div");
+        label.className = "card__swap-warning";
+        label.textContent = "HONED · UPGRADE WILL BE LOST";
+        tile.appendChild(label);
+      }
+      const preview = () => {
+        const future = [...this.ctx.deck.slots];
+        future[slot] = incoming;
+        const next = specialtyFor(future), current = this.ctx.deck.specialty;
+        const outcome = next ? `${next.id === current?.id ? "KEEP" : "ACTIVATE"} ${next.name.toUpperCase()} · ${next.crashName}. ${next.benefit}`
+          : current ? `LOSE ${current.name.toUpperCase()} · Equip another matching ability to specialize again.`
+          : "VERSATILE HAND · No paired school yet.";
+        s.querySelector(".draft-build")!.textContent = `${card.name} → ${incoming.name}. ${outcome}`;
+      };
+      tile.addEventListener("mouseenter", preview);
+      tile.addEventListener("focus", preview);
+      row.appendChild(tile);
+    });
+    this.wireButtons(s);
+    s.querySelector('[data-act="back"]')!.addEventListener("click", onBack);
   }
 
   // ---------------------------------------------------------------- relic draft
@@ -1277,7 +1125,7 @@ export class Menus {
     let pool = choices;
     const render = () => {
       const cost = REROLL_COST;
-      const canReroll = this.ctx.stats.shards >= cost && this.ctx.relics.draftChoices().length > 0;
+      const canReroll = this.ctx.stats.shards >= cost && this.ctx.relics.availableDrafts().some(relic => !pool.some(shown => shown.id === relic.id));
       s.innerHTML = `
         <div class="draft-title draft-title--relic">CHOOSE A RELIC</div>
         <div class="draft-sub">A PERMANENT BOON FOR THE REST OF THE RUN &nbsp;·&nbsp; YOU HAVE ◆ ${this.ctx.stats.shards}</div>
@@ -1298,8 +1146,10 @@ export class Menus {
       this.wireButtons(s);
       s.querySelector('[data-act="reroll"]')!.addEventListener("click", () => {
         if (this.ctx.stats.shards < cost) { this.ctx.sfx.deny(); return; }
+        const next = this.ctx.relics.draftChoices(pool.map(relic => relic.id));
+        if (!next.length) { this.ctx.sfx.deny(); return; }
         this.ctx.stats.shards -= cost;
-        pool = this.ctx.relics.draftChoices();
+        pool = next;
         render();
       });
       s.querySelector(".draft-skip")!.addEventListener("click", () => {
@@ -1353,7 +1203,7 @@ export class Menus {
       (preview.querySelector(".route-preview__icon") as HTMLElement).textContent = NODE_ICON[node.kind];
       (preview.querySelector(".route-preview__name") as HTMLElement).textContent = node.name;
       (preview.querySelector(".route-preview__kind") as HTMLElement).textContent = node.kind.toUpperCase();
-      (preview.querySelector(".route-preview__blurb") as HTMLElement).textContent = NODE_BLURB[node.kind];
+      (preview.querySelector(".route-preview__blurb") as HTMLElement).textContent = node.encounter ? `${ENCOUNTERS[node.encounter].brief} Reward: ${node.reward === "relic" ? "relic" : "ability"}.` : NODE_BLURB[node.kind];
     };
     options.forEach((node, i) => {
       const el = document.createElement("button");
@@ -1363,7 +1213,7 @@ export class Menus {
         <div class="mapnode__icon">${NODE_ICON[node.kind]}</div>
         <div class="mapnode__name">${node.name}</div>
         <div class="mapnode__kind">${node.kind}</div>
-        <div class="mapnode__blurb">${NODE_BLURB[node.kind]}</div>
+        <div class="mapnode__blurb">${node.encounter ? ENCOUNTERS[node.encounter].brief : NODE_BLURB[node.kind]}</div>
       `;
       el.addEventListener("mouseenter", () => showPreview(node, el));
       el.addEventListener("focus", () => showPreview(node, el));
@@ -1465,7 +1315,7 @@ export class Menus {
         }));
         const up = document.createElement("div");
         up.className = "hone-pick__up";
-        up.innerHTML = `<span class="hone-pick__tag">HONED ✦</span> ${c.upDesc}`;
+        up.innerHTML = `<span class="hone-pick__tag">HONED ✦ · ${this.ctx.deck.effectiveCooldown(c, true).toFixed(1)}s</span> ${c.upDesc}`;
         wrap.appendChild(up);
         row.appendChild(wrap);
       }
@@ -1691,6 +1541,7 @@ export class Menus {
           const wrap = document.createElement("div");
           wrap.className = "hone-pick";
           wrap.appendChild(this.cardEl(c, () => {
+            if (!afford(PRICE.hone) || this.ctx.deck.upgraded[i]) return;
             this.ctx.deck.upgrade(i);
             this.ctx.stats.shards -= PRICE.hone;
             this.ctx.sfx.relicPickup();
@@ -1698,7 +1549,7 @@ export class Menus {
           }));
           const up = document.createElement("div");
           up.className = "hone-pick__up";
-          up.innerHTML = `<span class="hone-pick__tag">HONED ✦</span> ${c.upDesc}`;
+          up.innerHTML = `<span class="hone-pick__tag">HONED ✦ · ${this.ctx.deck.effectiveCooldown(c, true).toFixed(1)}s</span> ${c.upDesc}`;
           wrap.appendChild(up);
           row.appendChild(wrap);
         }
@@ -1707,31 +1558,31 @@ export class Menus {
         return;
       }
 
-      const deckFull = !this.ctx.deck.hasEmptySlot;
       const offer = (id: string, icon: string, name: string, desc: string, price: number, locked: boolean, soldFlag: boolean) => `
-        <div class="shop-offer${soldFlag ? " shop-offer--sold" : ""}${locked && !soldFlag ? " shop-offer--locked" : ""}" data-buy="${id}">
+        <button type="button" class="shop-offer${soldFlag ? " shop-offer--sold" : ""}${locked && !soldFlag ? " shop-offer--locked" : ""}" data-buy="${id}"${locked || soldFlag ? " disabled" : ""}>
           <div class="shop-offer__icon">${icon}</div>
           <div class="shop-offer__name">${name}</div>
           <div class="shop-offer__desc">${desc}</div>
           <div class="shop-offer__price">${soldFlag ? "SOLD" : `◆ ${price}`}</div>
-        </div>`;
+        </button>`;
       const canHone = this.ctx.deck.upgradableSlots().length > 0;
+      const canRestock = (!sold.card && !!cardOffer) || (!sold.relic && !!relicOffer);
       s.innerHTML = `
         <div class="panel panel--progress">
           <h2>THE RIFT MERCHANT</h2>
           <div class="armory-shards">◆ <b>${this.ctx.stats.shards}</b> rift shards — spend now, or bank them for the Armory</div>
           <div class="shop-offers">
-            ${offer("heal", "✚", "Mend Wounds", "Restore 35 HP", PRICE.heal, !afford(PRICE.heal), sold.heal)}
-            ${cardOffer ? offer("card", cardOffer.icon, cardOffer.name, deckFull ? "Deck full — hone or swap instead" : cardOffer.desc, PRICE.card, !afford(PRICE.card) || deckFull, sold.card) : ""}
+            ${offer("heal", "✚", "Mend Wounds", "Restore 35 HP", PRICE.heal, !afford(PRICE.heal) || this.ctx.player.hp >= this.ctx.player.maxHp, sold.heal)}
+            ${cardOffer ? offer("card", cardOffer.icon, cardOffer.name, cardOffer.desc, PRICE.card, !afford(PRICE.card), sold.card) : ""}
             ${relicOffer ? offer("relic", relicOffer.icon, relicOffer.name, relicOffer.desc, PRICE.relic, !afford(PRICE.relic), sold.relic) : ""}
             ${offer("hone", "✦", "Hone a Card", "Forge a held card stronger", PRICE.hone, !afford(PRICE.hone) || !canHone, false)}
           </div>
-          <button class="draft-reroll"${afford(REROLL_COST) ? "" : " disabled"} data-act="reroll">↻ NEW STOCK — ◆ ${REROLL_COST}</button>
+          <button class="draft-reroll"${afford(REROLL_COST) && canRestock ? "" : " disabled"} data-act="reroll">↻ NEW STOCK — ◆ ${REROLL_COST}</button>
           <button class="btn btn--primary" data-act="leave">Leave the Shop</button>
         </div>`;
       this.wireButtons(s);
       s.querySelector('[data-act="reroll"]')!.addEventListener("click", () => {
-        if (!afford(REROLL_COST)) { this.ctx.sfx.deny(); return; }
+        if (!afford(REROLL_COST) || !canRestock) { this.ctx.sfx.deny(); return; }
         this.ctx.stats.shards -= REROLL_COST;
         // Restock only what hasn't sold — the merchant won't take back a sale.
         if (!sold.card) cardOffer = this.ctx.deck.buyableChoices(1)[0] ?? null;
@@ -1742,7 +1593,7 @@ export class Menus {
       s.querySelectorAll<HTMLElement>(".shop-offer").forEach((el) => {
         el.addEventListener("click", () => {
           const id = el.dataset.buy!;
-          if (id === "heal" && !sold.heal && afford(PRICE.heal)) {
+          if (id === "heal" && !sold.heal && afford(PRICE.heal) && this.ctx.player.hp < this.ctx.player.maxHp) {
             this.ctx.stats.shards -= PRICE.heal;
             const heal = Math.min(35, this.ctx.player.maxHp - this.ctx.player.hp);
             this.ctx.player.hp += heal;
@@ -1750,12 +1601,18 @@ export class Menus {
             sold.heal = true;
             this.ctx.sfx.relicPickup();
             render();
-          } else if (id === "card" && cardOffer && !sold.card && afford(PRICE.card) && this.ctx.deck.hasEmptySlot) {
-            this.ctx.deck.equip(cardOffer, this.ctx.deck.slots.findIndex((x) => x === null));
-            this.ctx.stats.shards -= PRICE.card;
-            sold.card = true;
-            this.ctx.sfx.relicPickup();
-            render();
+          } else if (id === "card" && cardOffer && !sold.card && afford(PRICE.card)) {
+            const incoming = cardOffer;
+            const purchase = (slot: number) => {
+              if (sold.card || !afford(PRICE.card)) return;
+              this.ctx.deck.equip(incoming, slot);
+              this.ctx.stats.shards -= PRICE.card;
+              sold.card = true;
+              this.ctx.sfx.relicPickup();
+              render();
+            };
+            if (this.ctx.deck.hasEmptySlot) purchase(this.ctx.deck.slots.findIndex(card => card === null));
+            else this.renderAbilitySwap(s, incoming, purchase, () => render());
           } else if (id === "relic" && relicOffer && !sold.relic && afford(PRICE.relic)) {
             this.ctx.relics.add(relicOffer);
             this.ctx.stats.shards -= PRICE.relic;
@@ -1774,7 +1631,8 @@ export class Menus {
   }
 
   private relicEl(relic: RelicDef, onClick: () => void): HTMLElement {
-    const el = document.createElement("div");
+    const el = document.createElement("button");
+    el.type = "button";
     const tier = relic.cursed ? " card--cursed" : relic.rarity === "legendary" ? " card--legendary" : relic.rarity === "rare" ? " card--rare" : "";
     el.className = `card card--relic${tier}`;
     el.style.setProperty("--accent", relic.color);
@@ -1791,17 +1649,21 @@ export class Menus {
   }
 
   private cardEl(card: CardDef, onClick: () => void, mini = false): HTMLElement {
-    const el = document.createElement("div");
+    const el = document.createElement("button");
+    el.type = "button";
     el.className = `card card--id-${card.id}${card.rarity === "rare" ? " card--rare" : ""}${mini ? " card--mini" : ""}`;
     el.dataset.cardId = card.id;
     el.style.setProperty("--accent", card.color);
+    const slot = this.ctx.deck.slots.findIndex(held => held?.id === card.id);
+    const cooldown = slot >= 0 ? this.ctx.deck.effectiveCooldown(card, this.ctx.deck.upgraded[slot]) : card.cooldown;
     el.innerHTML = `
       <div class="card__sigil" aria-hidden="true"><span></span><i></i><b></b></div>
-      <div class="card__meta">${card.rarity}</div>
+      <div class="card__meta" title="Equip two ${schoolLabel(card).toLowerCase()} abilities: ${SPECIALTIES.find(s => s.id === cardSchool(card))!.benefit} ${SPECIALTIES.find(s => s.id === cardSchool(card))!.crashBenefit}">${schoolLabel(card)} · ${card.rarity}</div>
       <div class="card__icon">${card.icon}</div>
       <div class="card__name">${card.name}</div>
       ${mini ? "" : `<div class="card__desc">${card.desc}</div>`}
-      <div class="card__meta">${card.cooldown}s cooldown</div>
+      <div class="card__meta">${cooldown.toFixed(1).replace(/\.0$/, "")}s cooldown</div>
+      ${mini ? "" : `<div class="card__upgrade">Hone: ${card.upDesc}</div>`}
     `;
     el.addEventListener("mouseenter", () => this.ctx.events.emit("UI_HOVER", {}));
     el.addEventListener("click", onClick);
@@ -1904,15 +1766,17 @@ export class Menus {
   }
 
   /** One-shot act title card over the gameplay (self-removing). */
-  actIntro(act: string, name: string, flavor = ""): void {
+  actIntro(act: string, name: string, flavor = "", compact = false): void {
+    this.actCard?.el.remove();
     const el = document.createElement("div");
-    el.className = "actcard";
+    el.className = `actcard${compact ? " actcard--combat" : ""}`;
+    el.style.opacity = "0";
     el.innerHTML = `
       <div class="actcard__act">${act}</div>
       <div class="actcard__name">${name}</div>
       ${flavor ? `<div class="actcard__flavor">${flavor}</div>` : ""}`;
     this.root.appendChild(el);
-    window.setTimeout(() => el.remove(), 2700);
+    this.actCard = { el, time: 0 };
   }
 
   /**
@@ -1923,7 +1787,6 @@ export class Menus {
     const s = this.screen("");
     s.classList.add("story");
     let idx = 0;
-    let autoTimer = 0;
     let finished = false;
     const hintText = this.ctx.input.usingGamepad
       ? "[A] CONTINUE  \u00b7  [B] SKIP"
@@ -1931,7 +1794,7 @@ export class Menus {
     const finish = () => {
       if (finished) return;
       finished = true;
-      window.clearTimeout(autoTimer);
+      this.storyAuto = null;
       window.removeEventListener("keydown", onKey);
       onDone();
     };
@@ -1961,7 +1824,7 @@ export class Menus {
         finish();
       });
       idx++;
-      window.clearTimeout(autoTimer);
+      this.storyAuto = null;
       // Hold long enough to read comfortably (reading speed + a small buffer) but
       // not so long it feels like the game stalled — and a click always skips ahead.
       // +2s per line over the prior pacing: players felt the story flicked past too fast.
@@ -1969,7 +1832,12 @@ export class Menus {
       // adds that much for EACH paragraph shown (idx is 1-based here, post-increment), so
       // later beats of an act's story hold progressively longer on screen.
       const readMs = storyDwellMs(line, extraHoldMs, perParagraphMs, idx);
-      autoTimer = window.setTimeout(show, readMs);
+      this.storyAuto = { remaining: readMs / 1000, advance: show };
+    };
+    this.storyCleanup = () => {
+      finished = true;
+      this.storyAuto = null;
+      window.removeEventListener("keydown", onKey);
     };
     s.addEventListener("click", show);
     window.addEventListener("keydown", onKey);

@@ -20,10 +20,17 @@ const STREAK_LABELS: [number, string][] = [
  */
 export class Hud {
   private root: HTMLElement;
+  private specialtyEl!: HTMLElement;
+  private crashSpecialtyEl!: HTMLElement;
+  private lastSpecialty = "unset";
   private hpFill!: HTMLElement;
   private hpGhost!: HTMLElement;
   private hpShield!: HTMLElement;
   private hpText!: HTMLElement;
+  private dashMeter!: HTMLElement;
+  private dashPips: HTMLElement[] = [];
+  private lastDashValue = -1;
+  private lastDashStock = -1;
   private roomName!: HTMLElement;
   private roomProgress!: HTMLElement;
   private pips: HTMLElement[] = [];
@@ -35,12 +42,16 @@ export class Hud {
   private bossBar!: HTMLElement;
   private bossName!: HTMLElement;
   private bossFill!: HTMLElement;
+  private bossGuard!: HTMLElement;
+  private lastBossGuard = false;
   private streakEl!: HTMLElement;
   private streakCount!: HTMLElement;
   private streakLabel!: HTMLElement;
   private bannerEl!: HTMLElement;
   private bannerTitle!: HTMLElement;
   private bannerSub!: HTMLElement;
+  private bannerAge = 0;
+  private bannerDuration = 0;
   private edgeGlow!: HTMLElement;
   private lowHp!: HTMLElement;
   private shardsEl!: HTMLElement;
@@ -52,6 +63,10 @@ export class Hud {
   private comboEl!: HTMLElement;
   private comboNum!: HTMLElement;
   private hitArrow!: HTMLElement;
+  private combatCue!: HTMLElement;
+  private combatCueLabel!: HTMLElement;
+  private combatCueFill!: HTMLElement;
+  private lastCombatCue = "";
   private threatEls: HTMLElement[] = [];
   private threatVec = new THREE.Vector3();
   private threatCandidates: { e: Enemy | null; d: number; sx: number; sy: number; ang: number }[] =
@@ -75,8 +90,13 @@ export class Hud {
   private lastTempoRound = -1;
   private lastZoneCss = "";
   private lastCrashReady = false;
+  private encounterEl!: HTMLElement;
+  private lastEncounter = "";
   private coachEl: HTMLElement | null = null;
   private coachTimer = 0;
+  private letterboxEls: HTMLElement[] = [];
+  private letterboxHeight = 0;
+  private letterboxTarget = 0;
 
   constructor(private ctx: Ctx) {
     this.root = document.getElementById("hud")!;
@@ -95,35 +115,44 @@ export class Hud {
       <div class="flashring"></div>
       <div class="letterbox letterbox--top"></div>
       <div class="letterbox letterbox--bottom"></div>
+      <button class="cinematic-skip" hidden>SKIP SCENE · SPACE</button>
       <div class="plate">
         <div class="plate__name">THE BLADE</div>
+        <div class="plate__specialty"></div>
         <div class="plate__hpwrap">
           <div class="plate__ghost"></div>
           <div class="plate__hp"></div>
           <div class="plate__shield" style="width:0"></div>
         </div>
-        <div class="plate__hptext"></div>
+        <div class="plate__status">
+          <div class="plate__hptext"></div>
+          <div class="dashmeter" role="img" aria-label="2 of 2 dashes ready"><span>DASH</span><i><b></b></i><i><b></b></i></div>
+        </div>
         <div class="relicrow"></div>
       </div>
       <div class="roominfo">
         <div class="roominfo__name"></div>
         <div class="roominfo__progress"></div>
+        <div class="roominfo__encounter"></div>
         <div class="roominfo__pips"></div>
         <div class="roominfo__shards">◆ 0</div>
         <div class="roominfo__depth"></div>
       </div>
       <div class="cards"></div>
+      <div class="combatcue" hidden><span class="combatcue__label"></span><div class="combatcue__track"><i></i></div></div>
       <div class="tempo">
         <div class="tempo__dial">
           <div class="tempo__tick"></div>
           <div class="tempo__value"><span class="num">50</span><span class="tempo__zonename">FLOWING</span></div>
         </div>
         <div class="tempo__crash">CRASH</div>
+        <div class="tempo__specialty"></div>
       </div>
       <div class="bossbar">
         <div class="bossbar__name"></div>
         <div class="bossbar__wrap"><div class="bossbar__fill"></div></div>
         <div class="bossbar__tempo"><div class="bossbar__tempo-fill"></div></div>
+        <div class="bossbar__guard" hidden>CHARGED HEAVY / CRASH TO BREAK</div>
       </div>
       <div class="streak"><div class="streak__count"></div><div class="streak__label"></div></div>
       <div class="combo"><span class="combo__n">0</span><span class="combo__x">HIT</span></div>
@@ -132,10 +161,16 @@ export class Hud {
       <div class="hints"></div>
     `;
     const q = (sel: string) => this.root.querySelector(sel) as HTMLElement;
+    this.encounterEl = q(".roominfo__encounter");
+    this.combatCue = q(".combatcue");
+    this.combatCueLabel = q(".combatcue__label");
+    this.combatCueFill = q(".combatcue__track i");
     this.hpFill = q(".plate__hp");
     this.hpGhost = q(".plate__ghost");
     this.hpShield = q(".plate__shield");
     this.hpText = q(".plate__hptext");
+    this.dashMeter = q(".dashmeter");
+    this.dashPips = Array.from(this.dashMeter.querySelectorAll("i b"));
     this.roomName = q(".roominfo__name");
     this.roomProgress = q(".roominfo__progress");
     this.shardsEl = q(".roominfo__shards");
@@ -146,6 +181,7 @@ export class Hud {
     this.bossBar = q(".bossbar");
     this.bossName = q(".bossbar__name");
     this.bossFill = q(".bossbar__fill");
+    this.bossGuard = q(".bossbar__guard");
     this.streakEl = q(".streak");
     this.streakCount = q(".streak__count");
     this.streakLabel = q(".streak__label");
@@ -164,6 +200,8 @@ export class Hud {
 
     // Room pips are built per-run from the generated map (buildPips).
 
+    this.specialtyEl = this.root.querySelector(".plate__specialty")!;
+    this.crashSpecialtyEl = this.root.querySelector(".tempo__specialty")!;
     // Card slots
     const cardsWrap = q(".cards");
     for (let i = 0; i < 3; i++) {
@@ -220,16 +258,14 @@ export class Hud {
         t.style.left = `${(f * 100).toFixed(1)}%`;
         wrap.appendChild(t);
       }
-      // Backstop only — main.ts calls revealBossBar() the moment the entrance
-      // ends, so skipping it doesn't leave the fight without a health bar.
-      window.setTimeout(() => this.revealBossBar(), 2600);
+      // The cinematic finalizer reveals this bar for completion and skip.
     });
     this.wireBossEvents(events);
   }
 
   /** Show the boss health bar now (entrance finished, or skipped). */
   revealBossBar(): void {
-    if (this.bossName.textContent) this.bossBar.classList.add("bossbar--show");
+    if (this.bossName.textContent && this.ctx.enemies.living().some(e => e.kind === "boss")) this.bossBar.classList.add("bossbar--show");
   }
 
   private wireBossEvents(events: EventBus): void {
@@ -239,6 +275,8 @@ export class Hud {
     });
     events.on("BOSS_DEFEATED", () => {
       this.bossBar.classList.remove("bossbar--show", "bossbar--tempo");
+      this.bossName.textContent = "";
+      this.bossGuard.hidden = true;
     });
     // The Wound's own tempo meter — a thin strip under its HP bar, zone-colored.
     const bossTempoFill = this.root.querySelector(".bossbar__tempo-fill") as HTMLElement;
@@ -257,6 +295,9 @@ export class Hud {
       if (s) { s.el.classList.remove("slot--stolen"); this.replay(s.el, "slot--cast"); }
     });
     events.on("ROOM_START", ({ index, name, isBoss, act }) => {
+      this.bossBar.classList.remove("bossbar--show", "bossbar--tempo", "bossbar--guard");
+      this.bossGuard.hidden = true;
+      this.lastBossGuard = false;
       const roman = ROMAN[act - 1] ?? `${act}`;
       const forks = this.ctx.run.plan.forks;
       const actForks = forks.map((f, i) => ({ a: f[0]?.act ?? 0, i })).filter((x) => x.a === act).map((x) => x.i);
@@ -270,7 +311,7 @@ export class Hud {
         p.classList.toggle("pip--current", i === index);
       });
       if (!isBoss) {
-        this.bossBar.classList.remove("bossbar--show");
+        this.bossName.textContent = "";
         // Boss rooms announce via BOSS_INTRO; act openers via ACT_START
         if (index !== actForks[0]) this.banner(name, `ACT ${roman}`, "banner--long");
       }
@@ -280,7 +321,7 @@ export class Hud {
       this.flash("#7df3ff", 0.24);
     });
     // Screen flashes on the big beats — additive 'screen' blend, fast fade.
-    events.on("CRASH", () => this.flash("#ff5a4a", 0.34));
+    events.on("CRASH", () => this.flash(this.ctx.deck.specialty?.color ?? "#ff7966", 0.17));
     events.on("COLD_CRASH", () => this.flash("#6cc4ff", 0.3));
     events.on("BOSS_DEFEATED", () => this.flash("#ffe39a", 0.36));
     // Warm gold, not white: RUN_VICTORY lands in the same frame as BOSS_DEFEATED.
@@ -366,16 +407,24 @@ export class Hud {
   banner(title: string, sub: string, cls = ""): void {
     this.bannerTitle.textContent = title;
     this.bannerSub.textContent = sub;
-    this.bannerEl.className = `banner ${cls}`;
-    this.replay(this.bannerEl, "banner--show");
+    this.bannerAge=0;
+    this.bannerDuration=cls.includes("banner--lament")?8.2:cls.includes("banner--epitaph")?8:cls.includes("banner--phase-slice")?2.2:cls.includes("banner--slice")?2.75:cls.includes("banner--cutscene")?5.9:cls.includes("banner--long")?5.6:2.2;
+    this.bannerEl.className = `banner ${cls} banner--show`;
+    this.bannerEl.style.setProperty("--banner-opacity","0");
+    this.bannerEl.style.setProperty("--banner-offset","10px");
   }
 
   clearBanner(): void {
+    this.bannerDuration=0;
     this.bannerEl.classList.remove("banner--show");
   }
 
   setVisible(v: boolean): void {
     this.root.style.display = v ? "block" : "none";
+    if (!v) {
+      this.coachTimer = 0;
+      this.coachEl?.classList.remove("run-coach--show");
+    }
     if (v) {
       this.ghostHp = this.ctx.player.hp / this.ctx.player.maxHp;
       this.rebuildRelicRow();
@@ -432,8 +481,35 @@ export class Hud {
   }
 
   /** Cinematic letterbox bars for cutscenes. */
-  setLetterbox(on: boolean): void {
-    this.root.querySelectorAll(".letterbox").forEach((el) => el.classList.toggle("letterbox--on", on));
+  setLetterbox(on: boolean, immediate = false): void {
+    if (!this.letterboxEls.length) this.letterboxEls = [...this.root.querySelectorAll<HTMLElement>(".letterbox")];
+    this.letterboxTarget = on ? 11 : 0;
+    if (immediate) {
+      this.letterboxHeight = this.letterboxTarget;
+      for (const el of this.letterboxEls) el.style.height = `${this.letterboxHeight}vh`;
+    }
+  }
+
+  /** The bars share the scene clock; the finalizer snaps them clear before input returns. */
+  updatePresentation(dt: number): void {
+    if(this.bannerDuration>0) {
+      this.bannerAge=Math.min(this.bannerDuration,this.bannerAge+dt);
+      const enter=Math.min(1,this.bannerAge/.18),leave=Math.min(1,(this.bannerDuration-this.bannerAge)/.42);
+      this.bannerEl.style.setProperty("--banner-opacity",Math.min(enter,leave).toFixed(3));
+      this.bannerEl.style.setProperty("--banner-offset",`${((1-enter)*10-(1-leave)*5).toFixed(2)}px`);
+      if(this.bannerAge===this.bannerDuration)this.clearBanner();
+    }
+    if (this.letterboxHeight === this.letterboxTarget) return;
+    const delta = this.letterboxTarget - this.letterboxHeight;
+    this.letterboxHeight += Math.sign(delta) * Math.min(Math.abs(delta), dt * 44);
+    for (const el of this.letterboxEls) el.style.height = `${this.letterboxHeight.toFixed(3)}vh`;
+  }
+
+  setCinematicSkip(on: boolean): void {
+    const button = this.root.querySelector<HTMLButtonElement>(".cinematic-skip")!;
+    button.hidden = !on;
+    button.textContent = this.ctx.input.usingGamepad ? "SKIP SCENE · A" : "SKIP SCENE · SPACE";
+    button.onclick = () => this.ctx.presentation.skip();
   }
 
   /** A single progressive lesson, shown only when the run first reaches its concept. */
@@ -449,8 +525,7 @@ export class Hud {
     this.coachEl.classList.remove("run-coach--show");
     void this.coachEl.offsetWidth;
     this.coachEl.classList.add("run-coach--show");
-    window.clearTimeout(this.coachTimer);
-    this.coachTimer = window.setTimeout(() => this.coachEl?.classList.remove("run-coach--show"), 5200);
+    this.coachTimer = 5.2;
   }
 
   /** Keep cinematic bars/titles, but remove combat instrumentation from the shot. */
@@ -486,14 +561,67 @@ export class Hud {
     if (sig === this.hintSig) return;
     this.hintSig = sig;
     this.hintsEl.innerHTML =
-      `<div><b>${move}</b> move&nbsp;&nbsp;<b>${i.label("attack")}</b> attack&nbsp;&nbsp;<b>${i.label("dodge")}</b> dodge</div>` +
+      `<div><b>${move}</b> move&nbsp;&nbsp;<b>${i.label("attack")}</b> attack&nbsp;&nbsp;<b>${i.label("dodge")}</b> dash</div>` +
       `<div><b>${cards}</b> cards&nbsp;&nbsp;<b>${i.label("crash")}</b> crash at ${CRASH_THRESHOLD}+&nbsp;&nbsp;<b>${i.label("pause")}</b> pause</div>`;
     this.tempoCrash.textContent = `CRASH  [${i.label("crash")}]`;
   }
 
   update(dt = 0): void {
+    const guard = this.ctx.enemies.living().some(e => e.kind === "boss" && e.guardBreakable);
+    if (guard !== this.lastBossGuard) {
+      this.lastBossGuard = guard;
+      this.bossGuard.hidden = !guard;
+      this.bossBar.classList.toggle("bossbar--guard", guard);
+    }
+    if (this.coachTimer > 0) {
+      this.coachTimer = Math.max(0, this.coachTimer - dt);
+      if (this.coachTimer === 0) this.coachEl?.classList.remove("run-coach--show");
+    }
+    const encounter = this.ctx.run.encounterStatus;
+    if (encounter !== this.lastEncounter) {
+      this.lastEncounter = encounter;
+      this.encounterEl.textContent = encounter;
+    }
+    const specialty = this.ctx.deck.specialty;
+    if ((specialty?.id ?? "") !== this.lastSpecialty) {
+      this.lastSpecialty = specialty?.id ?? "";
+      this.specialtyEl.textContent = specialty?.name.toUpperCase() ?? "PAIR ABILITIES TO SPECIALIZE";
+      this.specialtyEl.style.color = specialty?.color ?? "#b1b9c6";
+      this.crashSpecialtyEl.textContent = specialty?.crashName.toUpperCase() ?? "";
+      this.crashSpecialtyEl.style.color = specialty?.color ?? "";
+      this.crashSpecialtyEl.title = specialty?.crashBenefit ?? "";
+      this.specialtyEl.title = specialty ? `${specialty.benefit} ${specialty.crashBenefit} Matching abilities recover 15% faster.` : "Equip two abilities of one school to gain its specialty.";
+    }
+
+    const combat = this.ctx.combat;
+    const charging = this.ctx.player.animCharge > 0;
+    const counter = combat.counterWindow > 0;
+    const followUp = this.ctx.controller.followUpWindow > 0;
+    const seam = this.ctx.enemies.living().some(e => e.unravel.exposed > 0 && e.pos.distanceToSquared(this.ctx.player.pos) < 36 && !this.ctx.arena.blocksSegment(this.ctx.player.pos.x, this.ctx.player.pos.z, e.pos.x, e.pos.z));
+    const cue = charging ? (combat.charged ? (seam ? "RELEASE · UNRAVEL" : "RELEASE · HEAVY") : "CHARGING") : counter ? "COUNTER READY" : followUp ? `${this.ctx.input.label("attack")} · LUNGE` : seam ? `HOLD ${this.ctx.input.label("attack")} · UNRAVEL` : "";
+    if (cue !== this.lastCombatCue) {
+      this.combatCue.hidden = !cue;
+      this.combatCueLabel.textContent = cue;
+      this.combatCue.classList.toggle("combatcue--gold", charging);
+      this.lastCombatCue = cue;
+    }
+    if (cue) this.combatCueFill.style.transform = `scaleX(${charging ? combat.chargeProgress : counter ? combat.counterWindow / 1.6 : this.ctx.controller.followUpWindow / 0.34})`;
     const { player, tempo, deck } = this.ctx;
     this.refreshHints();
+    const stock = this.ctx.controller.dashCharges;
+    const dashValue = stock * 100 + (stock < 2 ? Math.floor(this.ctx.controller.dashRechargeProgress * 100) : 0);
+    if (dashValue !== this.lastDashValue) {
+      this.lastDashValue = dashValue;
+      this.dashPips.forEach((pip, i) => {
+        const fill = i < stock ? 1 : i === stock ? this.ctx.controller.dashRechargeProgress : 0;
+        pip.style.transform = `scaleX(${fill})`;
+        pip.parentElement!.classList.toggle("dashmeter__ready", i < stock);
+      });
+    }
+    if (stock !== this.lastDashStock) {
+      this.lastDashStock = stock;
+      this.dashMeter.setAttribute("aria-label", `${stock} of 2 dashes ready`);
+    }
 
     // Combo decays if you go too long without landing a hit
     if (this.combo > 0) {
@@ -507,7 +635,7 @@ export class Hud {
     const frac = Math.max(0, player.hp / player.maxHp);
     const ghostVal = Math.max(frac, this.ghostHp);
     if (ghostVal !== this.lastGhostVal) { this.lastGhostVal = ghostVal; this.hpGhost.style.width = `${ghostVal * 100}%`; }
-    if (this.ghostHp > frac) this.ghostHp = Math.max(frac, this.ghostHp - 0.0045);
+    if (this.ghostHp > frac) this.ghostHp = Math.max(frac, this.ghostHp - dt * 0.27);
     else this.ghostHp = frac;
     if (frac !== this.lastHpFrac) {
       this.lastHpFrac = frac;
@@ -580,20 +708,24 @@ export class Hud {
       }
       if (card) {
         const cd = deck.cooldowns[i];
-        const fracCd = Math.max(0, cd / card.cooldown);
+        const recast = card.id === "aegis" && this.ctx.caster.aegisActive;
+        const remaining = recast ? this.ctx.caster.aegisRemaining : cd;
+        const fracCd = recast ? 1-remaining/4 : Math.max(0, cd / Math.max(0.01, deck.cooldownTotals[i] || card.cooldown));
         // The dark sweep covers only the *remaining* cooldown — a ready card
         // is fully bright (--cd marks where the bright wedge ends).
         s.cd.style.setProperty("--cd", `${(1 - fracCd) * 100}%`);
-        s.cdnum.textContent = cd > 0.05 ? cd.toFixed(cd > 1 ? 0 : 1) : "";
-        // Aegis stays "pressable" while the shield is up (re-press detonates)
-        const pressable = cd <= 0 || (card.id === "aegis" && this.ctx.caster.aegisActive);
+        s.cdnum.textContent = remaining > .05 ? remaining.toFixed(recast || remaining <= 1 ? 1 : 0) : "";
+        const name = recast ? "DETONATE" : up ? `${card.name} +` : card.name;
+        if (s.name.textContent !== name) s.name.textContent = name;
+        s.el.classList.toggle("slot--recast",recast);
+        const pressable = cd <= 0 || recast;
         s.el.classList.toggle("slot--ready", pressable);
         if (this.lastCds[i] > 0 && cd <= 0) this.replay(s.el, "slot--ready-flash");
         this.lastCds[i] = cd;
       } else {
         s.cd.style.setProperty("--cd", "100%");
         s.cdnum.textContent = "";
-        s.el.classList.remove("slot--ready");
+        s.el.classList.remove("slot--ready", "slot--recast");
       }
     }
     this.updateThreatMarkers();
@@ -619,9 +751,11 @@ export class Hud {
       let sx = (v.x * 0.5 + 0.5) * w;
       let sy = (-v.y * 0.5 + 0.5) * h;
       if (!Number.isFinite(sx) || !Number.isFinite(sy) || behind) {
-        const ang = Math.atan2(e.pos.x - p.pos.x, e.pos.z - p.pos.z) - this.ctx.player.facing;
-        sx = w * 0.5 + Math.sin(ang) * w * 0.45;
-        sy = h * 0.5 - Math.cos(ang) * h * 0.38;
+        const dx=e.pos.x-p.pos.x,dz=e.pos.z-p.pos.z,m=cam.matrixWorld.elements;
+        const right=dx*m[0]+dz*m[2],up=dx*m[4]+dz*m[6];
+        const length=Math.hypot(right,up)||1;
+        sx = w*.5+right/length*w*.45;
+        sy = h*.5-up/length*h*.38;
       }
       sx = Math.min(w - 58, Math.max(58, sx));
       sy = Math.min(h - 58, Math.max(58, sy));
