@@ -15,7 +15,7 @@ game/release/
 # Smoke-test screenshots
 game/shots/
 
-# Self-iterating improvement-loop artifacts (screenshots, traces, reports)
+# Local review artifacts (screenshots, traces, reports)
 game/artifacts/
 
 # Logs
@@ -44,3 +44,7 @@ desktop.ini
 
 # Claude Code user-local settings (shared settings.json stays tracked)
 .claude/settings.local.json
+
+# Blender autosave backups (editable .blend sources remain tracked)
+*.blend1
+*.blend2

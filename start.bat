@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM Rogue Hero 3 - one-click launcher (Windows)
+REM Lost Fiend - one-click launcher (Windows)
 REM
 REM Builds the production bundle and launches the game in a standalone
 REM Electron window. No browser, no separate preview server, no URL bar.
@@ -39,6 +39,6 @@ if errorlevel 1 (
 
 REM --- Launch the standalone Electron window --------------------------------
 echo.
-echo [start.bat] Launching Rogue Hero 3 (close the game window to exit)
+echo [start.bat] Launching Lost Fiend (close the game window to exit)
 echo.
 call npm run electron

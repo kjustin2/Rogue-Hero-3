@@ -1,228 +1,113 @@
-/* eslint-disable */
-// Electron entry — wraps the Vite production build (dist/) in a standalone
-// native window. No browser, no separate server console.
-//
-// We serve dist/ over a fixed loopback origin rather than loading via
-// file:// because:
-//   1. Vite's production output uses absolute base paths (/assets/...) that
-//      file:// resolves wrong.
-//   2. ES-module chunks use dynamic import() and import.meta.url — those break
-//      under file:// in some Chromium builds.
-// A tiny built-in HTTP server side-steps both. The port is bound to loopback
-// only so it isn't reachable from the network.
-
-const { app, BrowserWindow, screen, Menu } = require("electron");
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const { registerNativeIpc } = require("./electron-ipc.cjs");
-
-// Smoke uses an isolated profile and an invisible, muted window.
+// Fixed origin and legacy user-data location preserve the owner's existing saves.
+const { app, BrowserWindow, Menu, dialog } = require("electron");
+const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+app.setPath(
+  "userData",
+  path.join(
+    app.getPath("appData"),
+    app.isPackaged ? "Rogue Hero 3" : "rogue-hero-3",
+  ),
+);
+app.setName("Lost Fiend");
 const smoke = process.env.RH3_SMOKE === "1";
-if (smoke && process.env.RH3_USER_DATA) app.setPath("userData", process.env.RH3_USER_DATA);
-
-const distDir = path.join(__dirname, "dist");
-
-// The live window, so the IPC handlers (Display settings → real OS window) can
-// reach it without threading it through every call.
-let mainWindow = null;
-
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js":   "application/javascript; charset=utf-8",
-  ".mjs":  "application/javascript; charset=utf-8",
-  ".css":  "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg":  "image/svg+xml",
-  ".png":  "image/png",
-  ".jpg":  "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif":  "image/gif",
-  ".webp": "image/webp",
-  ".ico":  "image/x-icon",
-  ".wasm": "application/wasm",
+if (smoke && process.env.RH3_USER_DATA)
+  app.setPath("userData", process.env.RH3_USER_DATA);
+let window, server;
+const dist = path.resolve(__dirname, "dist");
+const mime = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
-  ".ttf":  "font/ttf",
-  ".map":  "application/json; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".svg": "image/svg+xml",
 };
-
-let server = null;
-let serverPort = 0;
-
-// A FIXED loopback port keeps the renderer's origin stable across launches.
-// localStorage — where ALL saved progress lives (run checkpoints, profile,
-// unlocks, cosmetics, dailies) — is partitioned by origin, and the origin
-// includes the port. Binding a random port every launch (listen(0)) would
-// silently boot the game on a brand-new, empty store every time, throwing away
-// the player's saves. The single-instance lock below stops our own prior
-// instance from squatting on this port.
-const PREFERRED_PORT = 41730;
-
-function startServer() {
-  return new Promise((resolve, reject) => {
-    server = http.createServer((req, res) => {
-      // Strip the query string and decode percent-encoded segments.
-      let urlPath;
-      try { urlPath = decodeURIComponent((req.url || "/").split("?")[0]); }
-      catch { res.writeHead(400); res.end("Invalid URL"); return; }
-      if (urlPath === "/" || urlPath === "") urlPath = "/index.html";
-      const filePath = path.join(distDir, urlPath);
-      // Prevent directory traversal — reject any resolved path that escapes dist/.
-      const resolved = path.resolve(filePath);
-      if (!resolved.startsWith(path.resolve(distDir) + path.sep)) {
-        res.writeHead(403);
-        res.end("Forbidden");
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on("second-instance", () => {
+    if (window) {
+      window.restore();
+      window.focus();
+    }
+  });
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(null);
+    server = http.createServer((request, response) => {
+      let pathname;
+      try {
+        pathname = decodeURIComponent(
+          new URL(request.url, "http://localhost").pathname,
+        );
+      } catch {
+        response.writeHead(400).end();
         return;
       }
-      fs.readFile(resolved, (err, data) => {
-        if (err) {
-          res.writeHead(404);
-          res.end(`Not found: ${urlPath}`);
+      const file = path.resolve(
+        dist,
+        "." + (pathname === "/" ? "/index.html" : pathname),
+      );
+      if (!file.startsWith(dist + path.sep)) {
+        response.writeHead(403).end();
+        return;
+      }
+      fs.readFile(file, (error, data) => {
+        if (error) {
+          response.writeHead(404).end();
           return;
         }
-        const ext = path.extname(resolved).toLowerCase();
-        // Only /assets/ files are content-hashed (a byte change => new URL), so
-        // only they are safe to cache forever. index.html, music, and icons keep
-        // a stable URL across app updates — with a now-stable port the disk cache
-        // persists between launches, so caching those immutably would serve a
-        // stale index.html after an update and break the app. Revalidate them.
-        const immutable = urlPath.startsWith("/assets/");
-        res.writeHead(200, {
-          "Content-Type": MIME[ext] || "application/octet-stream",
-          "Cache-Control": immutable
-            ? "public, max-age=31536000, immutable"
-            : "no-cache",
-        });
-        res.end(data);
+        response
+          .writeHead(200, {
+            "Content-Type":
+              mime[path.extname(file)] || "application/octet-stream",
+          })
+          .end(data);
       });
     });
-    server.once("listening", () => {
-      serverPort = server.address().port;
-      resolve(serverPort);
+    server.on("error", (error) => {
+      if (!smoke)
+        dialog.showErrorBox("Lost Fiend could not start", error.message);
+      app.exit(1);
     });
-
-    let triedFallback = false;
-    server.on("error", (err) => {
-      // Preferred port taken (a stale instance, or some other app). Fall back to
-      // an ephemeral port ONCE so the game still launches; warn loudly because
-      // saved progress lives under the usual origin and won't be visible here.
-      if (err && err.code === "EADDRINUSE" && !triedFallback) {
-        triedFallback = true;
-        console.warn(
-          `[rh3] port ${PREFERRED_PORT} is in use — falling back to a random port. ` +
-          `Saved progress may not appear this session.`,
-        );
-        server.listen(0, "127.0.0.1");
-        return;
-      }
-      reject(err);
-    });
-
-    server.listen(smoke ? 0 : PREFERRED_PORT, "127.0.0.1");
-  });
-}
-
-function createWindow() {
-  const display = screen.getPrimaryDisplay();
-  const { width, height } = display.workAreaSize;
-  // Open at ~80% of the available work area, capped at 1920x1080 so the
-  // window doesn't exceed full-HD on giant monitors. F11 inside the window
-  // (handled by Chromium) toggles true fullscreen.
-  const w = Math.min(1920, Math.floor(width * 0.8));
-  const h = Math.min(1080, Math.floor(height * 0.8));
-
-  const win = new BrowserWindow({
-    width: smoke ? 1280 : w,
-    height: smoke ? 720 : h,
-    useContentSize: smoke,
-    paintWhenInitiallyHidden: true,
-    minWidth: 960,
-    minHeight: 600,
-    autoHideMenuBar: true,
-    backgroundColor: "#000000",
-    title: "Rogue Hero 3",
-    show: false, // shown after first paint to avoid white flash
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      // Bridge for the in-game Display settings (true fullscreen + window resize).
-      preload: path.join(__dirname, "preload.cjs"),
-      // Backbuffer alpha would let the OS desktop bleed through transparent
-      // pixels; the canvas paints to fully-opaque black so we want it off.
-      backgroundThrottling: false,
-      // A never-shown Windows surface can tick at 1 Hz despite the timer flag.
-      // Offscreen composition gives the smoke real frames without stealing focus.
-      offscreen: smoke,
-    },
-  });
-
-  mainWindow = win;
-
-  // Disable the application menu entirely so Alt doesn't summon a phantom
-  // File/Edit menu over a fullscreen game.
-  Menu.setApplicationMenu(null);
-
-  // Keep the in-game Display toggle in sync with fullscreen changes from ANY
-  // source — our toggle, the F11 accelerator, or the OS window chrome.
-  // Emit the explicit boolean for each event rather than reading isFullScreen():
-  // on Windows that getter can still report the PRE-transition value inside the
-  // event handler, which would tell the renderer "windowed" right after entering
-  // fullscreen (the Display toggle then needed a second click to correct itself).
-  const sendFs = (on) => {
-    if (!win.isDestroyed()) win.webContents.send("rh3:fullscreen-changed", on);
-  };
-  win.on("enter-full-screen", () => sendFs(true));
-  win.on("leave-full-screen", () => sendFs(false));
-  win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
-
-  win.once("ready-to-show", () => {
-    // Smoke remains invisible; normal launches show the completed first frame.
-    if (!smoke) win.show();
-  });
-  if (smoke) {
-    win.webContents.setAudioMuted(true);
-    win.webContents.setFrameRate(60);
-  }
-  win.loadURL(smoke && process.env.RH3_SMOKE_URL || `http://127.0.0.1:${serverPort}/`);
-
-  // Optional devtools — set RH3_DEVTOOLS=1 to enable.
-  if (process.env.RH3_DEVTOOLS === "1") {
-    win.webContents.openDevTools({ mode: "detach" });
-  }
-}
-
-// Single-player desktop game: enforce one instance. A second launch just
-// focuses the running window. This also guarantees our own prior instance is
-// never holding the fixed loopback port (which would force the save-losing
-// fallback above).
-const gotPrimaryLock = app.requestSingleInstanceLock();
-if (!gotPrimaryLock) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
-  });
-
-  app.whenReady().then(async () => {
-    // Handlers backing window.rh3native (preload.cjs) — the in-game Display options.
-    registerNativeIpc(() => mainWindow);
-    await startServer();
-    createWindow();
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    server.listen(41730, "127.0.0.1", () => {
+      window = new BrowserWindow({
+        width: 1280,
+        height: 800,
+        minWidth: 800,
+        minHeight: 600,
+        show: false,
+        useContentSize: true,
+        paintWhenInitiallyHidden: true,
+        title: "Lost Fiend",
+        backgroundColor: "#111617",
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          backgroundThrottling: !smoke,
+          // Hidden Windows surfaces need offscreen composition for real smoke frames.
+          offscreen: smoke,
+        },
+      });
+      window.webContents.setAudioMuted(smoke);
+      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      window.webContents.on("will-navigate", (event, url) => {
+        if (!url.startsWith("http://127.0.0.1:41730/")) event.preventDefault();
+      });
+      window.webContents.on("before-input-event", (event, input) => {
+        if (input.type === "keyDown" && input.key === "F11") {
+          event.preventDefault();
+          window.setFullScreen(!window.isFullScreen());
+        }
+      });
+      window.once("ready-to-show", () => {
+        if (!smoke) window.show();
+      });
+      window.loadURL("http://127.0.0.1:41730/");
     });
   });
-
-  app.on("window-all-closed", () => {
-    if (server) {
-      try { server.close(); } catch (_) { /* noop */ }
-      server = null;
-    }
-    if (process.platform !== "darwin") app.quit();
-  });
 }
+app.on("window-all-closed", () => app.quit());
+app.on("before-quit", () => server?.close());
