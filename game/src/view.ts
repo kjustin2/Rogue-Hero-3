@@ -20,6 +20,7 @@ const stone = mat(0x292a29),
   bone = mat(0xb9ad8e),
   cloth = mat(0x682d2e),
   gold = mat(0x877044);
+const bellGold = new T.Color(0x877044), bellTarnish = new T.Color(0x514447);
 function mesh(
   g: T.BufferGeometry,
   m: T.Material,
@@ -68,6 +69,9 @@ interface Rig {
   offArm: T.Group;
   cloak: T.Group;
   weapon: T.Group;
+  phaseArmor: T.Group | null;
+  phaseFabric: T.MeshStandardMaterial | null;
+  phaseBell: T.MeshStandardMaterial | null;
   legs: T.Group[];
   tell: T.Mesh;
   materials: T.MeshStandardMaterial[];
@@ -80,6 +84,7 @@ export class View {
   private actors = new Map<number, Rig>();
   private activeGame: Game | null = null;
   private dashWake = new T.Group();
+  private phaseLight = new T.PointLight(0x8a3330, 0, 7, 2);
   private fx = new T.Group();
   private playerRing = new T.Mesh(
     new T.RingGeometry(0.52, 0.57, 32),
@@ -121,6 +126,7 @@ export class View {
       wake.castShadow = wake.receiveShadow = false;
     }
     this.scene.add(this.dashWake);
+    this.scene.add(this.phaseLight);
     this.scene.background = new T.Color(0x111617);
     this.scene.fog = new T.Fog(0x111617, 35, 65);
     this.camera.position.set(16, 24, 20);
@@ -269,6 +275,7 @@ export class View {
         ? cloth.clone()
         : mat(a.kind === "cantor" ? 0x536269 : 0x45413b);
     const materials = [skin, metal, fabric];
+    let phaseBell: T.MeshStandardMaterial | null = null;
     // The player's boots and stance stay visible below a short, split cloak.
     if (!heroic) taper(body, fabric, 0.28, 0.58, 1.05, 0.74, 9);
     else taper(body, metal, 0.26, 0.3, 0.48, 0.78, 6);
@@ -350,7 +357,9 @@ export class View {
       bellHead.position.y = -0.8;
       bellHead.scale.setScalar(0.8);
       weapon.add(bellHead);
-      mesh(new T.LatheGeometry(profile, 12), gold, bellHead);
+      const bellMetal = boss ? gold.clone() : gold;
+      if (boss) { phaseBell = bellMetal; materials.push(bellMetal); }
+      mesh(new T.LatheGeometry(profile, 12), bellMetal, bellHead);
       // Empty dark mouth: no clapper or other hand-like shape inside the bell.
       const mouth = mesh(new T.CircleGeometry(0.37, 12), new T.MeshStandardMaterial({ color: 0x090a09, roughness: 1, side: T.DoubleSide }), bellHead, 0, -0.03, 0);
       mouth.rotation.x = Math.PI / 2;
@@ -359,10 +368,11 @@ export class View {
       box(weapon, metal, 0, 0, 0, 0.18, 0.13, 0.15);
     } else {
       const shape = new T.Shape();
+      const swordLength = heroic ? 1.72 : 1.45;
       shape.moveTo(-0.07, 0);
-      shape.lineTo(-0.095, 1.05);
-      shape.lineTo(0.04, 1.45);
-      shape.lineTo(0.12, 1.05);
+      shape.lineTo(-0.11, swordLength * 0.72);
+      shape.lineTo(0.04, swordLength);
+      shape.lineTo(0.14, swordLength * 0.72);
       shape.lineTo(0.07, 0);
       shape.closePath();
       mesh(
@@ -382,6 +392,8 @@ export class View {
       box(leg, metal, 0, -0.6, 0.1, 0.18, 0.15, 0.32);
       legs.push(leg);
     }
+    let phaseArmor: T.Group | null = null;
+    const phaseFabric = boss ? fabric : null;
     if (boss) {
       root.scale.setScalar(1.65);
       for (const sign of [-1, 1]) {
@@ -395,6 +407,17 @@ export class View {
         );
         horn.rotation.z = -sign * 0.4;
       }
+      phaseArmor = new T.Group();
+      body.add(phaseArmor);
+      const plate = mat(0x282f31);
+      materials.push(plate);
+      for (const sign of [-1, 1]) {
+        const shoulder = mesh(new T.OctahedronGeometry(sign < 0 ? 0.34 : 0.31, 0), plate, phaseArmor, sign * 0.48, 1.57, -0.08);
+        shoulder.scale.set(1, 0.34, 0.7);
+        shoulder.rotation.z = -sign * 0.13;
+      }
+      box(phaseArmor, plate, 0, 1.68, -0.16, 1.05, 0.14, 0.35);
+      phaseArmor.scale.set(0.001, 1, 1);
     }
     if (boss) {
       const accents = new Map<T.MeshStandardMaterial, T.MeshStandardMaterial>();
@@ -424,6 +447,7 @@ export class View {
           materials.push(material);
         }
         object.material = material;
+        if (source === phaseBell) phaseBell = material;
       });
     }
     const tell = new T.Mesh(
@@ -452,6 +476,9 @@ export class View {
       offArm,
       cloak,
       weapon,
+      phaseArmor,
+      phaseFabric,
+      phaseBell,
       legs,
       tell,
       materials,
@@ -504,6 +531,17 @@ export class View {
         this.actors.delete(id);
       }
     this.activeGame = game;
+    const bossActor = game.enemies.find((enemy) => enemy.kind === "boss" && enemy.hp > 0);
+    const phaseReveal = bossActor?.bossPhase === 2
+      ? bossActor.action === "awaken"
+        ? T.MathUtils.smoothstep(bossActor.time / bossActor.duration, 0.12, 0.78)
+        : 1
+      : 0;
+    const entrance = bossActor?.action === "awaken" && bossActor.bossPhase === 1
+      ? Math.sin(Math.PI * bossActor.time / bossActor.duration) : 0;
+    this.phaseLight.color.setHex(entrance > 0 ? 0x9d7950 : 0x8a3330);
+    this.phaseLight.intensity = Math.max(0.8 * entrance, 1.5 * phaseReveal);
+    if (bossActor) this.phaseLight.position.set(bossActor.x, 2.5, bossActor.z);
     for (const a of all) {
       const r = this.actors.get(a.id) ?? this.rig(a),
         p = Math.min(1, a.time / a.duration),
@@ -517,7 +555,12 @@ export class View {
       r.root.rotation.y = a.angle;
       if (game.phase === "between" && a.kind === "blade") {
         const travel = T.MathUtils.smoothstep(game.transitionProgress, 0.12, 0.8);
-        r.root.rotation.y = T.MathUtils.lerp(a.angle, Math.PI, travel);
+        const turn = game.transitionVariant === 1
+          ? Math.PI * 2 * T.MathUtils.smoothstep(game.transitionProgress, 0.24, 0.72)
+          : game.transitionVariant === 2
+            ? 0.85 * Math.sin(Math.PI * T.MathUtils.smoothstep(game.transitionProgress, 0.1, 0.72))
+            : 0;
+        r.root.rotation.y = T.MathUtils.lerp(a.angle, Math.PI, travel) + turn;
         r.root.position.z -= travel * 2.5;
       }
       r.body.rotation.set(0, 0, 0);
@@ -531,7 +574,7 @@ export class View {
       );
       r.cloak.rotation.x = walk ? 0.14 + Math.sin(game.time * 13) * 0.035 : 0;
       if (a.kind === "blade" || a.kind === "hook")
-        r.weapon.rotation.x = Math.PI * 0.65;
+        r.weapon.rotation.set(Math.PI * 0.65, 0, 0);
       r.legs.forEach(
         (l, i) =>
           (l.rotation.x = walk
@@ -561,22 +604,24 @@ export class View {
           r.cloak.rotation.x = -0.25 * (1 - returnToGuard);
           r.head.rotation.y = -direction * sweep * 0.2 * (1 - returnToGuard);
         } else {
-          const lift = smooth(a.time / 0.24);
-          const drop = smooth((a.time - 0.24) / (contact - 0.24));
-          const recover = smooth((a.time - 0.45) / (strike.duration - 0.45));
-          const pose = (guard: number, raised: number, landed: number) =>
-            T.MathUtils.lerp(T.MathUtils.lerp(T.MathUtils.lerp(guard, raised, lift), landed, drop), guard, recover);
-          r.arm.rotation.x = pose(-0.15, -2.35, -0.85);
-          r.arm.rotation.y = pose(0, -0.18, 0.12);
-          r.weapon.rotation.x = pose(Math.PI * 0.65, 2.75, Math.PI);
-          r.body.rotation.x = pose(0, -0.12, 0.38);
-          r.body.rotation.y = pose(0, -0.25, 0.2);
-          r.body.position.y = pose(0, -0.04, -0.16);
-          r.offArm.rotation.x = pose(-0.28, -1.55, -0.8);
-          r.head.rotation.x = pose(0, 0.08, -0.12);
-          r.legs[0].rotation.x = pose(0, -0.24, -0.3);
-          r.legs[1].rotation.x = pose(0, 0.16, 0.22);
-          r.cloak.rotation.x = pose(0, 0.05, -0.18);
+          const windup = smooth(a.time / 0.18);
+          const sweep = smooth((a.time - 0.18) / 0.32);
+          const recover = smooth((a.time - 0.55) / (strike.duration - 0.55));
+          const pose = (guard: number, wound: number, followed: number) =>
+            T.MathUtils.lerp(T.MathUtils.lerp(T.MathUtils.lerp(guard, wound, windup), followed, sweep), guard, recover);
+          // A planted cross-body cut: torso and shoulder drive a wide sword arc.
+          r.body.rotation.y = pose(0, -0.65, 0.4);
+          r.body.rotation.x = pose(0, -0.08, 0.18);
+          r.body.position.y = pose(0, -0.06, -0.12);
+          r.arm.rotation.x = pose(-0.15, -1.1, -0.85);
+          r.arm.rotation.y = pose(0, -1.1, 0.32);
+          r.weapon.rotation.x = pose(Math.PI * 0.65, 2, 2.25);
+          r.offArm.rotation.x = pose(-0.28, -0.7, -0.32);
+          r.offArm.rotation.y = pose(0, 0.38, -0.26);
+          r.head.rotation.y = pose(0, 0.28, -0.2);
+          r.legs[0].rotation.x = pose(0, -0.2, -0.3);
+          r.legs[1].rotation.x = pose(0, 0.12, 0.2);
+          r.cloak.rotation.x = pose(0, 0.08, -0.24);
         }
         if (a.action === "slash") r.weapon.rotation.x = T.MathUtils.lerp(Math.PI, Math.PI * 0.65, returnToGuard);
       }
@@ -634,12 +679,29 @@ export class View {
         r.legs[1].rotation.x = 0.18 * wind * rest;
       }
       if (a.action === "awaken") {
-        const brace = Math.sin(p * Math.PI);
-        r.body.position.y = -0.3 * brace;
-        r.body.rotation.x = 0.25 * brace;
-        r.arm.rotation.x = -0.15 - 2.3 * brace;
-        r.offArm.rotation.x = -0.28 - 1.6 * brace;
-        r.head.rotation.x = -0.35 * brace;
+        if (a.kind === "boss" && a.bossPhase === 1) {
+          const rise = T.MathUtils.smoothstep(p, 0.12, 0.62);
+          const strike = T.MathUtils.smoothstep(p, 0.69, 0.9);
+          r.root.position.y -= 0.65 * (1 - rise);
+          r.root.rotation.y += -0.52 * (1 - rise);
+          r.root.scale.setScalar(1.65 * (0.86 + 0.14 * rise));
+          r.body.rotation.x = 0.58 * (1 - rise) + 0.14 * strike;
+          r.head.rotation.x = 0.45 * (1 - rise) - 0.18 * rise;
+          r.arm.rotation.x = -2.05 * rise + 1.78 * strike;
+          r.arm.rotation.y = -0.35 * rise * (1 - strike);
+          r.offArm.rotation.x = -1.15 * rise + 0.85 * strike;
+          r.legs[0].rotation.x = -0.35 * (1 - rise) + 0.22 * strike;
+          r.legs[1].rotation.x = 0.26 * (1 - rise) - 0.18 * strike;
+        } else {
+          const brace = Math.sin(p * Math.PI);
+          r.body.position.y = -0.38 * brace;
+          r.body.rotation.x = 0.36 * brace;
+          r.body.rotation.y = -0.22 * brace;
+          r.arm.rotation.x = -0.15 - 2.5 * brace;
+          r.offArm.rotation.x = -0.28 - 1.8 * brace;
+          r.head.rotation.x = -0.48 * brace;
+          r.root.scale.setScalar(1.65 + 0.1 * brace);
+        }
       }
       // Blend every animated upper-body axis across interrupts and recoveries.
       const joints = [r.body.rotation, r.arm.rotation, r.offArm.rotation, r.head.rotation];
@@ -667,18 +729,24 @@ export class View {
       }
       if (a.hp <= 0) {
         if (a.kind === "boss") {
-          const kneel = T.MathUtils.smoothstep(p, 0, 0.35);
-          const fall = T.MathUtils.smoothstep(p, 0.35, 0.72);
-          const sink = T.MathUtils.smoothstep(p, 0.72, 1);
-          r.body.position.y = -0.55 * kneel;
-          r.body.rotation.x = 0.35 * kneel + 0.85 * fall;
-          r.body.rotation.z = 0.3 * fall;
-          r.head.rotation.x = 0.55 * kneel;
-          r.arm.rotation.x = -0.9 * kneel + 0.25 * fall;
-          r.offArm.rotation.x = -0.8 * fall;
-          r.legs[0].rotation.x = -0.8 * kneel;
-          r.legs[1].rotation.x = 0.55 * kneel;
-          r.root.position.y = -3.6 * sink;
+          const stagger = T.MathUtils.smoothstep(p, 0, 0.27);
+          const release = T.MathUtils.smoothstep(p, 0.29, 0.53);
+          const collapse = T.MathUtils.smoothstep(p, 0.53, 0.88);
+          // Its bell falls away first; the boss reaches for it, then folds beside it.
+          if (r.weapon.parent !== r.root) r.root.add(r.weapon);
+          r.weapon.position.set(0.39 + 0.95 * release, 1.12 - 0.2 * release, 0.16 + 0.34 * release);
+          r.weapon.rotation.set(-0.15 + 0.9 * release, 0, 0.95 * release);
+          r.body.position.y = -0.25 * stagger - 0.22 * collapse;
+          r.body.rotation.x = -0.35 * stagger + 0.72 * collapse;
+          r.body.rotation.z = -0.95 * collapse;
+          r.head.rotation.x = -0.42 * stagger + 0.55 * collapse;
+          r.head.rotation.y = 0.5 * release;
+          r.arm.rotation.x = -1.05 * release + 0.5 * collapse;
+          r.offArm.rotation.x = -0.7 * stagger - 0.45 * collapse;
+          r.offArm.rotation.z = -0.65 * release;
+          r.legs[0].rotation.x = -0.76 * collapse;
+          r.legs[1].rotation.x = 0.82 * collapse;
+          r.root.position.y = -0.08 * collapse;
         } else if (a.kind !== "blade") {
           const melt = T.MathUtils.smoothstep(p, 0.12, 1);
           r.body.rotation.x = 0.25 * Math.sin(p * Math.PI);
@@ -690,7 +758,7 @@ export class View {
           r.body.rotation.x = 1.2 * T.MathUtils.smoothstep(p, 0, 1);
           r.body.position.y = -0.45 * p;
         }
-        r.root.visible = a.kind === "blade" || p < 1;
+        r.root.visible = a.kind === "blade" || a.kind === "boss" || p < 1;
       } else r.root.visible = true;
       if (introTime !== undefined && a.kind === "blade") {
         const fall = T.MathUtils.clamp(introTime / 0.65, 0, 1);
@@ -708,14 +776,29 @@ export class View {
       }
       if (game.phase === "between" && a.kind === "blade") {
         const stride = Math.sin(game.transitionProgress * 26);
-        r.legs[0].rotation.x = stride * 0.35;
-        r.legs[1].rotation.x = -stride * 0.35;
-        r.arm.rotation.x = -0.35;
+        const flourish = game.transitionVariant === 1
+          ? Math.sin(Math.PI * T.MathUtils.smoothstep(game.transitionProgress, 0.18, 0.78)) : 0;
+        const glance = game.transitionVariant === 2
+          ? Math.sin(Math.PI * T.MathUtils.smoothstep(game.transitionProgress, 0.1, 0.72)) : 0;
+        r.legs[0].rotation.x = stride * (game.transitionVariant === 2 ? 0.2 : 0.35);
+        r.legs[1].rotation.x = -r.legs[0].rotation.x;
+        r.arm.rotation.x = -0.35 - 1.3 * flourish - 0.35 * glance;
+        r.offArm.rotation.x = -0.28 - 0.65 * flourish;
+        r.cloak.rotation.x = 0.14 + 0.2 * flourish;
       }
       r.materials.forEach((m) => {
         m.emissive.setHex(a.flash > 0 ? 0xb99775 : 0);
         m.emissiveIntensity = a.flash > 0 ? 0.8 : 0;
       });
+      if (r.phaseArmor) {
+        const reveal = a.bossPhase === 2
+          ? a.hp <= 0 ? 1 - T.MathUtils.smoothstep(p, 0.38, 0.82)
+            : a.action === "awaken" ? T.MathUtils.smoothstep(p, 0.12, 0.78) : 1
+          : 0;
+        r.phaseArmor.scale.set(0.001 + reveal * 0.999, 1, 1);
+        if (r.phaseFabric) r.phaseFabric.color.setHex(reveal > 0.5 ? 0x533734 : 0x45413b);
+        if (r.phaseBell) r.phaseBell.color.copy(bellGold).lerp(bellTarnish, reveal);
+      }
       const radial =
         a.kind === "boss" && a.combo === 4 ? "cross" :
         a.kind === "boss" && a.combo === 1 ? "sweep" :
@@ -847,12 +930,26 @@ export class View {
         pool.scale.setScalar(0.8 + p * 0.5);
         continue;
       }
+      if (f.kind === "bossDeath") {
+        const p = f.time / f.life;
+        const pool = mesh(new T.CircleGeometry(1.15 + p * 0.5, 9), new T.MeshBasicMaterial({ color: 0x150d0d, transparent: true, opacity: 0.55 * Math.sin(p * Math.PI), depthWrite: false }), this.fx, f.x, 0.03, f.z);
+        pool.rotation.x = -Math.PI / 2;
+        for (let i = 0; i < 7; i++) {
+          const angle = i * 2.4;
+          const chip = mesh(new T.TetrahedronGeometry(0.14 + (i % 3) * 0.04), new T.MeshBasicMaterial({ color: i % 2 ? 0x777063 : 0x3b3733, transparent: true, opacity: 1 - T.MathUtils.smoothstep(p, 0.35, 1), depthWrite: false }), this.fx,
+            f.x + Math.sin(angle) * (0.4 + p * 1.2),
+            0.08 + Math.sin(p * Math.PI) * (0.35 + i * 0.05),
+            f.z + Math.cos(angle) * (0.4 + p * 1.2));
+          chip.rotation.set(p * 3, angle, p * 2);
+        }
+        continue;
+      }
       const p = f.time / f.life,
         color = f.enemy ? 0xce7545 : f.kind === "hit" ? 0xe9d1a3 : 0xc3b69b;
       const m = new T.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: (1 - p) * 0.8,
+        opacity: (1 - p) * (f.kind === "heavySwing" ? 0.36 : 0.8),
         side: T.DoubleSide,
         depthWrite: false,
       });
@@ -864,9 +961,7 @@ export class View {
           ? new T.RingGeometry(0.05, BELL.echo, 48)
           : f.kind === "ring"
             ? new T.RingGeometry(BELL.inner, BELL.outer, 48)
-            : f.kind === "heavy"
-              ? new T.RingGeometry(1.42, 1.56, 24, 1, 0, Math.PI)
-              : (f.kind === "cut" || f.kind === "sweep")
+            : (f.kind === "cut" || f.kind === "sweep")
                 ? new T.RingGeometry(
                     stroke.reach - 0.3,
                     stroke.reach,
@@ -876,6 +971,20 @@ export class View {
                     stroke.arc * 2,
                   )
                 : new T.RingGeometry(0.05 + p * 0.4, 0.14 + p * 0.7, 5);
+      if (f.kind === "heavySwing") {
+        const wake = new T.Shape();
+        for (let i = 0; i <= 24; i++) {
+          const angle = -0.8 + i / 24 * 1.6;
+          if (i === 0) wake.moveTo(Math.cos(angle) * 2.45, Math.sin(angle) * 2.45);
+          else wake.lineTo(Math.cos(angle) * 2.45, Math.sin(angle) * 2.45);
+        }
+        for (let i = 24; i >= 0; i--) {
+          const angle = -0.8 + i / 24 * 1.6;
+          const radius = 2.45 - Math.sin(i / 24 * Math.PI) * 0.42;
+          wake.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+        }
+        wake.closePath(); geometry.dispose(); geometry = new T.ShapeGeometry(wake);
+      }
       if (f.kind === "cut" && !f.enemy) {
         const wake = new T.Shape();
         for (let i = 0; i <= 24; i++) {
@@ -890,29 +999,6 @@ export class View {
           wake.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
         }
         wake.closePath(); geometry.dispose(); geometry = new T.ShapeGeometry(wake);
-      }
-      if (f.kind === "heavy") {
-        const wake = new T.Shape();
-        wake.moveTo(-1.5, 0);
-        for (let i = 0; i <= 24; i++) {
-          const angle = Math.PI - i / 24 * Math.PI;
-          wake.lineTo(Math.cos(angle) * 1.6, Math.sin(angle) * 1.8);
-        }
-        for (let i = 24; i >= 0; i--) {
-          const angle = Math.PI - i / 24 * Math.PI;
-          const radius = 1.6 - Math.sin(angle) * (i % 4 === 0 ? 0.34 : 0.2);
-          wake.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
-        }
-        wake.closePath(); geometry.dispose(); geometry = new T.ShapeGeometry(wake);
-        for (let i = 0; i < 5; i++) {
-          const offset = (i - 2) * 0.19;
-          const shard = mesh(new T.TetrahedronGeometry(0.055), new T.MeshBasicMaterial({ color: 0xb1a48a, transparent: true, opacity: 1 - p, depthWrite: false }), this.fx,
-            f.x + Math.sin(f.angle) * (1.5 + p) + Math.cos(f.angle) * offset,
-            0.08 + Math.sin(p * Math.PI) * (0.25 + i * 0.08),
-            f.z + Math.cos(f.angle) * (1.5 + p) - Math.sin(f.angle) * offset);
-          shard.scale.set(0.6, 2.5, 0.6);
-          shard.rotation.z = offset * 3;
-        }
       }
       if (f.kind === "slam") {
         const crack = new T.Shape();
@@ -934,22 +1020,12 @@ export class View {
         m,
         this.fx,
         f.x,
-        f.kind === "hit" || f.kind === "cut" || f.kind === "sweep" ? 0.9 : 0.08,
+        f.kind === "hit" || f.kind === "cut" || f.kind === "sweep" || f.kind === "heavySwing" ? 0.9 : 0.08,
         f.z,
       );
       fx.castShadow = fx.receiveShadow = false;
       fx.rotation.x = -Math.PI / 2;
       fx.rotation.z = f.angle - Math.PI / 2;
-      if (f.kind === "heavy") {
-        // A vertical blade wake distinguishes the overhead blow from a flat slash.
-        fx.position.set(
-          f.x + Math.sin(f.angle) * 1.55,
-          0.15,
-          f.z + Math.cos(f.angle) * 1.55,
-        );
-        fx.rotation.set(0, f.angle - Math.PI / 2, 0);
-      }
-
     }
     this.dashWake.visible = game.player.action === "dodge" && game.player.hp > 0;
     this.dashWake.position.set(game.player.x, 0, game.player.z);
@@ -979,7 +1055,11 @@ export class View {
     // A quiet ground marker keeps the player locatable behind large enemies.
     this.playerRing.position.set(game.player.x, 0.04, game.player.z);
     this.playerRing.visible = game.phase === "fight" && game.player.hp > 0;
-    this.camera.zoom = introTime === undefined ? 1 : 1 + 0.16 * (1 - T.MathUtils.smoothstep(introTime, 0.7, 2.6));
+    this.camera.zoom = introTime !== undefined
+      ? 1 + 0.16 * (1 - T.MathUtils.smoothstep(introTime, 0.7, 2.6))
+      : bossActor?.action === "awaken" && bossActor.bossPhase === 1
+        ? 1 + 0.1 * Math.sin(Math.PI * bossActor.time / bossActor.duration)
+      : 1;
     this.camera.updateProjectionMatrix();
     this.renderer.render(this.scene, this.camera);
   }

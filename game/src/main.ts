@@ -96,6 +96,20 @@ function sound(kind: string) {
   try {
     audio ??= new AudioContext();
     if (audio.state === "suspended") void audio.resume();
+    if (kind === "bossToll") {
+      for (const [pitch, level] of [[110, 0.052], [164, 0.023]]) {
+        const tone = audio.createOscillator(), gain = audio.createGain();
+        tone.type = "sine";
+        tone.frequency.setValueAtTime(pitch, audio.currentTime);
+        tone.frequency.exponentialRampToValueAtTime(pitch * 0.72, audio.currentTime + 0.8);
+        gain.gain.setValueAtTime(level * volume, audio.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.9);
+        tone.connect(gain).connect(audio.destination);
+        tone.start(); tone.stop(audio.currentTime + 0.9);
+        tone.onended = () => { tone.disconnect(); gain.disconnect(); };
+      }
+      return;
+    }
     const o = audio.createOscillator(),
       g = audio.createGain();
     o.type = kind === "bell" ? "sine" : "triangle";
@@ -540,7 +554,7 @@ function frame(now: number) {
     const boss = game.enemies.find((e) => e.kind === "boss");
     hud.querySelector<HTMLElement>(".boss")!.hidden = !boss;
     hud.querySelector<HTMLElement>(".room")!.hidden = !!boss;
-    if (boss) hud.querySelector(".boss span")!.textContent = `THE BELLWETHER / ${boss.bossPhase === 1 ? "I" : "II"}`;
+    if (boss) hud.querySelector(".boss span")!.textContent = "THE BELLWETHER";
     if (boss)
       hud.querySelector<HTMLElement>(".boss i")!.style.width =
         `${(boss.hp / boss.max) * 100}%`;

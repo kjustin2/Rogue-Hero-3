@@ -14,14 +14,22 @@ The player-facing title is **Lost Fiend**; the repository name remains unchanged
 - Three enemy families have distinct threats and recovery windows. Damage follows
   visible action phases. Keep tells readable, openings punishable, and boss body
   collision solid. No hitstop.
-- A short skippable entrance and automatic room transitions give the run shape
-  without a large cinematic system. The tutorial teaches four actions quickly.
+- A short skippable player entrance and automatic room transitions give the run shape
+  without a large cinematic system. Room crossings vary among a walk, twirl,
+  and guarded glance. The tutorial teaches four actions quickly.
+- Give the boss one distinct spawn inside its arena and show phase changes in its pose and
+  silhouette. Its HUD shows the name without a phase-number suffix. Death should
+  read as a staged loss of the bell before the body falls.
+- Keep phase-two changes compact and grim: dark iron mantle, oxblood cloth,
+  tarnished bell. Avoid pre-room boss previews, floating omen props, and
+  oversized bright shoulder spikes.
 
 ## Visual and interface direction
 
 - Minimal, gritty isometric crypt. Fixed orthographic gameplay framing; charcoal
   stone, worn ivory, muted oxblood, small candle-amber accents, hard shadow and
-  negative space. The title uses the same environment kit and camera language.
+  negative space. The title uses the same environment kit and camera language,
+  with restrained camera drift, floating dust and changing firelight.
 - Favor readable silhouettes and grounded weight over asset complexity or bright
   effects. Slash, heavy, dodge, enemy tells, hit reactions, and deaths must read at
   the normal camera distance. Dash effects stay near the boots; impact appears at

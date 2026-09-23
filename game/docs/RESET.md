@@ -16,9 +16,12 @@ the saved room. Escape opens Resume, Options and Exit run. Exit retains Continue
 defeat and victory clear it. Reloading Continue starts at the current room's entry
 checkpoint. A new run asks before replacing a saved one.
 
-Three encounters lead to the Bellwether. Cleared rooms advance through a
-2.2-second walk/fade transition, restoring 18 health up to 100. There are no
-between-room rewards or upgrade screens. Defeat and victory offer retry or title.
+Three encounters lead to the Bellwether. Every cleared room advances through a
+2.2-second walk/fade transition, varying between a straight walk, sword twirl,
+and guarded glance using the run's seeded random state. The boss has no pre-room
+preview. It rises, turns and brings its bell down once inside its arena, with a
+brief camera and firelight accent. Each cleared room restores 18 health up to 100.
+There are no between-room rewards or upgrade screens. Defeat and victory offer retry or title.
 Achievements track 10 kills, 50 kills and boss defeat; they grant no power.
 
 ## Combat
@@ -30,20 +33,25 @@ Achievements track 10 kills, 50 kills and boss defeat; they grant no power.
   Cantor pulses an outer area with a safe inner pocket. Each has a recovery to
   exploit; ordinary enemies can be interrupted by heavy.
 - Bellwether blocks movement. Phase I uses a lane strike and frontal sweep.
-  At half health it braces and enters Phase II: outward toll with warned inward
-  follow-up, split-lane strike and inner pulse. Its death finishes before victory.
+  At half health it braces, opens a compact iron mantle, shifts to oxblood cloth
+  and tarnishes its bell for Phase II: outward toll with warned inward follow-up,
+  split-lane strike and inner pulse. The HUD keeps only its name. Its bell falls separately
+  before the body collapses; the death finishes before victory.
 - Hit timing is simulation-owned. The heavy contacts at 0.34 seconds in a
   0.86-second action. No hitstop. Movement and effects use one pause-aware clock.
 
 ## Presentation and menus
 
 The title uses the same procedural crypt kit, materials and fixed orthographic
-angle as combat, with restrained fire and dust. The palette is charcoal stone,
+angle as combat, with slow camera and shadow drift, flickering fire and floating
+dust. The palette is charcoal stone,
 worn ivory, oxblood cloth and small candle amber. Player slash has a visible
-waist-height sweep; heavy lifts and drops with an impact hold. Dash stays low and
-grounded with short graphite scuffs and stone chips at boot level. Hits produce
+waist-height sweep; heavy winds the torso and drives the sword across the body
+in a broad, committed cut with a short character-centered wake. It has no
+detached sword or vertical arc. Dash stays low and grounded with short graphite
+scuffs and stone chips at boot level. Hits produce
 brief target-local scars/chips and recoil. Small enemies sink on death; the boss
-kneels, slumps and sinks. The bell has an occluded dark mouth and no visible
+kneels and falls beside its bell. The bell has an occluded dark mouth and no visible
 clapper or hand crossing its shell.
 
 Menus and HUD share locally bundled IM Fell English 5.3.0, CSS color/type tokens,
@@ -71,7 +79,7 @@ names for compatibility. The old overhaul source/archive is outside this repo at
 ## Evidence and limits
 
 On September 22, 2026, the production build passed and the single standalone
-Electron smoke passed in 3.8 seconds before cleanup. It covered movement,
+Electron smoke passed in 3.1 seconds before cleanup. It covered movement,
 slash, heavy, dodge, pause/resume, volume and Continue.
 
 The single Electron smoke has a 30-second deadline and also skips the intro.
@@ -79,8 +87,14 @@ A build and smoke establish basic function, not finished visual quality. Earlier
 Chrome and Electron inspections covered title, Options, tutorial, combat HUD,
 intro and selected attack poses. Full boss-cycle balance, death playback, room
 transition timing, low-health appearance and the brief dash/hit effects still
-need the owner's manual play review. The inherited executable icon is still a
-clean gold sword badge and has not been judged against the darker current style.
+need the owner's manual play review. A September 22 gameplay-camera inspection
+sampled heavy lift/contact, boss entrance, both phase silhouettes, death
+pose and the boss HUD; it did not play the entire fight at real-time speed. The
+latest review also inspected two title frames, all three crossing poses, and the
+boss's new in-room spawn at 1280×800 without page errors. Standalone Electron
+opened with a responsive Lost Fiend window. The inherited executable icon is
+still a clean gold sword badge and has not been judged against the darker
+current style.
 Do not claim AAA quality from static checks.
 
 Update this evidence with the date and observed result when doing a new review;

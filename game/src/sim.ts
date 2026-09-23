@@ -48,13 +48,13 @@ export interface Effect {
   x: number;
   z: number;
   angle: number;
-  kind: "cut" | "heavy" | "slam" | "hit" | "impact" | "impactHeavy" | "dashDust" | "ring" | "core" | "death" | "sweep";
+  kind: "cut" | "heavySwing" | "slam" | "hit" | "impact" | "impactHeavy" | "dashDust" | "ring" | "core" | "death" | "bossDeath" | "sweep";
   time: number;
   life: number;
   enemy: boolean;
 }
 export interface Cue {
-  kind: "heavy" | "swing" | "hit" | "hurt" | "dodge" | "bell";
+  kind: "heavy" | "swing" | "hit" | "hurt" | "dodge" | "bell" | "bossToll";
 }
 export const ROOM = { x: 11, z: 9 };
 export const BELL = { inner: 1.8, outer: 6.2, echo: 2.8 };
@@ -106,6 +106,7 @@ export class Game {
   training = false;
   checkpoint: RunCheckpoint | null = null;
   private intermission = 0;
+  transitionVariant: 0 | 1 | 2 = 0;
   dodgeRecovery = 0.72;
   cause = "";
   private buffer: {
@@ -190,6 +191,11 @@ export class Game {
         -4 - this.random() * 1.8,
       );
       e.cooldown = 0.9 + i * 0.38;
+      if (kind === "boss") {
+        e.angle = Math.atan2(this.player.x - e.x, this.player.z - e.z);
+        this.set(e, "awaken", 1.6);
+        this.cues.push({ kind: "bossToll" });
+      }
       this.enemies.push(e);
     });
   }
@@ -248,7 +254,7 @@ export class Game {
     if (a.hp === 0) {
       this.set(a, "dead", a.kind === "boss" ? 2.6 : a.kind === "blade" ? 0.9 : 1.15);
       if (a.kind !== "blade") this.slain.push(a.kind);
-      this.fx(a, "death", a.kind === "boss" ? 2.6 : 1.15);
+      this.fx(a, a.kind === "boss" ? "bossDeath" : "death", a.kind === "boss" ? 2.6 : 1.15);
       if (a.kind === "blade") {
         this.phase = "dead";
         this.cause = source;
@@ -258,7 +264,7 @@ export class Game {
   private playerHit(heavy: boolean) {
     const p = this.player;
     const strike = STRIKES[heavy ? "heavy" : "slash"];
-    this.fx(p, heavy ? "heavy" : "cut", heavy ? 0.32 : 0.22);
+    this.fx(p, heavy ? "heavySwing" : "cut", heavy ? 0.16 : 0.22);
     this.cues.push({ kind: heavy ? "heavy" : "swing" });
     for (const e of this.enemies) {
       if (e.hp <= 0 || !clearLine(p, e)) continue;
@@ -310,7 +316,7 @@ export class Game {
     dt = Math.min(MAX_STEP, Math.max(0, dt));
     if (!this.paused && this.phase === "between") {
       this.intermission += dt;
-      if (this.intermission >= ROOM_TRANSITION) {
+      if (this.intermission >= this.transitionDuration) {
         this.room++;
         this.player.hp = Math.min(this.player.max, this.player.hp + 18);
         this.phase = "fight";
@@ -403,7 +409,7 @@ export class Game {
       if (e.kind === "boss" && e.bossPhase === 1 && e.hp <= e.max * 0.5) {
         e.bossPhase = 2; e.attackIndex = 0;
         this.set(e, "awaken", 1.2);
-        this.cues.push({ kind: "bell" });
+        this.cues.push({ kind: "bossToll" });
       }
       if (e.action === "awaken") {
         if (e.time >= e.duration) { this.set(e, "idle", 1); e.cooldown = 0.35; }
@@ -534,11 +540,15 @@ export class Game {
     ) {
       this.phase = this.room === 3 ? "won" : "between";
       this.intermission = 0;
+      if (this.phase === "between") this.transitionVariant = Math.floor(this.random() * 3) as 0 | 1 | 2;
       this.effects = [];
     }
   }
   get transitionProgress() {
-    return this.phase === "between" ? this.intermission / ROOM_TRANSITION : 0;
+    return this.phase === "between" ? this.intermission / this.transitionDuration : 0;
+  }
+  get transitionDuration() {
+    return ROOM_TRANSITION;
   }
   get dodgeReady() {
     return this.dodgeCd === 0;

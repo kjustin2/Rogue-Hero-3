@@ -7,6 +7,8 @@ export class TitleScene {
   private flames: T.Mesh[] = [];
   private lights: T.PointLight[] = [];
   private dust: T.Points;
+  private dustOrigin: Float32Array;
+  private moon: T.DirectionalLight;
   constructor(environment: T.Group) {
     const room = environment.clone(true);
     room.position.x = 4;
@@ -25,6 +27,7 @@ export class TitleScene {
     Object.assign(moon.shadow.camera, {left: -22, right: 22, top: 20, bottom: -20});
     moon.shadow.bias = -0.0004;
     this.scene.add(moon);
+    this.moon = moon;
     const fill = new T.DirectionalLight(0x7b8899, 0.6);
     fill.position.set(10, 8, -5);
     this.scene.add(fill);
@@ -51,16 +54,17 @@ export class TitleScene {
     broken.rotation.set(0, -0.35, Math.PI / 2);
     broken.castShadow = broken.receiveShadow = true;
     this.scene.add(broken);
-    const positions = new Float32Array(50 * 3);
-    for (let i = 0; i < 50; i++) {
+    const positions = new Float32Array(90 * 3);
+    for (let i = 0; i < 90; i++) {
       positions[i * 3] = 4 + Math.sin(i * 7.13) * 10;
       positions[i * 3 + 1] = (i % 11) * 0.3;
       positions[i * 3 + 2] = Math.cos(i * 3.77) * 8;
     }
     const geometry = new T.BufferGeometry();
     geometry.setAttribute("position", new T.BufferAttribute(positions, 3));
+    this.dustOrigin = positions.slice();
     this.dust = new T.Points(geometry, new T.PointsMaterial({
-      color: 0xaaa699, size: 0.025, transparent: true, opacity: 0.22, depthWrite: false,
+      color: 0xaaa699, size: 0.065, transparent: true, opacity: 0.36, depthWrite: false,
     }));
     this.scene.add(this.dust);
   }
@@ -69,14 +73,25 @@ export class TitleScene {
     const size = Math.max(11.8, 15 / aspect);
     Object.assign(this.camera, {left: -size * aspect, right: size * aspect, top: size, bottom: -size});
     this.camera.updateProjectionMatrix();
-    this.camera.position.set(16, 24, 20);
-    this.camera.lookAt(0, 0, 0);
+    const drift = Math.sin(time * 0.2) * 0.48;
+    this.camera.position.set(16 + drift, 24, 20 - drift * 0.4);
+    this.camera.lookAt(drift * 0.55, 0, 0);
+    this.moon.intensity = 2.55 + Math.sin(time * 0.32) * 0.18;
+    this.moon.position.x = -8 + Math.sin(time * 0.21) * 0.45;
     this.flames.forEach((flame, i) => {
-      flame.scale.y = 1.8 + Math.sin(time * 7 + i * 2) * 0.09;
-      this.lights[i].intensity = 7 + Math.sin(time * 6 + i * 2) * 0.6;
+      flame.scale.y = 1.8 + Math.sin(time * 7 + i * 2) * 0.15;
+      flame.scale.x = 1 + Math.sin(time * 5 + i * 3) * 0.1;
+      this.lights[i].intensity = 7 + Math.sin(time * 6 + i * 2) * 1.05;
     });
-    this.dust.position.y = Math.sin(time * 0.15) * 0.25;
-    this.dust.rotation.y = Math.sin(time * 0.05) * 0.025;
+    const positions = this.dust.geometry.getAttribute("position") as T.BufferAttribute;
+    for (let i = 0; i < positions.count; i++) {
+      positions.setXYZ(i,
+        this.dustOrigin[i * 3] + Math.sin(time * 0.18 + i * 1.7) * 0.22,
+        this.dustOrigin[i * 3 + 1] + Math.sin(time * 0.31 + i * 0.9) * 0.3,
+        this.dustOrigin[i * 3 + 2] + Math.cos(time * 0.16 + i * 2.1) * 0.18,
+      );
+    }
+    positions.needsUpdate = true;
     renderer.render(this.scene, this.camera);
   }
 }
